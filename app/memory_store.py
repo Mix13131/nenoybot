@@ -178,5 +178,10 @@ def create_memory_store() -> MemoryStore:
     else:
         store = InMemoryStore()
 
-    store.ensure_schema()
+    try:
+        store.ensure_schema()
+    except Exception as exc:
+        print(f"Memory store fallback: {type(exc).__name__}: {exc}")
+        return InMemoryStore()
+
     return store
