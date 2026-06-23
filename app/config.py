@@ -1,0 +1,22 @@
+from pathlib import Path
+import os
+
+try:
+    from dotenv import load_dotenv
+except ImportError:  # pragma: no cover - lets the CLI run before dependencies are installed.
+    def load_dotenv(*_args, **_kwargs):
+        return False
+
+
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
+PROMPTS_DIR = PROJECT_ROOT / "prompts"
+ENV_PATH = PROJECT_ROOT / ".env"
+
+load_dotenv(ENV_PATH)
+
+
+class AppConfig:
+    project_root = PROJECT_ROOT
+    prompts_dir = PROMPTS_DIR
+    default_goal = os.getenv("NENOYBOT_DEFAULT_GOAL", "").strip() or None
+    strictness = os.getenv("NENOYBOT_STRICTNESS", "firm").strip().lower()
