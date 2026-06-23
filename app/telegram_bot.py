@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import time
+from dataclasses import dataclass, field
 from typing import Any
 from urllib import error, parse, request
 
@@ -17,12 +18,31 @@ except ImportError:  # Allows `python app/telegram_bot.py`.
 
 HELP_TEXT = (
     "НеНойBot онлайн.\n"
-    "Команды:\n"
-    "/goal цель — зафиксировать цель\n"
-    "/clear_goal — сбросить цель\n"
-    "/help — команды\n\n"
+    "Кнопки:\n"
+    "🎯 Задать цель — записать цель без команды\n"
+    "✅ Отчёт — сдать результат\n"
+    "🔥 Пинок — получить ближайший шаг\n"
+    "🧹 Сбросить цель — очистить цель\n\n"
+    "Команды тоже работают: /goal, /clear_goal, /help.\n"
     "Сначала цель. Потом действие."
 )
+
+BUTTON_SET_GOAL = "🎯 Задать цель"
+BUTTON_REPORT = "✅ Отчёт"
+BUTTON_KICK = "🔥 Пинок"
+BUTTON_HELP = "📌 Меню"
+BUTTON_CLEAR_GOAL = "🧹 Сбросить цель"
+
+MAIN_KEYBOARD = {
+    "keyboard": [
+        [{"text": BUTTON_SET_GOAL}, {"text": BUTTON_REPORT}],
+        [{"text": BUTTON_KICK}, {"text": BUTTON_HELP}],
+        [{"text": BUTTON_CLEAR_GOAL}],
+    ],
+    "resize_keyboard": True,
+    "one_time_keyboard": False,
+    "is_persistent": True,
+}
 
 BOT_COMMANDS = (
     {"command": "start", "description": "Запустить НеНойBot"},
@@ -30,6 +50,24 @@ BOT_COMMANDS = (
     {"command": "clear_goal", "description": "Сбросить цель"},
     {"command": "help", "description": "Показать команды"},
 )
+
+
+@dataclass
+class TelegramRuntimeState:
+    awaiting_goal: set[int] = field(default_factory=set)
+    awaiting_report: set[int] = field(default_factory=set)
+
+    def wait_for_goal(self, chat_id: int) -> None:
+        self.awaiting_goal.add(chat_id)
+        self.awaiting_report.discard(chat_id)
+
+    def wait_for_report(self, chat_id: int) -> None:
+        self.awaiting_report.add(chat_id)
+        self.awaiting_goal.discard(chat_id)
+
+    def clear(self, chat_id: int) -> None:
+        self.awaiting_goal.discard(chat_id)
+        self.awaiting_report.discard(chat_id)
 
 
 class TelegramAPI:
@@ -64,7 +102,14 @@ class TelegramAPI:
         return self.request("getUpdates", payload)
 
     def send_message(self, chat_id: int, text: str) -> None:
-        self.request("sendMessage", {"chat_id": str(chat_id), "text": text})
+        self.request(
+            "sendMessage",
+            {
+                "chat_id": str(chat_id),
+                "text": text,
+                "reply_markup": json.dumps(MAIN_KEYBOARD, ensure_ascii=False),
+            },
+        )
 
 
 def run_startup_action(name: str, action) -> None:
@@ -91,25 +136,64 @@ def extract_text_message(update: dict[str, Any]) -> tuple[int, str] | None:
     return chat_id, text.strip()
 
 
-def build_reply(chat_id: int, text: str, store: MemoryStore) -> str:
+def build_reply(
+    chat_id: int,
+    text: str,
+    store: MemoryStore,
+    runtime_state: TelegramRuntimeState | None = None,
+) -> str:
+    if runtime_state is None:
+        runtime_state = TelegramRuntimeState()
+
     if not text:
         return "Пусто. Назови цель или действие."
 
-    if text.startswith("/start") or text.startswith("/help"):
+    if text.startswith("/start") or text.startswith("/help") or text == BUTTON_HELP:
+        runtime_state.clear(chat_id)
         return HELP_TEXT
+
+    if text == BUTTON_SET_GOAL:
+        runtime_state.wait_for_goal(chat_id)
+        return "Напиши цель одним сообщением: результат + срок. Без этого дальше шум."
+
+    if text == BUTTON_REPORT:
+        runtime_state.wait_for_report(chat_id)
+        return "Напиши отчёт одним сообщением: что сделал и что закрываешь следующим."
+
+    if text == BUTTON_CLEAR_GOAL:
+        runtime_state.clear(chat_id)
+        store.clear_goal(chat_id)
+        return "Цель сброшена. Без цели это шум. Нажми «🎯 Задать цель»."
+
+    if text == BUTTON_KICK:
+        runtime_state.clear(chat_id)
+        text = "Мне нужна мотивация"
 
     if text.startswith("/goal"):
         goal = text.removeprefix("/goal").strip()
         if not goal:
             return "Цель пустая. Напиши так: /goal результат + срок."
+        runtime_state.clear(chat_id)
         store.set_goal(chat_id, goal)
         store.append_message(chat_id, "user", text)
         store.append_message(chat_id, "assistant", f"Цель принята: {goal}. Теперь ближайший шаг.")
         return f"Цель принята: {goal}. Теперь ближайший шаг."
 
     if text.startswith("/clear_goal"):
+        runtime_state.clear(chat_id)
         store.clear_goal(chat_id)
-        return "Цель сброшена. Без цели это шум. Напиши /goal результат + срок."
+        return "Цель сброшена. Без цели это шум. Нажми «🎯 Задать цель»."
+
+    if chat_id in runtime_state.awaiting_goal:
+        runtime_state.clear(chat_id)
+        store.set_goal(chat_id, text)
+        store.append_message(chat_id, "user", f"Цель: {text}")
+        store.append_message(chat_id, "assistant", f"Цель принята: {text}. Теперь ближайший шаг.")
+        return f"Цель принята: {text}. Теперь ближайший шаг."
+
+    if chat_id in runtime_state.awaiting_report:
+        runtime_state.clear(chat_id)
+        text = f"Отчёт: {text}"
 
     context = ConversationContext(
         goal=store.get_goal(chat_id),
@@ -128,6 +212,7 @@ def run_telegram_bot() -> None:
 
     api = TelegramAPI(AppConfig.telegram_bot_token)
     store = create_memory_store()
+    runtime_state = TelegramRuntimeState()
     offset: int | None = None
 
     run_startup_action("deleteWebhook", api.delete_webhook)
@@ -147,7 +232,7 @@ def run_telegram_bot() -> None:
                     continue
 
                 chat_id, text = extracted
-                api.send_message(chat_id, build_reply(chat_id, text, store))
+                api.send_message(chat_id, build_reply(chat_id, text, store, runtime_state))
         except RuntimeError as exc:
             print(exc)
             time.sleep(5)
