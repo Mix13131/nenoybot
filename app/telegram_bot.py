@@ -67,6 +67,13 @@ class TelegramAPI:
         self.request("sendMessage", {"chat_id": str(chat_id), "text": text})
 
 
+def run_startup_action(name: str, action) -> None:
+    try:
+        action()
+    except RuntimeError as exc:
+        print(f"Startup action skipped: {name}: {exc}")
+
+
 def extract_text_message(update: dict[str, Any]) -> tuple[int, str] | None:
     message = update.get("message") or update.get("edited_message")
     if not isinstance(message, dict):
@@ -123,8 +130,8 @@ def run_telegram_bot() -> None:
     store = create_memory_store()
     offset: int | None = None
 
-    api.delete_webhook()
-    api.set_commands()
+    run_startup_action("deleteWebhook", api.delete_webhook)
+    run_startup_action("setMyCommands", api.set_commands)
     print("НеНойBot Telegram worker started.")
 
     while True:

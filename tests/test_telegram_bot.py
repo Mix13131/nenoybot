@@ -1,10 +1,17 @@
 from app.memory_store import InMemoryStore
-from app.telegram_bot import BOT_COMMANDS, build_reply, extract_text_message
+from app.telegram_bot import BOT_COMMANDS, build_reply, extract_text_message, run_startup_action
 
 
 def test_bot_commands_include_start_and_goal() -> None:
     assert {"command": "start", "description": "Запустить НеНойBot"} in BOT_COMMANDS
     assert any(command["command"] == "goal" for command in BOT_COMMANDS)
+
+
+def test_startup_action_does_not_raise_on_runtime_error() -> None:
+    def fail() -> None:
+        raise RuntimeError("boom")
+
+    run_startup_action("test", fail)
 
 
 def test_extract_text_message_reads_chat_and_text() -> None:
