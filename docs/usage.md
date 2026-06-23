@@ -46,6 +46,34 @@ python app/main.py
 pytest
 ```
 
+## Telegram online worker
+
+Создай бота через `@BotFather`, затем добавь токен в `.env`:
+
+```text
+TELEGRAM_BOT_TOKEN=123456:token
+```
+
+Запуск:
+
+```bash
+python -m app.telegram_bot
+```
+
+Команды:
+
+```text
+/start
+/goal результат + срок
+/clear_goal
+```
+
+Для хостинга используй тот же start command:
+
+```bash
+python -m app.telegram_bot
+```
+
 ## Пример запуска
 
 ```text

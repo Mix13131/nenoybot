@@ -20,3 +20,5 @@ class AppConfig:
     prompts_dir = PROMPTS_DIR
     default_goal = os.getenv("NENOYBOT_DEFAULT_GOAL", "").strip() or None
     strictness = os.getenv("NENOYBOT_STRICTNESS", "firm").strip().lower()
+    telegram_bot_token = os.getenv("TELEGRAM_BOT_TOKEN", "").strip() or None
+    telegram_poll_timeout = int(os.getenv("TELEGRAM_POLL_TIMEOUT", "30").strip() or "30")
