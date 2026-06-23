@@ -52,6 +52,9 @@ pytest
 
 ```text
 TELEGRAM_BOT_TOKEN=123456:token
+OPENAI_API_KEY=sk-...
+OPENAI_MODEL=gpt-5.5
+DATABASE_URL=postgresql://...
 ```
 
 Запуск:
@@ -72,6 +75,21 @@ python -m app.telegram_bot
 
 ```bash
 python -m app.telegram_bot
+```
+
+## Neon memory
+
+В Neon Console создай проект и скопируй connection string. Для Railway добавь её в `Variables`:
+
+```text
+DATABASE_URL=postgresql://user:password@host/dbname?sslmode=require
+```
+
+При старте worker сам создаст нужные таблицы:
+
+```text
+nenoy_user_state
+nenoy_messages
 ```
 
 ## Пример запуска

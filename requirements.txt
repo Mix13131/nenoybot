@@ -1,2 +1,4 @@
 python-dotenv
 pytest
+openai>=2.0.0
+psycopg[binary]>=3.2.0

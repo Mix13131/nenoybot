@@ -2,7 +2,7 @@
 
 НеНойBot — локальный каркас AI-тренера по дисциплине, фокусу и результату.
 
-На первом этапе проект работает как простой CLI и Telegram long polling worker без внешнего LLM API, базы данных и no-code интеграций. Главная задача этого этапа — подготовить правильную файловую архитектуру, системную инструкцию, боевой словарь, сценарии реакций и минимальный онлайн-запуск.
+На первом этапе проект работает как простой CLI и Telegram long polling worker. В онлайн-режиме бот может использовать OpenAI Responses API для живого разбора и Neon/Postgres для памяти по пользователям.
 
 ## Назначение
 
@@ -45,6 +45,8 @@ nenoybot/
     main.py
     telegram_bot.py
     config.py
+    openai_client.py
+    memory_store.py
     prompt_loader.py
     nenoy_engine.py
 
@@ -96,6 +98,9 @@ printf 'Закончить README сегодня\nпотом сделаю\n/exit
 
 ```text
 TELEGRAM_BOT_TOKEN=123456:token
+OPENAI_API_KEY=sk-...
+OPENAI_MODEL=gpt-5.5
+DATABASE_URL=postgresql://...
 ```
 
 4. Запустить worker:
@@ -120,6 +125,8 @@ python -m app.telegram_bot
 
 Для Railway start command уже зафиксирован в `railway.json`. После изменения переменных окружения достаточно сделать redeploy.
 
+Если `OPENAI_API_KEY` не задан, бот отвечает локальным keyword-based движком. Если `DATABASE_URL` не задан, цель и история живут только в памяти процесса до перезапуска.
+
 ## Что уже есть
 
 - системный промпт НеНойBot;
@@ -130,6 +137,8 @@ python -m app.telegram_bot
 - эталонные диалоги;
 - загрузчик markdown-промптов;
 - простой keyword-based движок;
+- GPT-разбор через OpenAI Responses API;
+- память через Neon/Postgres;
 - локальный CLI-запуск;
 - Telegram long polling worker;
 - базовые тесты.

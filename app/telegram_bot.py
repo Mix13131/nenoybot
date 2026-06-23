@@ -2,16 +2,17 @@ from __future__ import annotations
 
 import json
 import time
-from dataclasses import dataclass, field
 from typing import Any
 from urllib import error, parse, request
 
 try:
     from .config import AppConfig
-    from .nenoy_engine import generate_response
+    from .memory_store import MemoryStore, create_memory_store
+    from .openai_client import ConversationContext, generate_ai_response
 except ImportError:  # Allows `python app/telegram_bot.py`.
     from config import AppConfig
-    from nenoy_engine import generate_response
+    from memory_store import MemoryStore, create_memory_store
+    from openai_client import ConversationContext, generate_ai_response
 
 
 HELP_TEXT = (
@@ -22,20 +23,6 @@ HELP_TEXT = (
     "/help — команды\n\n"
     "Сначала цель. Потом действие."
 )
-
-
-@dataclass
-class TelegramSessionStore:
-    goals: dict[int, str] = field(default_factory=dict)
-
-    def get_goal(self, chat_id: int) -> str | None:
-        return self.goals.get(chat_id) or AppConfig.default_goal
-
-    def set_goal(self, chat_id: int, goal: str) -> None:
-        self.goals[chat_id] = goal
-
-    def clear_goal(self, chat_id: int) -> None:
-        self.goals.pop(chat_id, None)
 
 
 class TelegramAPI:
@@ -87,7 +74,7 @@ def extract_text_message(update: dict[str, Any]) -> tuple[int, str] | None:
     return chat_id, text.strip()
 
 
-def build_reply(chat_id: int, text: str, store: TelegramSessionStore) -> str:
+def build_reply(chat_id: int, text: str, store: MemoryStore) -> str:
     if not text:
         return "Пусто. Назови цель или действие."
 
@@ -99,13 +86,23 @@ def build_reply(chat_id: int, text: str, store: TelegramSessionStore) -> str:
         if not goal:
             return "Цель пустая. Напиши так: /goal результат + срок."
         store.set_goal(chat_id, goal)
+        store.append_message(chat_id, "user", text)
+        store.append_message(chat_id, "assistant", f"Цель принята: {goal}. Теперь ближайший шаг.")
         return f"Цель принята: {goal}. Теперь ближайший шаг."
 
     if text.startswith("/clear_goal"):
         store.clear_goal(chat_id)
         return "Цель сброшена. Без цели это шум. Напиши /goal результат + срок."
 
-    return generate_response(text, goal=store.get_goal(chat_id))
+    context = ConversationContext(
+        goal=store.get_goal(chat_id),
+        memory_summary=store.get_summary(chat_id),
+        recent_messages=tuple(store.recent_messages(chat_id, limit=8)),
+    )
+    reply = generate_ai_response(text, context)
+    store.append_message(chat_id, "user", text)
+    store.append_message(chat_id, "assistant", reply)
+    return reply
 
 
 def run_telegram_bot() -> None:
@@ -113,7 +110,7 @@ def run_telegram_bot() -> None:
         raise SystemExit("TELEGRAM_BOT_TOKEN is required.")
 
     api = TelegramAPI(AppConfig.telegram_bot_token)
-    store = TelegramSessionStore()
+    store = create_memory_store()
     offset: int | None = None
 
     api.delete_webhook()

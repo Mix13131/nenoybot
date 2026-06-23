@@ -22,3 +22,6 @@ class AppConfig:
     strictness = os.getenv("NENOYBOT_STRICTNESS", "firm").strip().lower()
     telegram_bot_token = os.getenv("TELEGRAM_BOT_TOKEN", "").strip() or None
     telegram_poll_timeout = int(os.getenv("TELEGRAM_POLL_TIMEOUT", "30").strip() or "30")
+    openai_api_key = os.getenv("OPENAI_API_KEY", "").strip() or None
+    openai_model = os.getenv("OPENAI_MODEL", "gpt-5.5").strip() or "gpt-5.5"
+    database_url = os.getenv("DATABASE_URL", "").strip() or None

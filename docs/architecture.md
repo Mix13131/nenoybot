@@ -1,6 +1,6 @@
 # Архитектура НеНойBot
 
-НеНойBot на первом этапе — локальный CLI-проект и Telegram long polling worker без LLM API и базы данных.
+НеНойBot на первом этапе — локальный CLI-проект и Telegram long polling worker. В production-режиме Telegram worker может использовать OpenAI Responses API и Neon/Postgres.
 
 Поток обработки:
 
@@ -28,7 +28,22 @@ Final response
 
 `app/telegram_bot.py` запускает long polling процесс, читает сообщения из Telegram Bot API и отвечает через локальный движок.
 
-Состояние цели хранится в памяти процесса по `chat_id`. После перезапуска worker цель нужно задать заново командой `/goal`.
+Состояние цели хранится по `chat_id`. Если задан `DATABASE_URL`, используется Neon/Postgres. Если базы нет, включается временная память процесса.
+
+## GPT Client
+
+`app/openai_client.py` собирает системные инструкции из `prompts/`, добавляет цель, память и последние сообщения пользователя, затем вызывает OpenAI Responses API.
+
+Если `OPENAI_API_KEY` не задан или запрос к модели не удался, бот возвращается к локальному keyword-based движку.
+
+## Memory Store
+
+`app/memory_store.py` содержит два хранилища:
+
+- `InMemoryStore` для локальной проверки;
+- `PostgresMemoryStore` для Neon/Postgres.
+
+Postgres-слой сам создаёт таблицы `nenoy_user_state` и `nenoy_messages` при старте worker.
 
 ## Config
 
@@ -49,9 +64,8 @@ Final response
 
 ## Ограничения первого этапа
 
-- нет базы данных;
-- нет внешнего API;
 - нет персональных профилей пользователей;
-- нет истории отчетов.
+- нет долгого резюме памяти;
+- нет отдельной панели администратора.
 
 Эти части добавляются только после проверки локального каркаса.
