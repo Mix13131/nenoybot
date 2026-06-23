@@ -24,6 +24,13 @@ HELP_TEXT = (
     "Сначала цель. Потом действие."
 )
 
+BOT_COMMANDS = (
+    {"command": "start", "description": "Запустить НеНойBot"},
+    {"command": "goal", "description": "Задать цель: /goal результат + срок"},
+    {"command": "clear_goal", "description": "Сбросить цель"},
+    {"command": "help", "description": "Показать команды"},
+)
+
 
 class TelegramAPI:
     def __init__(self, token: str) -> None:
@@ -46,6 +53,9 @@ class TelegramAPI:
 
     def delete_webhook(self) -> None:
         self.request("deleteWebhook", {"drop_pending_updates": "false"})
+
+    def set_commands(self) -> None:
+        self.request("setMyCommands", {"commands": json.dumps(BOT_COMMANDS, ensure_ascii=False)})
 
     def get_updates(self, offset: int | None, timeout: int) -> list[dict[str, Any]]:
         payload: dict[str, Any] = {"timeout": str(timeout)}
@@ -114,6 +124,7 @@ def run_telegram_bot() -> None:
     offset: int | None = None
 
     api.delete_webhook()
+    api.set_commands()
     print("НеНойBot Telegram worker started.")
 
     while True:
