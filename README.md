@@ -118,6 +118,8 @@ python -m app.telegram_bot
 python -m app.telegram_bot
 ```
 
+Для Railway start command уже зафиксирован в `railway.json`. После изменения переменных окружения достаточно сделать redeploy.
+
 ## Что уже есть
 
 - системный промпт НеНойBot;
