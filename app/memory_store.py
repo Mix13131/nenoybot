@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from datetime import datetime
 from typing import Protocol
 
 try:
@@ -24,12 +25,29 @@ class MemoryStore(Protocol):
 
     def recent_messages(self, chat_id: int, limit: int = 10) -> list[tuple[str, str]]: ...
 
+    def add_reminder(self, chat_id: int, task_text: str, due_at: datetime) -> int: ...
+
+    def due_reminders(self, now: datetime, limit: int = 10) -> list["Reminder"]: ...
+
+    def mark_reminder_sent(self, reminder_id: int) -> None: ...
+
+
+@dataclass(frozen=True)
+class Reminder:
+    id: int
+    chat_id: int
+    task_text: str
+    due_at: datetime
+
 
 @dataclass
 class InMemoryStore:
     goals: dict[int, str] = field(default_factory=dict)
     summaries: dict[int, str] = field(default_factory=dict)
     messages: dict[int, list[tuple[str, str]]] = field(default_factory=dict)
+    reminders: dict[int, Reminder] = field(default_factory=dict)
+    sent_reminders: set[int] = field(default_factory=set)
+    next_reminder_id: int = 1
 
     def ensure_schema(self) -> None:
         return None
@@ -53,6 +71,28 @@ class InMemoryStore:
 
     def recent_messages(self, chat_id: int, limit: int = 10) -> list[tuple[str, str]]:
         return self.messages.get(chat_id, [])[-limit:]
+
+    def add_reminder(self, chat_id: int, task_text: str, due_at: datetime) -> int:
+        reminder_id = self.next_reminder_id
+        self.next_reminder_id += 1
+        self.reminders[reminder_id] = Reminder(
+            id=reminder_id,
+            chat_id=chat_id,
+            task_text=task_text,
+            due_at=due_at,
+        )
+        return reminder_id
+
+    def due_reminders(self, now: datetime, limit: int = 10) -> list[Reminder]:
+        due = [
+            reminder
+            for reminder in self.reminders.values()
+            if reminder.id not in self.sent_reminders and reminder.due_at <= now
+        ]
+        return sorted(due, key=lambda reminder: reminder.due_at)[:limit]
+
+    def mark_reminder_sent(self, reminder_id: int) -> None:
+        self.sent_reminders.add(reminder_id)
 
 
 class PostgresMemoryStore:
@@ -95,6 +135,25 @@ class PostgresMemoryStore:
                     """
                     CREATE INDEX IF NOT EXISTS idx_nenoy_messages_chat_id_id
                     ON nenoy_messages (chat_id, id DESC)
+                    """
+                )
+                cursor.execute(
+                    """
+                    CREATE TABLE IF NOT EXISTS nenoy_reminders (
+                        id BIGSERIAL PRIMARY KEY,
+                        chat_id BIGINT NOT NULL,
+                        task_text TEXT NOT NULL,
+                        due_at TIMESTAMPTZ NOT NULL,
+                        status TEXT NOT NULL DEFAULT 'pending',
+                        created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                        sent_at TIMESTAMPTZ
+                    )
+                    """
+                )
+                cursor.execute(
+                    """
+                    CREATE INDEX IF NOT EXISTS idx_nenoy_reminders_due
+                    ON nenoy_reminders (status, due_at)
                     """
                 )
 
@@ -170,6 +229,51 @@ class PostgresMemoryStore:
                 )
                 rows = cursor.fetchall()
         return [(role, content) for role, content in reversed(rows)]
+
+    def add_reminder(self, chat_id: int, task_text: str, due_at: datetime) -> int:
+        with self._connect() as connection:
+            with connection.cursor() as cursor:
+                cursor.execute(
+                    """
+                    INSERT INTO nenoy_reminders (chat_id, task_text, due_at)
+                    VALUES (%s, %s, %s)
+                    RETURNING id
+                    """,
+                    (chat_id, task_text, due_at),
+                )
+                row = cursor.fetchone()
+        return int(row[0])
+
+    def due_reminders(self, now: datetime, limit: int = 10) -> list[Reminder]:
+        with self._connect() as connection:
+            with connection.cursor() as cursor:
+                cursor.execute(
+                    """
+                    SELECT id, chat_id, task_text, due_at
+                    FROM nenoy_reminders
+                    WHERE status = 'pending' AND due_at <= %s
+                    ORDER BY due_at ASC
+                    LIMIT %s
+                    """,
+                    (now, limit),
+                )
+                rows = cursor.fetchall()
+        return [
+            Reminder(id=int(reminder_id), chat_id=int(chat_id), task_text=task_text, due_at=due_at)
+            for reminder_id, chat_id, task_text, due_at in rows
+        ]
+
+    def mark_reminder_sent(self, reminder_id: int) -> None:
+        with self._connect() as connection:
+            with connection.cursor() as cursor:
+                cursor.execute(
+                    """
+                    UPDATE nenoy_reminders
+                    SET status = 'sent', sent_at = NOW()
+                    WHERE id = %s
+                    """,
+                    (reminder_id,),
+                )
 
 
 def create_memory_store() -> MemoryStore:

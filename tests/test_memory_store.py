@@ -1,3 +1,5 @@
+from datetime import datetime, timedelta, timezone
+
 import app.memory_store as memory_store
 from app.memory_store import InMemoryStore
 
@@ -20,6 +22,22 @@ def test_in_memory_store_clears_goal() -> None:
     store.clear_goal(123)
 
     assert store.get_goal(123) is None
+
+
+def test_in_memory_store_keeps_due_reminders() -> None:
+    store = InMemoryStore()
+    now = datetime(2026, 6, 24, 10, 0, tzinfo=timezone.utc)
+    reminder_id = store.add_reminder(123, "проверить API", now - timedelta(minutes=1))
+
+    due = store.due_reminders(now)
+
+    assert len(due) == 1
+    assert due[0].id == reminder_id
+    assert due[0].task_text == "проверить API"
+
+    store.mark_reminder_sent(reminder_id)
+
+    assert store.due_reminders(now) == []
 
 
 def test_create_memory_store_falls_back_when_postgres_fails(monkeypatch) -> None:

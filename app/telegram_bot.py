@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 import json
+import threading
 import time
 from dataclasses import dataclass, field
+from datetime import datetime
 from typing import Any
 from urllib import error, parse, request
 
@@ -10,10 +12,12 @@ try:
     from .config import AppConfig
     from .memory_store import MemoryStore, create_memory_store
     from .openai_client import ConversationContext, generate_ai_response
+    from .reminders import build_reminder_message, get_timezone, parse_reminder
 except ImportError:  # Allows `python app/telegram_bot.py`.
     from config import AppConfig
     from memory_store import MemoryStore, create_memory_store
     from openai_client import ConversationContext, generate_ai_response
+    from reminders import build_reminder_message, get_timezone, parse_reminder
 
 
 HELP_TEXT = (
@@ -23,6 +27,8 @@ HELP_TEXT = (
     "✅ Отчёт — сдать результат\n"
     "🔥 Пинок — получить ближайший шаг\n"
     "🧹 Сбросить цель — очистить цель\n\n"
+    "Напоминание: напиши срок вроде «сегодня в 19:00», «завтра до 12:00» или «через 30 минут».\n"
+    "В срок я сам приду за отчётом.\n\n"
     "Команды тоже работают: /goal, /clear_goal, /help.\n"
     "Сначала цель. Потом действие."
 )
@@ -148,6 +154,8 @@ def build_reply(
     if not text:
         return "Пусто. Назови цель или действие."
 
+    reminder_source_text = text
+
     if text.startswith("/start") or text.startswith("/help") or text == BUTTON_HELP:
         runtime_state.clear(chat_id)
         return HELP_TEXT
@@ -175,9 +183,13 @@ def build_reply(
             return "Цель пустая. Напиши так: /goal результат + срок."
         runtime_state.clear(chat_id)
         store.set_goal(chat_id, goal)
+        reminder_note = schedule_reminder_if_found(chat_id, goal, store)
         store.append_message(chat_id, "user", text)
-        store.append_message(chat_id, "assistant", f"Цель принята: {goal}. Теперь ближайший шаг.")
-        return f"Цель принята: {goal}. Теперь ближайший шаг."
+        response = f"Цель принята: {goal}. Теперь ближайший шаг."
+        if reminder_note:
+            response = f"{response}\n\n{reminder_note}"
+        store.append_message(chat_id, "assistant", response)
+        return response
 
     if text.startswith("/clear_goal"):
         runtime_state.clear(chat_id)
@@ -187,12 +199,17 @@ def build_reply(
     if chat_id in runtime_state.awaiting_goal:
         runtime_state.clear(chat_id)
         store.set_goal(chat_id, text)
+        reminder_note = schedule_reminder_if_found(chat_id, text, store)
         store.append_message(chat_id, "user", f"Цель: {text}")
-        store.append_message(chat_id, "assistant", f"Цель принята: {text}. Теперь ближайший шаг.")
-        return f"Цель принята: {text}. Теперь ближайший шаг."
+        response = f"Цель принята: {text}. Теперь ближайший шаг."
+        if reminder_note:
+            response = f"{response}\n\n{reminder_note}"
+        store.append_message(chat_id, "assistant", response)
+        return response
 
     if chat_id in runtime_state.awaiting_report:
         runtime_state.clear(chat_id)
+        reminder_source_text = text
         text = f"Отчёт: {text}"
 
     context = ConversationContext(
@@ -201,9 +218,39 @@ def build_reply(
         recent_messages=tuple(store.recent_messages(chat_id, limit=8)),
     )
     reply = generate_ai_response(text, context)
+    reminder_note = schedule_reminder_if_found(chat_id, reminder_source_text, store)
+    if reminder_note:
+        reply = f"{reply}\n\n{reminder_note}"
     store.append_message(chat_id, "user", text)
     store.append_message(chat_id, "assistant", reply)
     return reply
+
+
+def schedule_reminder_if_found(chat_id: int, text: str, store: MemoryStore) -> str | None:
+    draft = parse_reminder(text, timezone_name=AppConfig.timezone)
+    if draft is None:
+        return None
+
+    store.add_reminder(chat_id, draft.task_text, draft.due_at)
+    return f"Срок поймал: {draft.human_due}. Приду за отчётом. Не прячься."
+
+
+def run_reminder_loop(api: TelegramAPI, store: MemoryStore) -> None:
+    timezone = get_timezone(AppConfig.timezone)
+    while True:
+        try:
+            now = datetime.now(timezone)
+            for reminder in store.due_reminders(now, limit=10):
+                api.send_message(reminder.chat_id, build_reminder_message(reminder.task_text))
+                store.mark_reminder_sent(reminder.id)
+        except Exception as exc:
+            print(f"Reminder loop failed: {type(exc).__name__}: {exc}")
+        time.sleep(AppConfig.reminder_check_interval)
+
+
+def start_reminder_worker(api: TelegramAPI, store: MemoryStore) -> None:
+    thread = threading.Thread(target=run_reminder_loop, args=(api, store), daemon=True)
+    thread.start()
 
 
 def run_telegram_bot() -> None:
@@ -217,6 +264,7 @@ def run_telegram_bot() -> None:
 
     run_startup_action("deleteWebhook", api.delete_webhook)
     run_startup_action("setMyCommands", api.set_commands)
+    start_reminder_worker(api, store)
     print("НеНойBot Telegram worker started.")
 
     while True:

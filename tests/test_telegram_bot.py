@@ -11,6 +11,7 @@ from app.telegram_bot import (
     build_reply,
     extract_text_message,
     run_startup_action,
+    schedule_reminder_if_found,
 )
 
 
@@ -91,3 +92,21 @@ def test_clear_goal_button_clears_goal() -> None:
 
     assert "Цель сброшена" in response
     assert store.get_goal(123) is None
+
+
+def test_build_reply_schedules_goal_reminder() -> None:
+    store = InMemoryStore()
+
+    response = build_reply(123, "/goal Проверить API завтра в 12:00", store)
+
+    assert "Срок поймал" in response
+    assert len(store.reminders) == 1
+
+
+def test_schedule_reminder_ignores_text_without_due_time() -> None:
+    store = InMemoryStore()
+
+    response = schedule_reminder_if_found(123, "Проверить API когда-нибудь", store)
+
+    assert response is None
+    assert store.reminders == {}
