@@ -81,8 +81,25 @@ def test_detects_overplanning_by_analysis() -> None:
     assert detect_state("Я ещё анализирую варианты") == "overplanning"
 
 
+def test_detects_fatigue_state_markers() -> None:
+    assert detect_state("хочу отдохнуть") == "fatigue"
+    assert detect_state("перегорел") == "fatigue"
+
+
 def test_detects_goal_start_request() -> None:
     assert detect_state("Пни меня") == "goal_start_request"
+
+
+def test_detects_goal_focus_question() -> None:
+    assert detect_state("по целям сейчас что делать") == "goal_focus"
+
+
+def test_detects_clarification_query() -> None:
+    assert detect_state("уменьшаем шаг это как") == "clarification"
+
+
+def test_detects_bot_error() -> None:
+    assert detect_state("бот не ответил") == "bot_error"
 
 
 def test_detects_crisis_loss_of_control() -> None:
@@ -110,15 +127,15 @@ def test_generate_response_requires_goal() -> None:
 def test_generate_response_with_goal_returns_action() -> None:
     response = generate_response("Мне лень", goal="Закончить README сегодня")
 
-    assert "Прокрастинация боится старта" in response
+    assert "Сделай" in response
     assert "Закончить README сегодня" in response
-    assert "10 минут" in response
+    assert ("2 минуты" in response or "10 минут" in response or "20 секунд" in response)
 
 
 def test_generate_response_handles_crisis_without_goal() -> None:
     response = generate_response("не хочу жить")
 
-    assert "не задача дисциплины" in response
+    assert "Это уже не задача дисциплины" in response
     assert "экстренную помощь" in response
 
 
@@ -132,4 +149,92 @@ def test_generate_response_asks_for_deadline() -> None:
     response = generate_response("Отправлю письмо", goal="Закрыть сделку")
 
     assert "Срока нет" in response
-    assert "Когда сделаешь" in response
+    assert ("Назначь" in response) or ("Когда стартуешь?" in response)
+
+
+def test_generate_response_fatigue_offers_micro_step() -> None:
+    response = generate_response("я устал, сил почти нет", goal="Закончить README")
+
+    assert "Устал" in response
+    assert "Закончить README" in response
+    assert ("20 секунд" in response.lower() or "2 минуты" in response.lower())
+
+
+def test_generate_response_postpone_after_fatigue_keeps_choice() -> None:
+    recent_messages = (
+        ("user", "я устал, сегодня норма"),
+        ("assistant", "Устал — это факт, не приговор."),
+        ("assistant", "Сделай вход в 5 минут."),
+    )
+
+    response = generate_response("давай завтра", goal="Сделать webhook", recent_messages=recent_messages)
+
+    assert "2 минуты" in response
+    assert ("завтра" in response.lower()) and ("во сколько" in response.lower() or "в 10:00" in response)
+
+
+def test_generate_response_uses_closing_variants_when_start_phrase_repeated() -> None:
+    recent_messages = (
+        ("assistant", "Усталость принята. Сделаешь сейчас 2 минуты — и свободен."),
+        ("assistant", "Отлично. Что дальше?"),
+        ("assistant", "Когда стартуешь?"),
+    )
+    response = generate_response("сделаю", goal="Запустить MVP", recent_messages=recent_messages)
+
+    assert "Когда стартуешь?" not in response
+    assert (
+        "Берёшь этот минимум?" in response
+        or "Сделаешь сейчас 2 минуты" in response
+        or "Выбирай: 2 минуты сейчас или честный перенос на завтра с первым шагом." in response
+        or "Не думай весь проект. Сделай вход." in response
+        or "Что закрываешь первым?" in response
+    )
+
+
+def test_generate_response_clarification_shows_clear_steps() -> None:
+    response = generate_response("уменьшаем шаг это как", goal="Сделать webhook для Telegram")
+
+    assert ("открыть" in response.lower()) or ("вход" in response.lower())
+    assert ("пункт" in response.lower()) or ("провер" in response.lower())
+    assert "Когда стартуешь?" not in response
+
+
+def test_fatigue_is_not_treated_as_excuse() -> None:
+    response = generate_response("я устал сегодня", goal="Сделать webhook")
+
+    assert "ресурс ниже" in response.lower() or "нить не рв" in response.lower()
+    assert "Ответственность не снята" not in response
+    assert "Обстоятельства приняты" not in response
+
+
+def test_generate_response_progress_for_concrete_action() -> None:
+    response = generate_response("я сделал endpoint", goal="Сделать webhook")
+
+    assert "Факт есть" in response or "Ок, шаг зафиксирован" in response
+    assert "след" in response.lower()
+    assert "Выполнено" not in response
+
+
+def test_generate_response_fatigue_without_vanity_remains_short_step() -> None:
+    response = generate_response("я устал сегодня", goal="Сделать webhook")
+
+    assert "ресурс" in response.lower() or "устал" in response.lower()
+    assert ("открыть" in response.lower()) or ("вход" in response.lower())
+
+
+def test_i_do_not_want_is_not_always_quit() -> None:
+    response = generate_response("я не хочу", goal="Сделать webhook")
+
+    assert "Бросить легко" not in response
+
+
+def test_tomorrow_requires_specific_time() -> None:
+    response = generate_response("давай завтра наверное", goal="Сделать webhook")
+
+    assert "во сколько" in response.lower() or "время" in response.lower()
+
+
+def test_offtopic_beer_keeps_vibe() -> None:
+    response = generate_response("может пивка попьем, потрендим за жизнь?", goal="Сделать webhook")
+
+    assert "цель" in response.lower() or "задач" in response.lower() or "задача" in response.lower()

@@ -170,3 +170,12 @@ python -m app.telegram_bot
 1. Проверить стиль ответов на реальных диалогах.
 2. Подключить LLM API отдельным слоем, не ломая локальный движок.
 3. Добавить постоянное хранилище целей и истории отчётов.
+
+
+## Процесс разработки
+
+Проект ведётся по process-цепочке: Brain Storm → Architecture → Issue → PR → Report → Review → Merge → Next.
+
+- Для планирования и выполнения используются шаблоны в `docs/process/` и `.github/ISSUE_TEMPLATE/*`.
+- Roadmap: `docs/roadmap.md`.
+- В процессе обязательны этапы DoD: Код, Тесты, Отчёт, Code Review, Обновлён roadmap.

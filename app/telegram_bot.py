@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import threading
 import time
 from dataclasses import dataclass, field
@@ -13,11 +14,24 @@ try:
     from .memory_store import MemoryStore, create_memory_store
     from .openai_client import ConversationContext, generate_ai_response
     from .reminders import build_reminder_message, get_timezone, parse_reminder
+    from .style_guard import (
+        find_botlike_phrases,
+        find_forbidden_style_phrases,
+        is_human_style_response,
+    )
 except ImportError:  # Allows `python app/telegram_bot.py`.
     from config import AppConfig
     from memory_store import MemoryStore, create_memory_store
     from openai_client import ConversationContext, generate_ai_response
     from reminders import build_reminder_message, get_timezone, parse_reminder
+    from style_guard import (
+        find_botlike_phrases,
+        find_forbidden_style_phrases,
+        is_human_style_response,
+    )
+
+
+logger = logging.getLogger(__name__)
 
 
 HELP_TEXT = (
@@ -56,6 +70,8 @@ BOT_COMMANDS = (
     {"command": "clear_goal", "description": "Сбросить цель"},
     {"command": "help", "description": "Показать команды"},
 )
+
+STYLE_GUARD_FALLBACK = "Срежем канцелярит.\nЧто сделал по цели прямо сейчас? 🔥"
 
 
 @dataclass
@@ -107,7 +123,7 @@ class TelegramAPI:
             payload["offset"] = str(offset)
         return self.request("getUpdates", payload)
 
-    def send_message(self, chat_id: int, text: str) -> None:
+    def _send_raw_message(self, chat_id: int, text: str) -> None:
         self.request(
             "sendMessage",
             {
@@ -116,6 +132,13 @@ class TelegramAPI:
                 "reply_markup": json.dumps(MAIN_KEYBOARD, ensure_ascii=False),
             },
         )
+
+    def send_guarded_message(self, chat_id: int, text: str) -> None:
+        guarded_text = prepare_outgoing_text(chat_id, text)
+        self._send_raw_message(chat_id, guarded_text)
+
+    def send_message(self, chat_id: int, text: str) -> None:
+        self.send_guarded_message(chat_id, text)
 
 
 def run_startup_action(name: str, action) -> None:
@@ -140,6 +163,26 @@ def extract_text_message(update: dict[str, Any]) -> tuple[int, str] | None:
         return None
 
     return chat_id, text.strip()
+
+
+def prepare_outgoing_text(chat_id: int, text: str) -> str:
+    violations = find_forbidden_style_phrases(text)
+    for violation in violations:
+        logger.warning(
+            'Style guard violation chat_id=%s pattern="%s" reason="%s"',
+            chat_id,
+            violation["pattern"],
+            violation["reason"],
+        )
+
+    botlike_violations = find_botlike_phrases(text)
+    for phrase in botlike_violations:
+        logger.warning('Style guard violation: "%s"', phrase)
+
+    if violations or not is_human_style_response(text):
+        return STYLE_GUARD_FALLBACK
+
+    return text
 
 
 def build_reply(
@@ -185,7 +228,7 @@ def build_reply(
         store.set_goal(chat_id, goal)
         reminder_note = schedule_reminder_if_found(chat_id, goal, store)
         store.append_message(chat_id, "user", text)
-        response = f"Цель принята: {goal}. Теперь ближайший шаг."
+        response = f"{goal}. Не обсуждаем, выполняем. первый шаг сейчас?"
         if reminder_note:
             response = f"{response}\n\n{reminder_note}"
         store.append_message(chat_id, "assistant", response)
@@ -201,7 +244,7 @@ def build_reply(
         store.set_goal(chat_id, text)
         reminder_note = schedule_reminder_if_found(chat_id, text, store)
         store.append_message(chat_id, "user", f"Цель: {text}")
-        response = f"Цель принята: {text}. Теперь ближайший шаг."
+        response = f"{text}. Не обсуждаем, выполняем. первый шаг сейчас?"
         if reminder_note:
             response = f"{response}\n\n{reminder_note}"
         store.append_message(chat_id, "assistant", response)
@@ -218,6 +261,7 @@ def build_reply(
         recent_messages=tuple(store.recent_messages(chat_id, limit=8)),
     )
     reply = generate_ai_response(text, context)
+
     reminder_note = schedule_reminder_if_found(chat_id, reminder_source_text, store)
     if reminder_note:
         reply = f"{reply}\n\n{reminder_note}"
@@ -232,7 +276,10 @@ def schedule_reminder_if_found(chat_id: int, text: str, store: MemoryStore) -> s
         return None
 
     store.add_reminder(chat_id, draft.task_text, draft.due_at)
-    return f"Срок поймал: {draft.human_due}. Приду за отчётом. Не прячься."
+    return (
+        f"{draft.human_due}. Это не дата в заметках. Это проверка факта. "
+        "Вернешься с результатом или с новой отговоркой? 🔥"
+    )
 
 
 def run_reminder_loop(api: TelegramAPI, store: MemoryStore) -> None:
@@ -241,7 +288,7 @@ def run_reminder_loop(api: TelegramAPI, store: MemoryStore) -> None:
         try:
             now = datetime.now(timezone)
             for reminder in store.due_reminders(now, limit=10):
-                api.send_message(reminder.chat_id, build_reminder_message(reminder.task_text))
+                api.send_guarded_message(reminder.chat_id, build_reminder_message(reminder.task_text))
                 store.mark_reminder_sent(reminder.id)
         except Exception as exc:
             print(f"Reminder loop failed: {type(exc).__name__}: {exc}")
@@ -280,7 +327,7 @@ def run_telegram_bot() -> None:
                     continue
 
                 chat_id, text = extracted
-                api.send_message(chat_id, build_reply(chat_id, text, store, runtime_state))
+                api.send_guarded_message(chat_id, build_reply(chat_id, text, store, runtime_state))
         except RuntimeError as exc:
             print(exc)
             time.sleep(5)

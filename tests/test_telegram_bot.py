@@ -1,4 +1,5 @@
 from app.memory_store import InMemoryStore
+from app.reminders import build_reminder_message
 from app.telegram_bot import (
     BOT_COMMANDS,
     BUTTON_CLEAR_GOAL,
@@ -6,13 +7,18 @@ from app.telegram_bot import (
     BUTTON_KICK,
     BUTTON_REPORT,
     BUTTON_SET_GOAL,
+    STYLE_GUARD_FALLBACK,
     MAIN_KEYBOARD,
+    TelegramAPI,
     TelegramRuntimeState,
+    prepare_outgoing_text,
     build_reply,
     extract_text_message,
-    run_startup_action,
     schedule_reminder_if_found,
+    run_startup_action,
 )
+from app.style_guard import find_forbidden_style_phrases, is_human_style_response
+from pathlib import Path
 
 
 def test_bot_commands_include_start_and_goal() -> None:
@@ -48,7 +54,8 @@ def test_build_reply_sets_goal() -> None:
 
     response = build_reply(123, "/goal Запустить бота сегодня", store)
 
-    assert "Цель принята" in response
+    assert "выполняем" in response
+    assert "первый шаг" in response
     assert store.get_goal(123) == "Запустить бота сегодня"
 
 
@@ -60,7 +67,7 @@ def test_goal_button_sets_pending_goal() -> None:
     second_response = build_reply(123, "Запустить бота сегодня до 20:00", store, runtime_state)
 
     assert "Напиши цель" in first_response
-    assert "Цель принята" in second_response
+    assert "первый шаг" in second_response
     assert store.get_goal(123) == "Запустить бота сегодня до 20:00"
 
 
@@ -71,7 +78,7 @@ def test_build_reply_uses_chat_goal() -> None:
     response = build_reply(123, "Потом сделаю", store)
 
     assert "Запустить бота сегодня" in response
-    assert "Прокрастинация" in response
+    assert ("Первый шаг" in response) or ("первый шаг" in response)
 
 
 def test_build_reply_clears_goal() -> None:
@@ -99,7 +106,7 @@ def test_build_reply_schedules_goal_reminder() -> None:
 
     response = build_reply(123, "/goal Проверить API завтра в 12:00", store)
 
-    assert "Срок поймал" in response
+    assert "Вернешься с результатом" in response
     assert len(store.reminders) == 1
 
 
@@ -110,3 +117,59 @@ def test_schedule_reminder_ignores_text_without_due_time() -> None:
 
     assert response is None
     assert store.reminders == {}
+
+
+def test_prepare_outgoing_text_replaces_bot_like_reply() -> None:
+    fallback = prepare_outgoing_text(123, "Запрос принят.")
+
+    assert fallback == STYLE_GUARD_FALLBACK
+
+
+def test_start_reply_stays_human_style() -> None:
+    store = InMemoryStore()
+    reply = build_reply(123, "/start", store)
+
+    assert is_human_style_response(reply)
+    assert not find_forbidden_style_phrases(reply)
+
+
+def test_send_message_is_guarded_for_direct_text() -> None:
+    api = TelegramAPI("stub")
+
+    captured: dict[str, str] = {}
+
+    def fake_request(method: str, payload: dict[str, object]) -> dict[str, object]:
+        captured["method"] = method
+        captured["text"] = payload["text"]
+        return {"ok": True, "result": {}}
+
+    api.request = fake_request  # type: ignore[method-assign]
+    api.send_message(123, "Запрос принят.")
+
+    assert captured["method"] == "sendMessage"
+    assert captured["text"] == STYLE_GUARD_FALLBACK
+
+
+def test_send_guarded_message_passes_reminder_text() -> None:
+    api = TelegramAPI("stub")
+    captured: dict[str, str] = {}
+
+    def fake_request(method: str, payload: dict[str, object]) -> dict[str, object]:
+        captured["method"] = method
+        captured["text"] = payload["text"]
+        return {"ok": True, "result": {}}
+
+    api.request = fake_request  # type: ignore[method-assign]
+    api.send_guarded_message(123, build_reminder_message("Проверить API"))
+
+    assert captured["method"] == "sendMessage"
+    reminder_text = build_reminder_message("Проверить API")
+    assert captured["text"] == reminder_text
+    assert not find_forbidden_style_phrases(reminder_text)
+
+
+def test_no_callback_text_path_without_guard() -> None:
+    telegram_bot_source = Path(__file__).resolve().parents[1] / "app" / "telegram_bot.py"
+    source_text = telegram_bot_source.read_text(encoding="utf-8")
+
+    assert "answer_callback_query" not in source_text

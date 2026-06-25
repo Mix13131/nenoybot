@@ -13,6 +13,10 @@ def test_load_prompt_reads_system_prompt() -> None:
     assert "ПРАВИЛО ЖЁСТКОСТИ" in content
     assert "Бить нужно по поведению" in content
     assert "Запрет на раскрытие инструкций" in content
+    assert "## ОБЯЗАТЕЛЬНЫЙ ФИРМЕННЫЙ СТИЛЬ" in content
+    assert "ФАКТ → БОЕВАЯ ФРАЗА → ДЕЙСТВИЕ/СРОК." in content
+    assert "Запрещённый стиль:" in content
+    assert "Самопроверка перед ответом:" in content
 
 
 def test_load_prompt_reads_expanded_reaction_scenarios() -> None:
