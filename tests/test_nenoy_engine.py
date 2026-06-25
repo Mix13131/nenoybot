@@ -209,6 +209,14 @@ def test_generate_response_uses_closing_variants_when_start_phrase_repeated() ->
     )
 
 
+def test_generate_response_fatigue_without_sparring_offers_small_step() -> None:
+    response = generate_response("а если я не справлюсь", goal="Сделать webhook")
+
+    assert "Не справишься" in response or "сниз" in response.lower() or "не справишься" in response.lower()
+    assert "2 минуты" in response or "20 секунд" in response
+    assert ("откры" in response.lower()) or ("вход" in response.lower())
+
+
 def test_generate_response_clarification_shows_clear_steps() -> None:
     response = generate_response("уменьшаем шаг это как", goal="Сделать webhook для Telegram")
 
@@ -216,6 +224,20 @@ def test_generate_response_clarification_shows_clear_steps() -> None:
     assert ("пункт" in response.lower()) or ("провер" in response.lower())
     assert "Когда стартуешь?" not in response
 
+
+def test_generate_response_music_question_gives_real_recommendation_and_action() -> None:
+    response = generate_response("Какой музон зарядки на старте", goal="Сделать webhook")
+
+    assert "Phonk" in response or "drum" in response.lower() or "Eminem" in response or "Eye of the Tiger" in response
+    assert ("открой" in response.lower()) or ("вход" in response.lower()) or ("зафикс" in response.lower())
+
+
+def test_no_goal_prompt_is_not_repeated_same_line() -> None:
+    first = generate_response("пойдем по делу", goal=None)
+    second = generate_response("пойдем по делу", goal=None, recent_messages=(("assistant", first),))
+
+    assert first != second
+    assert "Цель не указана" in second
 
 def test_fatigue_is_not_treated_as_excuse() -> None:
     response = generate_response("я устал сегодня", goal="Сделать webhook")

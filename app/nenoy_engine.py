@@ -58,6 +58,8 @@ STATE_KEYWORDS: dict[str, tuple[str, ...]] = {
         "я устала",
         "устала",
         "устал",
+        "не справлюсь",
+        "не справлюсь с задачей",
         "нет сил",
         "нет настроения",
         "не могу больше",
@@ -173,6 +175,16 @@ STATE_KEYWORDS: dict[str, tuple[str, ...]] = {
         "закрыла",
         "получил",
         "получила",
+    ),
+    "music_request": (
+        "какой музон",
+        "что включить",
+        "что послушать",
+        "какой трек",
+        "какую музыку",
+        "медленная музыка",
+        "подборка",
+        "плейлист",
     ),
     "off_topic": (
         "разговор ушел",
@@ -313,9 +325,11 @@ RESPONSES: dict[str, tuple[str, ...]] = {
         "Прокрастинация громче, когда ты ждёшь идеала. {goal_line} Один круг: выбери шаг и запусти его. {closing}",
     ),
     "fatigue": (
-        "Устал — это факт, не приговор. {goal_line} Разминка всегда короче спринта: 20 секунд в задаче, один вход и факт. ⛓️",
-        "Энергия просела. {goal_line} Снимаем героизм: 20 секунд контакта с задачей, один вход, один факт. ⛓️",
-        "Да, ресурс ниже. {goal_line} Сегодня не нужно марафониться — только короткий подход: открой задачу и зафиксируй первый файл. ⛓️",
+        "Не справишься — не трагедия. Удаляем лишний вес, оставляем вход. "
+        "{goal_line} 2 минуты входа + один маленький факт. ⛓️",
+        "Устал — ресурс ниже, это факт. {goal_line} Короткий подход: 20 секунд в задаче, один вход и один факт. ⛓️",
+        "Устал — это факт, не приговор. {goal_line} Снижаем героизм: короткая разминка, 20 секунд в задаче, один вход и факт. ⛓️",
+        "Да, ресурс ниже. {goal_line} Снижаем планку: сегодня только короткий подход — открой задачу и зафиксируй первый файл. ⛓️",
     ),
     "postpone": (
         "Завтра можно. Только не как обещание, а как план. {goal_line} Первый шаг завтра — открыть проект и сделать пустой /webhook. Во сколько? {closing}",
@@ -357,6 +371,11 @@ RESPONSES: dict[str, tuple[str, ...]] = {
         "Девочки, пиво, сказки — программа мощная. {goal_line} Но сначала один факт, чтобы ты вышел не нытиком, а человеком с табло. {closing}",
         "Сказки после фактов. Шахерезада на скамейке. {goal_line} Что закрываешь первым маленьким шагом? {closing}",
     ),
+    "music_request": (
+        "Для старта лучше без «плюшевой» пафосной сцены: Phonk, драм-н-бейс или старый Eminem. {goal_line} Пока играет — открой задачу и сделай один вход без переговоров. {closing}",
+        "Берём короткую, брутальную раскладку: drum-n-bass, хард-рок, Eye of the Tiger. {goal_line} Включи один трек и 2 минуты входа в задачу. {closing}",
+        "Не спорим с вайбом: для первого рывка возьми ритм, который бьет ровно. Phonk на 2 трека и после него первый факт. {goal_line} {closing}",
+    ),
     "goal_focus": (
         "По факту цель сейчас одна: {goal_line} Не растекайся. Один вход сейчас, не больше. {closing}",
         "Цель в работе есть. {goal_line} Не разрубайся общим, выбирай первый рабочий шаг. {closing}",
@@ -378,6 +397,13 @@ RESPONSES: dict[str, tuple[str, ...]] = {
         "{goal_line} Не загоняйся в разговор. Один факт, один шаг, один следующий промежуток. {closing}",
     ),
 }
+
+NO_GOAL_PROMPT_VARIANTS = (
+    "Цель не указана. Напиши коротко: результат, срок и первый шаг.",
+    "Без цели это не спорт, а болото. Четко сформулируй задачу и точку входа сегодня.",
+    "Окей, не грузимся: цель, дедлайн, первый микрошаг — в одну строку.",
+    "Нужен фокус. Назови цель, до какого времени и с какого входа идем.",
+)
 
 ACTION_WITHOUT_DEADLINE_KEYWORDS = (
     "сделаю",
@@ -451,6 +477,24 @@ CLOSING_PHRASES_VARIANTS = (
     "Ставим таймер: три, два... шаг.",
 )
 
+
+def _pick_no_goal_prompt(recent_messages: tuple[tuple[str, str], ...], user_message: str) -> str:
+    recent_assistant = _extract_recent_assistant_messages(recent_messages, limit=3)
+    seed = abs(sum(ord(char) for char in _normalize(user_message)))
+
+    def is_repeated_in_recent(candidate: str) -> bool:
+        normalized_candidate = _normalize(candidate)
+        return any(
+            normalized_candidate in message
+            for message in recent_assistant
+        )
+
+    for shift in range(len(NO_GOAL_PROMPT_VARIANTS)):
+        candidate = NO_GOAL_PROMPT_VARIANTS[(seed + shift) % len(NO_GOAL_PROMPT_VARIANTS)]
+        if not is_repeated_in_recent(candidate):
+            return candidate
+
+    return NO_GOAL_PROMPT_VARIANTS[seed % len(NO_GOAL_PROMPT_VARIANTS)]
 
 
 def _normalize(text: str) -> str:
@@ -539,11 +583,8 @@ def generate_response(
         template = RESPONSES.get(state, RESPONSES["default"])
         return template[0].format(goal_line="Цель сейчас — безопасность.")
 
-    if not clean_goal and state != "goal_focus":
-        return (
-            "Цель не указана. Напиши в одной строке: результат, срок и первый шаг. "
-            "Без этого разговор превращается в шум."
-        )
+    if not clean_goal and state not in {"goal_focus", "music_request"}:
+        return _pick_no_goal_prompt(recent_messages, clean_message)
 
     goal_line = "Цель сейчас — безопасность." if not clean_goal else f"Цель: {clean_goal}."
     normalized_message = _normalize(clean_message)
@@ -561,7 +602,19 @@ def generate_response(
         state = "default"
 
     closing = _pick_closing_phrase(recent_messages, clean_message)
-    template = _pick_template(RESPONSES[state], clean_message)
+
+    if state == "fatigue":
+        if any(
+            marker in normalized_message
+            for marker in ("не справлюсь", "не справлюсь с задачей")
+        ):
+            template = RESPONSES[state][0]
+        elif any(marker in normalized_message for marker in ("я устал", "устала", "устал")):
+            template = RESPONSES[state][1]
+        else:
+            template = _pick_template(RESPONSES[state], clean_message)
+    else:
+        template = _pick_template(RESPONSES[state], clean_message)
 
     if not _state_has_closing_variant(state):
         return template.format(goal_line=goal_line)
