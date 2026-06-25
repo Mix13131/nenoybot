@@ -119,6 +119,68 @@ def test_schedule_reminder_ignores_text_without_due_time() -> None:
     assert store.reminders == {}
 
 
+def test_schedule_reminder_records_separate_times_and_confirms_fix() -> None:
+    store = InMemoryStore()
+
+    response = schedule_reminder_if_found(
+        123,
+        "Напоминание в 20:40, отчёт в 20:45, после этого wind down в 21:00",
+        store,
+    )
+
+    assert response is not None
+    assert "Фиксирую" in response
+    assert "20:45" in response
+    assert "20:40" in response
+    assert len(store.reminders) == 2
+
+
+def test_schedule_reminder_uses_active_checkin_time_for_checkin() -> None:
+    store = InMemoryStore()
+
+    schedule_reminder_if_found(
+        123,
+        "Задача до 22:00, напоминание в 20:40, отчёт в 20:45, после этого wind down в 21:00",
+        store,
+    )
+
+    reminders = list(store.reminders.values())
+    assert len(reminders) == 2
+    assert any(reminder.reminder_type == "reminder" for reminder in reminders)
+    assert any(reminder.reminder_type == "checkin" for reminder in reminders)
+    assert not any(reminder.reminder_type == "task" for reminder in reminders)
+
+    checkin_due = next(reminder.due_at for reminder in reminders if reminder.reminder_type == "checkin")
+    assert checkin_due.hour == 20
+    assert checkin_due.minute == 45
+
+
+def test_schedule_reminder_updates_previous_times_for_same_task() -> None:
+    store = InMemoryStore()
+
+    schedule_reminder_if_found(
+        123,
+        "Отчёт в 20:45, напоминание в 20:40, после этого wind down в 21:00",
+        store,
+    )
+    first_times = sorted((reminder.due_at for reminder in store.reminders.values()), key=lambda value: value)
+
+    schedule_reminder_if_found(
+        123,
+        "Отчёт в 20:35, напоминание в 20:30, после этого wind down в 20:50",
+        store,
+    )
+    second_times = sorted((reminder.due_at for reminder in store.reminders.values()), key=lambda value: value)
+
+    assert len(store.reminders) == 2
+    assert len(first_times) == 2
+    assert first_times != second_times
+    assert second_times[0].hour == 20
+    assert second_times[0].minute == 30
+    assert second_times[1].hour == 20
+    assert second_times[1].minute == 35
+
+
 def test_prepare_outgoing_text_replaces_bot_like_reply() -> None:
     fallback = prepare_outgoing_text(123, "Запрос принят.")
 

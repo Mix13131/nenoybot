@@ -25,11 +25,19 @@ class MemoryStore(Protocol):
 
     def recent_messages(self, chat_id: int, limit: int = 10) -> list[tuple[str, str]]: ...
 
-    def add_reminder(self, chat_id: int, task_text: str, due_at: datetime) -> int: ...
+    def add_reminder(
+        self,
+        chat_id: int,
+        task_text: str,
+        due_at: datetime,
+        reminder_type: str = "checkin",
+    ) -> int: ...
 
     def due_reminders(self, now: datetime, limit: int = 10) -> list["Reminder"]: ...
 
     def mark_reminder_sent(self, reminder_id: int) -> None: ...
+
+    def cancel_previous_checkins_for_task(self, chat_id: int, task_text: str | None = None) -> None: ...
 
 
 @dataclass(frozen=True)
@@ -38,6 +46,7 @@ class Reminder:
     chat_id: int
     task_text: str
     due_at: datetime
+    reminder_type: str = "checkin"
 
 
 @dataclass
@@ -72,7 +81,13 @@ class InMemoryStore:
     def recent_messages(self, chat_id: int, limit: int = 10) -> list[tuple[str, str]]:
         return self.messages.get(chat_id, [])[-limit:]
 
-    def add_reminder(self, chat_id: int, task_text: str, due_at: datetime) -> int:
+    def add_reminder(
+        self,
+        chat_id: int,
+        task_text: str,
+        due_at: datetime,
+        reminder_type: str = "checkin",
+    ) -> int:
         reminder_id = self.next_reminder_id
         self.next_reminder_id += 1
         self.reminders[reminder_id] = Reminder(
@@ -80,8 +95,25 @@ class InMemoryStore:
             chat_id=chat_id,
             task_text=task_text,
             due_at=due_at,
+            reminder_type=reminder_type,
         )
         return reminder_id
+
+    def cancel_previous_checkins_for_task(self, chat_id: int, task_text: str | None = None) -> None:
+        cancel_ids = {
+            reminder_id
+            for reminder_id, reminder in self.reminders.items()
+            if reminder.chat_id == chat_id
+            and reminder.id not in self.sent_reminders
+            and (
+                task_text is None
+                or reminder.task_text == task_text
+                or task_text in reminder.task_text
+                or reminder.task_text in task_text
+            )
+        }
+        for reminder_id in cancel_ids:
+            self.reminders.pop(reminder_id, None)
 
     def due_reminders(self, now: datetime, limit: int = 10) -> list[Reminder]:
         due = [
@@ -139,15 +171,22 @@ class PostgresMemoryStore:
                 )
                 cursor.execute(
                     """
-                    CREATE TABLE IF NOT EXISTS nenoy_reminders (
+                CREATE TABLE IF NOT EXISTS nenoy_reminders (
                         id BIGSERIAL PRIMARY KEY,
                         chat_id BIGINT NOT NULL,
                         task_text TEXT NOT NULL,
                         due_at TIMESTAMPTZ NOT NULL,
+                        reminder_type TEXT NOT NULL DEFAULT 'checkin',
                         status TEXT NOT NULL DEFAULT 'pending',
                         created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
                         sent_at TIMESTAMPTZ
                     )
+                    """
+                )
+                cursor.execute(
+                    """
+                    ALTER TABLE IF EXISTS nenoy_reminders
+                    ADD COLUMN IF NOT EXISTS reminder_type TEXT NOT NULL DEFAULT 'checkin'
                     """
                 )
                 cursor.execute(
@@ -230,19 +269,43 @@ class PostgresMemoryStore:
                 rows = cursor.fetchall()
         return [(role, content) for role, content in reversed(rows)]
 
-    def add_reminder(self, chat_id: int, task_text: str, due_at: datetime) -> int:
+    def add_reminder(
+        self,
+        chat_id: int,
+        task_text: str,
+        due_at: datetime,
+        reminder_type: str = "checkin",
+    ) -> int:
         with self._connect() as connection:
             with connection.cursor() as cursor:
                 cursor.execute(
                     """
-                    INSERT INTO nenoy_reminders (chat_id, task_text, due_at)
-                    VALUES (%s, %s, %s)
+                    INSERT INTO nenoy_reminders (chat_id, task_text, due_at, reminder_type)
+                    VALUES (%s, %s, %s, %s)
                     RETURNING id
                     """,
-                    (chat_id, task_text, due_at),
+                    (chat_id, task_text, due_at, reminder_type),
                 )
                 row = cursor.fetchone()
         return int(row[0])
+
+    def cancel_previous_checkins_for_task(self, chat_id: int, task_text: str | None = None) -> None:
+        where_clause = "chat_id = %s AND status = 'pending'"
+        params: tuple[object, ...] = (chat_id,)
+        if task_text is not None:
+            where_clause += " AND task_text = %s"
+            params = (chat_id, task_text)
+
+        with self._connect() as connection:
+            with connection.cursor() as cursor:
+                cursor.execute(
+                    f"""
+                    UPDATE nenoy_reminders
+                    SET status = 'cancelled', sent_at = NOW()
+                    WHERE {where_clause}
+                    """,
+                    params,
+                )
 
     def due_reminders(self, now: datetime, limit: int = 10) -> list[Reminder]:
         with self._connect() as connection:

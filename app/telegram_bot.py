@@ -13,7 +13,7 @@ try:
     from .config import AppConfig
     from .memory_store import MemoryStore, create_memory_store
     from .openai_client import ConversationContext, generate_ai_response
-    from .reminders import build_reminder_message, get_timezone, parse_reminder
+    from .reminders import Commitment, format_due_at, get_timezone, parse_commitment
     from .style_guard import (
         find_botlike_phrases,
         find_forbidden_style_phrases,
@@ -23,7 +23,7 @@ except ImportError:  # Allows `python app/telegram_bot.py`.
     from config import AppConfig
     from memory_store import MemoryStore, create_memory_store
     from openai_client import ConversationContext, generate_ai_response
-    from reminders import build_reminder_message, get_timezone, parse_reminder
+    from reminders import Commitment, format_due_at, get_timezone, parse_commitment
     from style_guard import (
         find_botlike_phrases,
         find_forbidden_style_phrases,
@@ -271,15 +271,53 @@ def build_reply(
 
 
 def schedule_reminder_if_found(chat_id: int, text: str, store: MemoryStore) -> str | None:
-    draft = parse_reminder(text, timezone_name=AppConfig.timezone)
-    if draft is None:
+    commitment = parse_commitment(text, timezone_name=AppConfig.timezone)
+    if commitment is None:
         return None
 
-    store.add_reminder(chat_id, draft.task_text, draft.due_at)
+    timezone = get_timezone(AppConfig.timezone)
+    now = datetime.now(timezone)
+    if now.tzinfo is None:
+        now = now.replace(tzinfo=timezone)
+
+    if commitment.task_text:
+        store.cancel_previous_checkins_for_task(chat_id, commitment.task_text)
+
+    if commitment.reminder_time:
+        store.add_reminder(chat_id, commitment.task_text, commitment.reminder_time, reminder_type="reminder")
+    if commitment.active_checkin_time:
+        store.add_reminder(
+            chat_id,
+            commitment.task_text,
+            commitment.active_checkin_time,
+            reminder_type="checkin",
+        )
+
+    confirmation = _format_commitment_confirmation(commitment, now)
+    if confirmation is None:
+        return None
+
     return (
-        f"{draft.human_due}. Это не дата в заметках. Это проверка факта. "
+        f"{confirmation} "
+        "Это не дата в заметках. Это проверка факта. "
         "Вернешься с результатом или с новой отговоркой? 🔥"
     )
+
+
+def _format_commitment_confirmation(commitment: Commitment, now: datetime) -> str | None:
+    values: list[str] = []
+    if commitment.task_deadline:
+        values.append(f"задача в {format_due_at(commitment.task_deadline, now)}")
+    if commitment.report_time:
+        values.append(f"отчёт в {format_due_at(commitment.report_time, now)}")
+    if commitment.reminder_time:
+        values.append(f"напоминание в {format_due_at(commitment.reminder_time, now)}")
+    if commitment.unavailable_after:
+        values.append(f"пауза с {format_due_at(commitment.unavailable_after, now)}")
+
+    if not values:
+        return None
+    return f"Фиксирую: {', '.join(values)}, старое время отменяем."
 
 
 def run_reminder_loop(api: TelegramAPI, store: MemoryStore) -> None:
@@ -288,7 +326,13 @@ def run_reminder_loop(api: TelegramAPI, store: MemoryStore) -> None:
         try:
             now = datetime.now(timezone)
             for reminder in store.due_reminders(now, limit=10):
-                api.send_guarded_message(reminder.chat_id, build_reminder_message(reminder.task_text))
+                api.send_guarded_message(
+                    reminder.chat_id,
+                    (
+                        f"Время пришло. {reminder.task_text} сделал или задача опять живёт только в планах? "
+                        "Что по результату?"
+                    ),
+                )
                 store.mark_reminder_sent(reminder.id)
         except Exception as exc:
             print(f"Reminder loop failed: {type(exc).__name__}: {exc}")
