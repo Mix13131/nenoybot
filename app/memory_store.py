@@ -33,7 +33,7 @@ class MemoryStore(Protocol):
         reminder_type: str = "checkin",
     ) -> int: ...
 
-    def due_reminders(self, now: datetime, limit: int = 10) -> list["Reminder"]: ...
+    def due_reminders(self, now: datetime, limit: int = 10) -> list["ScheduledEvent"]: ...
 
     def mark_reminder_sent(self, reminder_id: int) -> None: ...
 
@@ -41,12 +41,16 @@ class MemoryStore(Protocol):
 
 
 @dataclass(frozen=True)
-class Reminder:
+class ScheduledEvent:
     id: int
     chat_id: int
     task_text: str
+    event_type: str
     due_at: datetime
-    reminder_type: str = "checkin"
+
+    @property
+    def reminder_type(self) -> str:
+        return self.event_type
 
 
 @dataclass
@@ -54,7 +58,7 @@ class InMemoryStore:
     goals: dict[int, str] = field(default_factory=dict)
     summaries: dict[int, str] = field(default_factory=dict)
     messages: dict[int, list[tuple[str, str]]] = field(default_factory=dict)
-    reminders: dict[int, Reminder] = field(default_factory=dict)
+    reminders: dict[int, ScheduledEvent] = field(default_factory=dict)
     sent_reminders: set[int] = field(default_factory=set)
     next_reminder_id: int = 1
 
@@ -90,12 +94,12 @@ class InMemoryStore:
     ) -> int:
         reminder_id = self.next_reminder_id
         self.next_reminder_id += 1
-        self.reminders[reminder_id] = Reminder(
+        self.reminders[reminder_id] = ScheduledEvent(
             id=reminder_id,
             chat_id=chat_id,
             task_text=task_text,
+            event_type=reminder_type,
             due_at=due_at,
-            reminder_type=reminder_type,
         )
         return reminder_id
 
@@ -105,6 +109,7 @@ class InMemoryStore:
             for reminder_id, reminder in self.reminders.items()
             if reminder.chat_id == chat_id
             and reminder.id not in self.sent_reminders
+            and reminder.event_type == "checkin"
             and (
                 task_text is None
                 or reminder.task_text == task_text
@@ -115,7 +120,7 @@ class InMemoryStore:
         for reminder_id in cancel_ids:
             self.reminders.pop(reminder_id, None)
 
-    def due_reminders(self, now: datetime, limit: int = 10) -> list[Reminder]:
+    def due_reminders(self, now: datetime, limit: int = 10) -> list[ScheduledEvent]:
         due = [
             reminder
             for reminder in self.reminders.values()
@@ -290,7 +295,7 @@ class PostgresMemoryStore:
         return int(row[0])
 
     def cancel_previous_checkins_for_task(self, chat_id: int, task_text: str | None = None) -> None:
-        where_clause = "chat_id = %s AND status = 'pending'"
+        where_clause = "chat_id = %s AND status = 'pending' AND reminder_type = 'checkin'"
         params: tuple[object, ...] = (chat_id,)
         if task_text is not None:
             where_clause += " AND task_text = %s"
@@ -307,12 +312,12 @@ class PostgresMemoryStore:
                     params,
                 )
 
-    def due_reminders(self, now: datetime, limit: int = 10) -> list[Reminder]:
+    def due_reminders(self, now: datetime, limit: int = 10) -> list[ScheduledEvent]:
         with self._connect() as connection:
             with connection.cursor() as cursor:
                 cursor.execute(
                     """
-                    SELECT id, chat_id, task_text, due_at
+                    SELECT id, chat_id, task_text, due_at, reminder_type
                     FROM nenoy_reminders
                     WHERE status = 'pending' AND due_at <= %s
                     ORDER BY due_at ASC
@@ -322,8 +327,14 @@ class PostgresMemoryStore:
                 )
                 rows = cursor.fetchall()
         return [
-            Reminder(id=int(reminder_id), chat_id=int(chat_id), task_text=task_text, due_at=due_at)
-            for reminder_id, chat_id, task_text, due_at in rows
+            ScheduledEvent(
+                id=int(reminder_id),
+                chat_id=int(chat_id),
+                task_text=task_text,
+                event_type=reminder_type,
+                due_at=due_at,
+            )
+            for reminder_id, chat_id, task_text, due_at, reminder_type in rows
         ]
 
     def mark_reminder_sent(self, reminder_id: int) -> None:

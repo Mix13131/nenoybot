@@ -54,6 +54,7 @@ def test_parse_commitment_split_report_reminder_times() -> None:
     assert commitment.unavailable_after is not None
     assert commitment.unavailable_after.hour == 21
     assert commitment.unavailable_after.minute == 0
+    assert commitment.active_checkin_time == commitment.report_time
 
 
 def test_commitment_active_checkin_prefers_report_before_reminder_and_task() -> None:
@@ -68,6 +69,27 @@ def test_commitment_active_checkin_prefers_report_before_reminder_and_task() -> 
     assert commitment.reminder_time is not None
     assert commitment.report_time is not None
     assert commitment.task_deadline is not None
+    assert commitment.active_checkin_time == commitment.report_time
+
+
+def test_wind_down_uses_report_time_not_unavailable_time() -> None:
+    now = datetime(2026, 6, 24, 10, 0, tzinfo=ZoneInfo("Europe/Moscow"))
+
+    commitment = parse_commitment(
+        "напомни в 20:40, отчет в 20:45, после 21:00 wind down",
+        now=now,
+    )
+
+    assert commitment is not None
+    assert commitment.reminder_time is not None
+    assert commitment.reminder_time.hour == 20
+    assert commitment.reminder_time.minute == 40
+    assert commitment.report_time is not None
+    assert commitment.report_time.hour == 20
+    assert commitment.report_time.minute == 45
+    assert commitment.unavailable_after is not None
+    assert commitment.unavailable_after.hour == 21
+    assert commitment.unavailable_after.minute == 0
     assert commitment.active_checkin_time == commitment.report_time
 
 

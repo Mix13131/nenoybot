@@ -40,6 +40,36 @@ def test_in_memory_store_keeps_due_reminders() -> None:
     assert store.due_reminders(now) == []
 
 
+def test_cancel_previous_checkins_for_task_removes_pending() -> None:
+    store = InMemoryStore()
+    now = datetime(2026, 6, 24, 10, 0, tzinfo=timezone.utc)
+
+    first = store.add_reminder(123, "проверить API", now)
+    second = store.add_reminder(123, "проверить API", now)
+    third = store.add_reminder(456, "другая задача", now)
+
+    store.cancel_previous_checkins_for_task(123, "проверить API")
+
+    assert first not in store.reminders
+    assert second not in store.reminders
+    assert third in store.reminders
+
+
+def test_rescheduling_cancels_previous_checkin_only() -> None:
+    store = InMemoryStore()
+    now = datetime(2026, 6, 24, 10, 0, tzinfo=timezone.utc)
+    first = store.add_reminder(123, "сделать вебхук", now, reminder_type="checkin")
+    second = store.add_reminder(123, "сделать вебхук", now.replace(hour=11), reminder_type="checkin")
+    reminder_only = store.add_reminder(123, "сделать вебхук", now.replace(hour=12), reminder_type="reminder")
+
+    store.cancel_previous_checkins_for_task(123, "сделать вебхук")
+
+    assert first not in store.reminders
+    assert second not in store.reminders
+    assert reminder_only in store.reminders
+    assert reminder_only != second
+
+
 def test_create_memory_store_falls_back_when_postgres_fails(monkeypatch) -> None:
     monkeypatch.setattr(memory_store.AppConfig, "database_url", "postgresql://broken")
 

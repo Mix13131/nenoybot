@@ -15,9 +15,13 @@ DATE_RE = re.compile(
     r"\b(?P<day>[0-3]?\d)[./](?P<month>[01]?\d)(?:[./](?P<year>\d{2,4}))?\b"
 )
 REPORT_KEYWORDS = (
+    "отчет",
     "отчёт",
     "отчета",
-    "отчеты",
+    "отчетов",
+    "отчёта",
+    "отчёты",
+    "отчётов",
     "результат",
 )
 REMINDER_KEYWORDS = (
@@ -28,6 +32,7 @@ REMINDER_KEYWORDS = (
     "чек",
     "напомин",
 )
+TIME_CONTEXT_WINDOW = 24
 TASK_KEYWORDS = (
     "срок",
     "дедлайн",
@@ -75,7 +80,10 @@ class Commitment:
     report_time: datetime | None
     reminder_time: datetime | None
     unavailable_after: datetime | None
-    active_checkin_time: datetime | None = None
+
+    @property
+    def active_checkin_time(self) -> datetime | None:
+        return self.report_time or self.task_deadline
 
     def has_any_time(self) -> bool:
         return any(
@@ -120,15 +128,12 @@ def parse_commitment(
         task_deadline = due_at
 
     task_text = cleanup_task_text(cleaned)
-    active_checkin_time = report_time or reminder_time or task_deadline
-
     return Commitment(
         task_text=task_text,
         task_deadline=task_deadline,
         report_time=report_time,
         reminder_time=reminder_time,
         unavailable_after=unavailable_after,
-        active_checkin_time=active_checkin_time,
     )
 
 
@@ -272,13 +277,37 @@ def _parse_time_from_match(time_match: re.Match[str], segment: str, current: dat
     return candidate
 
 
-def _find_nearest_before(text: str, start: int, keywords: tuple[str, ...]) -> int:
-    nearest = -1
+def _find_nearest_keyword(
+    text: str,
+    start: int,
+    keywords: tuple[str, ...],
+    *,
+    after: bool = False,
+) -> tuple[int, int] | None:
+    nearest_pos: int | None = None
+    nearest_distance: int | None = None
+
     for keyword in keywords:
-        pos = text.rfind(keyword, 0, start)
-        if pos > nearest:
-            nearest = pos
-    return nearest
+        if after:
+            pos = text.find(keyword, start)
+            if pos == -1:
+                continue
+            distance = pos - start
+        else:
+            pos = text.rfind(keyword, 0, start)
+            if pos == -1:
+                continue
+            distance = start - (pos + len(keyword))
+
+        if distance > TIME_CONTEXT_WINDOW:
+            continue
+        if nearest_distance is None or distance < nearest_distance:
+            nearest_distance = distance
+            nearest_pos = pos
+
+    if nearest_pos is None:
+        return None
+    return nearest_pos, nearest_distance
 
 
 def _contains_keyword_between(text: str, start: int, end: int, keywords: tuple[str, ...]) -> bool:
@@ -286,18 +315,31 @@ def _contains_keyword_between(text: str, start: int, end: int, keywords: tuple[s
 
 
 def _detect_time_kind(full_text: str, start: int, end: int) -> str | None:
-    # Prefer the nearest explicit key before the time.
-    candidates = [
-        ("report", _find_nearest_before(full_text, start, REPORT_KEYWORDS)),
-        ("reminder", _find_nearest_before(full_text, start, REMINDER_KEYWORDS)),
-        ("unavailable", _find_nearest_before(full_text, start, UNAVAILABLE_KEYWORDS)),
-        ("task", _find_nearest_before(full_text, start, TASK_KEYWORDS)),
-    ]
-    found = [(kind, pos) for kind, pos in candidates if pos >= 0]
-    if found:
-        return sorted(found, key=lambda item: item[1], reverse=True)[0][0]
+    # Prefer explicit keywords nearby the time, both before and after.
+    candidates: list[tuple[str, int]] = []
 
-    # If none is before, keep a short fallback for post-time fragments.
+    for kind, keywords in (
+        ("report", REPORT_KEYWORDS),
+        ("reminder", REMINDER_KEYWORDS),
+        ("unavailable", UNAVAILABLE_KEYWORDS),
+        ("task", TASK_KEYWORDS),
+    ):
+        before = _find_nearest_keyword(full_text, start, keywords)
+        if before is not None:
+            _, distance = before
+            candidates.append((kind, distance))
+
+        after = _find_nearest_keyword(full_text, end, keywords, after=True)
+        if after is not None:
+            _, distance = after
+            # If keyword exists right after time, it usually describes this exact slot
+            # (например: «21:00 wind down»).
+            candidates.append((kind, distance))
+
+    found = [(kind, distance) for kind, distance in candidates]
+    if found:
+        return sorted(found, key=lambda item: item[1])[0][0]
+
     if _contains_keyword_between(full_text, end, min(len(full_text), end + 30), REPORT_KEYWORDS):
         return "report"
     if _contains_keyword_between(full_text, end, min(len(full_text), end + 30), REMINDER_KEYWORDS):
@@ -315,7 +357,12 @@ def get_timezone(timezone_name: str) -> ZoneInfo:
 
 def cleanup_task_text(text: str) -> str:
     task = re.sub(r"^/goal\s+", "", text, flags=re.IGNORECASE).strip()
-    task = re.sub(r"\b(отчёт|отчета|отчёта|результат|напоминание|напомин|напомни|wind down|winddown|режим тишины|не смогу|не могу писать|не доступен|не доступна|недоступен|недоступна)\b", "", task, flags=re.IGNORECASE)
+    task = re.sub(
+        r"\b(отчет|отчета|отчёта|результат|напоминание|напомин|напомни|wind down|winddown|режим тишины|не смогу|не могу писать|не доступен|не доступна|недоступен|недоступна)\b",
+        "",
+        task,
+        flags=re.IGNORECASE,
+    )
     task = RELATIVE_RE.sub("", task)
     task = DATE_RE.sub("", task)
     task = re.sub(r"\b(сегодня|завтра)\b", "", task, flags=re.IGNORECASE)

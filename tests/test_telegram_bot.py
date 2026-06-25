@@ -146,11 +146,11 @@ def test_schedule_reminder_uses_active_checkin_time_for_checkin() -> None:
 
     reminders = list(store.reminders.values())
     assert len(reminders) == 2
-    assert any(reminder.reminder_type == "reminder" for reminder in reminders)
-    assert any(reminder.reminder_type == "checkin" for reminder in reminders)
-    assert not any(reminder.reminder_type == "task" for reminder in reminders)
+    assert any(reminder.event_type == "reminder" for reminder in reminders)
+    assert any(reminder.event_type == "checkin" for reminder in reminders)
+    assert not any(reminder.event_type == "task" for reminder in reminders)
 
-    checkin_due = next(reminder.due_at for reminder in reminders if reminder.reminder_type == "checkin")
+    checkin_due = next(reminder.due_at for reminder in reminders if reminder.event_type == "checkin")
     assert checkin_due.hour == 20
     assert checkin_due.minute == 45
 
@@ -172,13 +172,17 @@ def test_schedule_reminder_updates_previous_times_for_same_task() -> None:
     )
     second_times = sorted((reminder.due_at for reminder in store.reminders.values()), key=lambda value: value)
 
-    assert len(store.reminders) == 2
+    assert len(store.reminders) == 3
     assert len(first_times) == 2
     assert first_times != second_times
-    assert second_times[0].hour == 20
-    assert second_times[0].minute == 30
-    assert second_times[1].hour == 20
-    assert second_times[1].minute == 35
+    # Старый reminder остается, но чек-ин перезаписан с новым временем.
+    checkin_times = sorted(
+        (reminder.due_at for reminder in store.reminders.values() if reminder.event_type == "checkin"),
+        key=lambda value: value,
+    )
+    assert len(checkin_times) == 1
+    assert checkin_times[0].hour == 20
+    assert checkin_times[0].minute == 35
 
 
 def test_prepare_outgoing_text_replaces_bot_like_reply() -> None:
