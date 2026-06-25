@@ -129,10 +129,12 @@ def test_postgres_cancel_previous_checkins_uses_flexible_task_match() -> None:
     params = captured["params"]
 
     assert "task_text ILIKE %s" in query
-    assert "CONCAT('%', task_text, '%')" in query
+    assert "CONCAT(%s, task_text, %s)" in query
     assert params == (
         123,
         "Сделать проверочный запуск API",
         f"%Сделать проверочный запуск API%",
         "Сделать проверочный запуск API",
+        "%",
+        "%",
     )
