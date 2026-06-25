@@ -280,7 +280,7 @@ def schedule_reminder_if_found(chat_id: int, text: str, store: MemoryStore) -> s
     if now.tzinfo is None:
         now = now.replace(tzinfo=timezone)
 
-    if commitment.task_text:
+    if commitment.active_checkin_time:
         store.cancel_previous_checkins_for_task(chat_id, commitment.task_text)
 
     if commitment.reminder_time:
