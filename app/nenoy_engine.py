@@ -278,13 +278,32 @@ STATE_KEYWORDS: dict[str, tuple[str, ...]] = {
     ),
 }
 
+EMOJI_BY_STATE: dict[str, tuple[str, ...]] = {
+    "procrastination": ("🥊", "✂️", "⛓️"),
+    "excuse": ("✂️", "🪞", "⛓️"),
+    "overloaded": ("⚙️", "🧠", "🧱"),
+    "fatigue": ("🧱", "🧠"),
+    "doubt": ("🧠", "🧱"),
+    "breakdown": ("🧱", "✊"),
+    "report": ("💥", "✊", "🚀"),
+    "music_request": ("🚀", "🔥"),
+    "off_topic": ("🛌", "🪞", "🔥"),
+    "deadline_missing": ("📆", "⛓️"),
+    "bot_error": ("🔧", "⚙️"),
+    "reminder": ("🔔",),
+    "checkin": ("🔔", "💥"),
+    "default": ("⛓️", "🧱", "🔥"),
+}
+
+_EMOJI_PALLET = tuple(sorted({emoji for values in EMOJI_BY_STATE.values() for emoji in values}))
+
 RESPONSES: dict[str, tuple[str, ...]] = {
     "crisis": (
         "Стоп. Это уже не задача дисциплины. Обратись к близкому человеку или в экстренную "
         "помощь прямо сейчас. Напиши, где ты сейчас и есть ли рядом кто-то живой.",
     ),
     "instruction_request": (
-        "Не отвлекайся. Возвращайся к цели. 💥",
+        "Не отвлекайся. Возвращайся к цели.",
     ),
     "overplanning": (
         "Планов достаточно. {goal_line} Планируй не проект, а вход. Сейчас один микрошаг на 5 минут. {closing}",
@@ -326,10 +345,10 @@ RESPONSES: dict[str, tuple[str, ...]] = {
     ),
     "fatigue": (
         "Не справишься — не трагедия. Удаляем лишний вес, оставляем вход. "
-        "{goal_line} 2 минуты входа + один маленький факт. ⛓️",
-        "Устал — ресурс ниже, это факт. {goal_line} Короткий подход: 20 секунд в задаче, один вход и один факт. ⛓️",
-        "Устал — это факт, не приговор. {goal_line} Снижаем героизм: короткая разминка, 20 секунд в задаче, один вход и факт. ⛓️",
-        "Да, ресурс ниже. {goal_line} Снижаем планку: сегодня только короткий подход — открой задачу и зафиксируй первый файл. ⛓️",
+        "{goal_line} 2 минуты входа + один маленький факт.",
+        "Устал — ресурс ниже, это факт. {goal_line} Короткий подход: 20 секунд в задаче, один вход и один факт.",
+        "Устал — это факт, не приговор. {goal_line} Снижаем героизм: короткая разминка, 20 секунд в задаче, один вход и факт.",
+        "Да, ресурс ниже. {goal_line} Снижаем планку: сегодня только короткий подход — открой задачу и зафиксируй первый файл.",
     ),
     "postpone": (
         "Завтра можно. Только не как обещание, а как план. {goal_line} Первый шаг завтра — открыть проект и сделать пустой /webhook. Во сколько? {closing}",
@@ -393,7 +412,7 @@ RESPONSES: dict[str, tuple[str, ...]] = {
         "Слова про тяжесть звучат знакомо. Дальше нужен шаг, который можно закрыть. {goal_line} Укажи вход и сделай его. {closing}",
     ),
     "default": (
-        "{goal_line} Не строим театр из планов. Назови один ближайший шаг и время, когда вернёшься с фактом. ⛓️",
+        "{goal_line} Не строим театр из планов. Назови один ближайший шаг и время, когда вернёшься с фактом.",
         "{goal_line} Не загоняйся в разговор. Один факт, один шаг, один следующий промежуток. {closing}",
     ),
 }
@@ -508,6 +527,34 @@ def _extract_recent_assistant_messages(recent_messages: tuple[tuple[str, str], .
     return tuple(assistant_messages[-limit:])
 
 
+def pick_state_emoji(state: str, recent_text: str = "") -> str:
+    if state in {"crisis", "instruction_request"}:
+        return ""
+
+    variants = EMOJI_BY_STATE.get(state) or EMOJI_BY_STATE["default"]
+    for emoji in variants:
+        if emoji not in recent_text:
+            return emoji
+
+    return variants[0]
+
+
+def _contains_state_emoji(text: str) -> bool:
+    return any(emoji in text for emoji in _EMOJI_PALLET)
+
+
+def _append_state_emoji(state: str, response: str) -> str:
+    if state in {"crisis", "instruction_request"}:
+        return response
+
+    emoji = pick_state_emoji(state, recent_text=response)
+    if not emoji:
+        return response
+    if _contains_state_emoji(response):
+        return response
+    return f"{response} {emoji}"
+
+
 def _previous_user_state_was_fatigue(recent_messages: tuple[tuple[str, str], ...]) -> bool:
     for role, message in reversed(recent_messages):
         if role != "user":
@@ -581,7 +628,10 @@ def generate_response(
     state = detect_state(clean_message)
     if state in {"crisis", "instruction_request"}:
         template = RESPONSES.get(state, RESPONSES["default"])
-        return template[0].format(goal_line="Цель сейчас — безопасность.")
+        return _append_state_emoji(
+            state,
+            template[0].format(goal_line="Цель сейчас — безопасность."),
+        )
 
     if not clean_goal and state not in {"goal_focus", "music_request"}:
         return _pick_no_goal_prompt(recent_messages, clean_message)
@@ -616,6 +666,9 @@ def generate_response(
     else:
         template = _pick_template(RESPONSES[state], clean_message)
 
-    if not _state_has_closing_variant(state):
-        return template.format(goal_line=goal_line)
-    return template.format(goal_line=goal_line, closing=closing)
+    response = (
+        template.format(goal_line=goal_line)
+        if not _state_has_closing_variant(state)
+        else template.format(goal_line=goal_line, closing=closing)
+    )
+    return _append_state_emoji(state, response)
