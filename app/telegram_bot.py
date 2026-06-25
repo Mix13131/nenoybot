@@ -13,7 +13,13 @@ try:
     from .config import AppConfig
     from .memory_store import MemoryStore, create_memory_store
     from .openai_client import ConversationContext, generate_ai_response
-    from .reminders import Commitment, format_due_at, get_timezone, parse_commitment
+    from .reminders import (
+        Commitment,
+        format_due_at,
+        get_timezone,
+        parse_commitment,
+        build_reminder_message,
+    )
     from .style_guard import (
         find_botlike_phrases,
         find_forbidden_style_phrases,
@@ -23,7 +29,13 @@ except ImportError:  # Allows `python app/telegram_bot.py`.
     from config import AppConfig
     from memory_store import MemoryStore, create_memory_store
     from openai_client import ConversationContext, generate_ai_response
-    from reminders import Commitment, format_due_at, get_timezone, parse_commitment
+    from reminders import (
+        Commitment,
+        format_due_at,
+        get_timezone,
+        parse_commitment,
+        build_reminder_message,
+    )
     from style_guard import (
         find_botlike_phrases,
         find_forbidden_style_phrases,
@@ -44,7 +56,7 @@ HELP_TEXT = (
     "Напоминание: напиши срок вроде «сегодня в 19:00», «завтра до 12:00» или «через 30 минут».\n"
     "В срок я сам приду за отчётом.\n\n"
     "Команды тоже работают: /goal, /clear_goal, /help.\n"
-    "Сначала цель. Потом действие."
+    "Сначала фокус. Потом пинок. Потом результат."
 )
 
 BUTTON_SET_GOAL = "🎯 Задать цель"
@@ -320,6 +332,15 @@ def _format_commitment_confirmation(commitment: Commitment, now: datetime) -> st
     return f"Фиксирую: {', '.join(values)}, старое время отменяем."
 
 
+def build_due_event_message(task_text: str, event_type: str) -> str:
+    if event_type == "reminder":
+        return (
+            f"Напоминание. {task_text} ещё не финал, но уже пора выходить из кустов. "
+            "Собери первый шаг и не торгуйся с диваном. ⛓️"
+        )
+    return build_reminder_message(task_text)
+
+
 def run_reminder_loop(api: TelegramAPI, store: MemoryStore) -> None:
     timezone = get_timezone(AppConfig.timezone)
     while True:
@@ -328,10 +349,7 @@ def run_reminder_loop(api: TelegramAPI, store: MemoryStore) -> None:
             for reminder in store.due_reminders(now, limit=10):
                 api.send_guarded_message(
                     reminder.chat_id,
-                    (
-                        f"Время пришло. {reminder.task_text} сделал или задача опять живёт только в планах? "
-                        "Что по результату?"
-                    ),
+                    build_due_event_message(reminder.task_text, reminder.event_type),
                 )
                 store.mark_reminder_sent(reminder.id)
         except Exception as exc:

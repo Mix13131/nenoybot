@@ -1,7 +1,7 @@
 from datetime import datetime, timedelta, timezone
 
 import app.memory_store as memory_store
-from app.memory_store import InMemoryStore
+from app.memory_store import InMemoryStore, PostgresMemoryStore
 
 
 def test_in_memory_store_keeps_goal_and_messages() -> None:
@@ -85,3 +85,54 @@ def test_create_memory_store_falls_back_when_postgres_fails(monkeypatch) -> None
     store = memory_store.create_memory_store()
 
     assert isinstance(store, InMemoryStore)
+
+
+def test_postgres_cancel_previous_checkins_uses_flexible_task_match() -> None:
+    class FakeCursor:
+        def __init__(self, on_execute) -> None:
+            self.on_execute = on_execute
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc_val, exc_tb):
+            return None
+
+        def execute(self, query, params):
+            self.on_execute(query, params)
+
+    class FakeConnection:
+        def __init__(self, on_execute) -> None:
+            self._cursor = FakeCursor(on_execute)
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc_val, exc_tb):
+            return None
+
+        def cursor(self):
+            return self._cursor
+
+    captured: dict[str, object] = {}
+
+    def capture(query, params) -> None:
+        captured["query"] = query
+        captured["params"] = params
+
+    store = PostgresMemoryStore("postgres://test")
+    store._connect = lambda: FakeConnection(capture)  # type: ignore[method-assign]
+
+    store.cancel_previous_checkins_for_task(123, "Сделать проверочный запуск API")
+
+    query = str(captured["query"])
+    params = captured["params"]
+
+    assert "task_text ILIKE %s" in query
+    assert "CONCAT('%', task_text, '%')" in query
+    assert params == (
+        123,
+        "Сделать проверочный запуск API",
+        f"%Сделать проверочный запуск API%",
+        "Сделать проверочный запуск API",
+    )

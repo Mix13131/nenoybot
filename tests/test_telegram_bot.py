@@ -15,6 +15,7 @@ from app.telegram_bot import (
     build_reply,
     extract_text_message,
     schedule_reminder_if_found,
+    build_due_event_message,
     run_startup_action,
 )
 from app.style_guard import find_forbidden_style_phrases, is_human_style_response
@@ -239,3 +240,19 @@ def test_no_callback_text_path_without_guard() -> None:
     source_text = telegram_bot_source.read_text(encoding="utf-8")
 
     assert "answer_callback_query" not in source_text
+
+
+def test_reminder_event_sends_warmup_text_not_checkin_text() -> None:
+    reminder_text = build_due_event_message("Проверить API", "reminder")
+
+    assert "Напоминание." in reminder_text
+    assert "Собери первый шаг" in reminder_text
+    assert "Что по результату?" not in reminder_text
+
+
+def test_checkin_event_uses_fact_check_text() -> None:
+    from app.reminders import build_reminder_message
+
+    checkin_text = build_due_event_message("Проверить API", "checkin")
+
+    assert checkin_text == build_reminder_message("Проверить API")

@@ -298,8 +298,10 @@ class PostgresMemoryStore:
         where_clause = "chat_id = %s AND status = 'pending' AND reminder_type = 'checkin'"
         params: tuple[object, ...] = (chat_id,)
         if task_text is not None:
-            where_clause += " AND task_text = %s"
-            params = (chat_id, task_text)
+            where_clause += (
+                " AND (task_text = %s OR task_text ILIKE %s OR %s ILIKE CONCAT('%', task_text, '%'))"
+            )
+            params = (chat_id, task_text, f"%{task_text}%", task_text)
 
         with self._connect() as connection:
             with connection.cursor() as cursor:
