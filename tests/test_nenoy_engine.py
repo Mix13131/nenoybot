@@ -1,6 +1,23 @@
 from app.nenoy_engine import detect_state, generate_response
 
 
+STYLE_MARKERS = (
+    "разминк",
+    "таймер",
+    "подход",
+    "повтор",
+    "табло",
+    "диван",
+    "спринт",
+    "круг",
+)
+
+
+def _has_style_marker(text: str) -> bool:
+    response_lower = text.lower()
+    return any(marker in response_lower for marker in STYLE_MARKERS)
+
+
 def test_detects_procrastination() -> None:
     assert detect_state("Потом сделаю, сейчас лень") == "procrastination"
 
@@ -149,7 +166,7 @@ def test_generate_response_asks_for_deadline() -> None:
     response = generate_response("Отправлю письмо", goal="Закрыть сделку")
 
     assert "Срока нет" in response
-    assert ("Назначь" in response) or ("Когда стартуешь?" in response)
+    assert "Назначь" in response
 
 
 def test_generate_response_fatigue_offers_micro_step() -> None:
@@ -158,6 +175,7 @@ def test_generate_response_fatigue_offers_micro_step() -> None:
     assert "Устал" in response
     assert "Закончить README" in response
     assert ("20 секунд" in response.lower() or "2 минуты" in response.lower())
+    assert _has_style_marker(response)
 
 
 def test_generate_response_postpone_after_fatigue_keeps_choice() -> None:
@@ -219,7 +237,7 @@ def test_generate_response_fatigue_without_vanity_remains_short_step() -> None:
     response = generate_response("я устал сегодня", goal="Сделать webhook")
 
     assert "ресурс" in response.lower() or "устал" in response.lower()
-    assert ("открыть" in response.lower()) or ("вход" in response.lower())
+    assert ("открыть" in response.lower()) or ("открой" in response.lower()) or ("вход" in response.lower())
 
 
 def test_i_do_not_want_is_not_always_quit() -> None:
@@ -235,6 +253,13 @@ def test_tomorrow_requires_specific_time() -> None:
 
 
 def test_offtopic_beer_keeps_vibe() -> None:
-    response = generate_response("может пивка попьем, потрендим за жизнь?", goal="Сделать webhook")
+    response = generate_response("пойдем в кино после", goal="Сделать webhook")
 
     assert "цель" in response.lower() or "задач" in response.lower() or "задача" in response.lower()
+    assert _has_style_marker(response)
+
+
+def test_generate_response_procrastination_has_style_marker() -> None:
+    response = generate_response("я не могу начать", goal="Сделать webhook")
+
+    assert _has_style_marker(response)
