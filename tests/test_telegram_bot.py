@@ -8,10 +8,12 @@ from app.telegram_bot import (
     BUTTON_REPORT,
     BUTTON_SET_GOAL,
     STYLE_GUARD_FALLBACK,
+    STYLE_GUARD_FALLBACKS,
     MAIN_KEYBOARD,
     TelegramAPI,
     TelegramRuntimeState,
     prepare_outgoing_text,
+    pick_style_guard_fallback,
     build_reply,
     extract_text_message,
     schedule_reminder_if_found,
@@ -192,6 +194,24 @@ def test_prepare_outgoing_text_replaces_bot_like_reply() -> None:
     assert fallback == STYLE_GUARD_FALLBACK
 
 
+def test_prepare_outgoing_text_uses_variable_fallback_after_repeat() -> None:
+    fallback = prepare_outgoing_text(
+        123,
+        "Запрос принят.",
+        recent_messages=(("assistant", STYLE_GUARD_FALLBACK),),
+    )
+
+    assert fallback in STYLE_GUARD_FALLBACKS
+    assert fallback != STYLE_GUARD_FALLBACK
+
+
+def test_pick_style_guard_fallback_skips_rejected_text() -> None:
+    fallback = pick_style_guard_fallback(rejected_text=STYLE_GUARD_FALLBACK)
+
+    assert fallback in STYLE_GUARD_FALLBACKS
+    assert fallback != STYLE_GUARD_FALLBACK
+
+
 def test_start_reply_stays_human_style() -> None:
     store = InMemoryStore()
     reply = build_reply(123, "/start", store)
@@ -215,6 +235,18 @@ def test_send_message_is_guarded_for_direct_text() -> None:
 
     assert captured["method"] == "sendMessage"
     assert captured["text"] == STYLE_GUARD_FALLBACK
+
+
+def test_meta_complaint_gets_bug_response_not_style_fallback() -> None:
+    store = InMemoryStore()
+
+    response = build_reply(123, "почему ты не напомнил мне в 14 часов?", store)
+
+    assert "косяк" in response
+    assert "напоминалка не прозвенела" in response
+    assert response not in STYLE_GUARD_FALLBACKS
+    assert not find_forbidden_style_phrases(response)
+    assert is_human_style_response(response)
 
 
 def test_send_guarded_message_passes_reminder_text() -> None:

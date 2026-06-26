@@ -83,7 +83,30 @@ BOT_COMMANDS = (
     {"command": "help", "description": "Показать команды"},
 )
 
-STYLE_GUARD_FALLBACK = "Срежем канцелярит.\nЧто сделал по цели прямо сейчас? 🔥"
+STYLE_GUARD_FALLBACKS = (
+    "Стоп, я опять звучал как будильник с тремя словами. Пересобираю: что по факту прямо сейчас? 🔥",
+    "Заладил — да. Снимаю автопилот. Дай факт: что сделано и что осталось? 🔧",
+    "Поймал. Без попугайства: где результат, где затык? 🧱",
+)
+STYLE_GUARD_FALLBACK = STYLE_GUARD_FALLBACKS[0]
+
+META_COMPLAINT_MARKERS = (
+    "почему ты не напомнил",
+    "почему не напомнишь",
+    "не сработала напоминалка",
+    "не пришло напоминание",
+    "ты проигнорил",
+    "ты заладил",
+    "одно и то же",
+    "не приятно",
+)
+
+META_COMPLAINT_REPLY = (
+    "Да, тут косяк на моей стороне: напоминалка не прозвенела, "
+    "а потом я ещё включил режим попугая.\n\n"
+    "Фиксирую баг: проверяем, было ли событие на нужное время в памяти. "
+    "Сейчас по задаче: дай факт, что собрано, и я помогу добить остаток без цирка. 🔧"
+)
 
 
 @dataclass
@@ -145,8 +168,13 @@ class TelegramAPI:
             },
         )
 
-    def send_guarded_message(self, chat_id: int, text: str) -> None:
-        guarded_text = prepare_outgoing_text(chat_id, text)
+    def send_guarded_message(
+        self,
+        chat_id: int,
+        text: str,
+        recent_messages: tuple[tuple[str, str], ...] = (),
+    ) -> None:
+        guarded_text = prepare_outgoing_text(chat_id, text, recent_messages=recent_messages)
         self._send_raw_message(chat_id, guarded_text)
 
     def send_message(self, chat_id: int, text: str) -> None:
@@ -177,7 +205,11 @@ def extract_text_message(update: dict[str, Any]) -> tuple[int, str] | None:
     return chat_id, text.strip()
 
 
-def prepare_outgoing_text(chat_id: int, text: str) -> str:
+def prepare_outgoing_text(
+    chat_id: int,
+    text: str,
+    recent_messages: tuple[tuple[str, str], ...] = (),
+) -> str:
     violations = find_forbidden_style_phrases(text)
     for violation in violations:
         logger.warning(
@@ -192,9 +224,30 @@ def prepare_outgoing_text(chat_id: int, text: str) -> str:
         logger.warning('Style guard violation: "%s"', phrase)
 
     if violations or not is_human_style_response(text):
-        return STYLE_GUARD_FALLBACK
+        return pick_style_guard_fallback(recent_messages, text)
 
     return text
+
+
+def pick_style_guard_fallback(
+    recent_messages: tuple[tuple[str, str], ...] = (),
+    rejected_text: str = "",
+) -> str:
+    last_assistant_text = ""
+    for role, content in reversed(recent_messages):
+        if role == "assistant":
+            last_assistant_text = content
+            break
+
+    for fallback in STYLE_GUARD_FALLBACKS:
+        if fallback != last_assistant_text and fallback != rejected_text:
+            return fallback
+    return STYLE_GUARD_FALLBACK
+
+
+def is_meta_complaint(text: str) -> bool:
+    normalized = text.casefold()
+    return any(marker in normalized for marker in META_COMPLAINT_MARKERS)
 
 
 def build_reply(
@@ -210,6 +263,12 @@ def build_reply(
         return "Пусто. Назови цель или действие."
 
     reminder_source_text = text
+
+    if is_meta_complaint(text):
+        runtime_state.clear(chat_id)
+        store.append_message(chat_id, "user", text)
+        store.append_message(chat_id, "assistant", META_COMPLAINT_REPLY)
+        return META_COMPLAINT_REPLY
 
     if text.startswith("/start") or text.startswith("/help") or text == BUTTON_HELP:
         runtime_state.clear(chat_id)
@@ -389,7 +448,12 @@ def run_telegram_bot() -> None:
                     continue
 
                 chat_id, text = extracted
-                api.send_guarded_message(chat_id, build_reply(chat_id, text, store, runtime_state))
+                recent_messages = tuple(store.recent_messages(chat_id, limit=5))
+                api.send_guarded_message(
+                    chat_id,
+                    build_reply(chat_id, text, store, runtime_state),
+                    recent_messages=recent_messages,
+                )
         except RuntimeError as exc:
             print(exc)
             time.sleep(5)

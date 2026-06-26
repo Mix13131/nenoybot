@@ -6,7 +6,16 @@ from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 
-TIME_RE = re.compile(r"\b(?:в|до)?\s*(?P<hour>[01]?\d|2[0-3])[:.](?P<minute>[0-5]\d)\b")
+TIME_RE = re.compile(
+    r"\b(?:(?P<prefix>в|до|к)\s*)?(?P<hour>[01]?\d|2[0-3])[:.](?P<minute>[0-5]\d)\b",
+    re.IGNORECASE,
+)
+TIME_WORD_RE = re.compile(
+    r"\b(?:(?P<prefix>в|до|к)\s*)?(?P<hour>[01]?\d|2[0-3])\s*"
+    r"(?:час(?:а|ов|ам)?|ч\.?)\b"
+    r"(?:\s*(?P<minute>[0-5]\d)\s*(?:мин(?:ут)?\.?)?)?",
+    re.IGNORECASE,
+)
 RELATIVE_RE = re.compile(
     r"\bчерез\s+(?P<amount>\d{1,3})\s*(?P<unit>минут[а-я]*|час[а-я]*)\b",
     re.IGNORECASE,
@@ -175,12 +184,13 @@ def parse_relative_due_at(text: str, current: datetime) -> datetime | None:
 
 def parse_calendar_due_at(text: str, current: datetime) -> datetime | None:
     lowered = text.lower()
-    time_match = TIME_RE.search(lowered)
-    if not time_match:
+    time_matches = list(_iter_time_matches(lowered))
+    if not time_matches:
         return None
 
+    time_match = _select_calendar_time_match(time_matches)
     hour = int(time_match.group("hour"))
-    minute = int(time_match.group("minute"))
+    minute = int(time_match.group("minute") or 0)
     date_match = DATE_RE.search(lowered)
 
     if date_match:
@@ -220,13 +230,15 @@ def _extract_typed_times(text: str, current: datetime) -> dict[str, datetime]:
     lowered = text.lower()
     found: dict[str, tuple[datetime, int]] = {}
 
-    for time_match in TIME_RE.finditer(lowered):
+    for time_match in _iter_time_matches(lowered):
         segment = lowered[max(0, time_match.start() - 35) : min(len(lowered), time_match.end() + 15)]
         due_at = _parse_time_from_match(time_match, segment, current)
         if due_at is None or due_at <= current:
             continue
 
         kind = _detect_time_kind(lowered, time_match.start(), time_match.end())
+        if _time_prefix(time_match) in {"до", "к"} and not _has_non_task_keyword_before(lowered, time_match.start()):
+            kind = "task"
         if kind is None:
             continue
 
@@ -237,10 +249,35 @@ def _extract_typed_times(text: str, current: datetime) -> dict[str, datetime]:
     return {kind: due for kind, (due, _index) in found.items()}
 
 
+def _iter_time_matches(text: str) -> list[re.Match[str]]:
+    return sorted(
+        [*TIME_RE.finditer(text), *TIME_WORD_RE.finditer(text)],
+        key=lambda match: (match.start(), match.end()),
+    )
+
+
+def _time_prefix(time_match: re.Match[str]) -> str:
+    return (time_match.groupdict().get("prefix") or "").casefold()
+
+
+def _select_calendar_time_match(time_matches: list[re.Match[str]]) -> re.Match[str]:
+    deadline_matches = [match for match in time_matches if _time_prefix(match) in {"до", "к"}]
+    if deadline_matches:
+        return deadline_matches[-1]
+    return time_matches[0]
+
+
+def _has_non_task_keyword_before(text: str, start: int) -> bool:
+    return any(
+        _find_nearest_keyword(text, start, keywords) is not None
+        for keywords in (REPORT_KEYWORDS, REMINDER_KEYWORDS, UNAVAILABLE_KEYWORDS)
+    )
+
+
 def _parse_time_from_match(time_match: re.Match[str], segment: str, current: datetime) -> datetime | None:
     try:
         hour = int(time_match.group("hour"))
-        minute = int(time_match.group("minute"))
+        minute = int(time_match.group("minute") or 0)
     except (IndexError, ValueError):
         return None
 
@@ -367,7 +404,8 @@ def cleanup_task_text(text: str) -> str:
     task = DATE_RE.sub("", task)
     task = re.sub(r"\b(сегодня|завтра)\b", "", task, flags=re.IGNORECASE)
     task = TIME_RE.sub("", task)
-    task = re.sub(r"\b(в|до)\s*$", "", task, flags=re.IGNORECASE)
+    task = TIME_WORD_RE.sub("", task)
+    task = re.sub(r"\b(в|до|к)\s*$", "", task, flags=re.IGNORECASE)
     task = re.sub(r"\s+", " ", task).strip(" .,:;—-")
     if not task:
         return text.strip()

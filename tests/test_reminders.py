@@ -4,6 +4,10 @@ from zoneinfo import ZoneInfo
 from app.reminders import build_reminder_message, parse_commitment, parse_reminder
 
 
+def moscow_dt(year: int, month: int, day: int, hour: int, minute: int) -> datetime:
+    return datetime(year, month, day, hour, minute, tzinfo=ZoneInfo("Europe/Moscow"))
+
+
 def test_parse_today_reminder() -> None:
     now = datetime(2026, 6, 24, 10, 0, tzinfo=ZoneInfo("Europe/Moscow"))
 
@@ -91,6 +95,50 @@ def test_wind_down_uses_report_time_not_unavailable_time() -> None:
     assert commitment.unavailable_after.hour == 21
     assert commitment.unavailable_after.minute == 0
     assert commitment.active_checkin_time == commitment.report_time
+
+
+def test_parse_task_deadline_with_word_hours() -> None:
+    now = moscow_dt(2026, 1, 1, 12, 53)
+
+    commitment = parse_commitment(
+        "подготовить список фрез для заказа в Китае до 14 часов сегодня",
+        now=now,
+    )
+
+    assert commitment is not None
+    assert commitment.task_deadline is not None
+    assert commitment.task_deadline.hour == 14
+    assert commitment.task_deadline.minute == 0
+    assert commitment.active_checkin_time == commitment.task_deadline
+
+
+def test_parse_start_and_deadline_with_word_hours_uses_deadline_for_checkin() -> None:
+    now = moscow_dt(2026, 1, 1, 10, 30)
+
+    commitment = parse_commitment(
+        "в 11 часов начать фрезы, выполнить до 14 часов сегодня",
+        now=now,
+    )
+
+    assert commitment is not None
+    assert commitment.task_deadline is not None
+    assert commitment.task_deadline.hour == 14
+    assert commitment.active_checkin_time is not None
+    assert commitment.active_checkin_time.hour == 14
+
+
+def test_parse_word_hours_with_dative_and_minutes() -> None:
+    now = moscow_dt(2026, 1, 1, 10, 30)
+
+    commitment = parse_commitment("к 17 часам отправить договор, напомни в 14 часов 30 минут", now=now)
+
+    assert commitment is not None
+    assert commitment.task_deadline is not None
+    assert commitment.task_deadline.hour == 17
+    assert commitment.task_deadline.minute == 0
+    assert commitment.reminder_time is not None
+    assert commitment.reminder_time.hour == 14
+    assert commitment.reminder_time.minute == 30
 
 
 def test_parse_without_time_returns_none() -> None:
