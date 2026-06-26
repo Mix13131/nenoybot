@@ -249,6 +249,24 @@ def test_meta_complaint_gets_bug_response_not_style_fallback() -> None:
     assert is_human_style_response(response)
 
 
+def test_meta_complaint_matches_live_not_remind_future_phrase() -> None:
+    store = InMemoryStore()
+
+    response = build_reply(123, "Почему ты не напомнишь мне про время 14 часов", store)
+
+    assert "косяк" in response
+    assert response not in STYLE_GUARD_FALLBACKS
+
+
+def test_meta_complaint_matches_reminder_not_working_phrase() -> None:
+    store = InMemoryStore()
+
+    response = build_reply(123, "Вообще неприятно, напоминалка не работает", store)
+
+    assert "косяк" in response
+    assert response not in STYLE_GUARD_FALLBACKS
+
+
 def test_send_guarded_message_passes_reminder_text() -> None:
     api = TelegramAPI("stub")
     captured: dict[str, str] = {}
