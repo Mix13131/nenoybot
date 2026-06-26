@@ -1,4 +1,4 @@
-from app.nenoy_engine import detect_state, generate_response
+from app.nenoy_engine import add_style_spark, detect_state, generate_response
 
 
 STYLE_MARKERS = (
@@ -10,6 +10,9 @@ STYLE_MARKERS = (
     "диван",
     "спринт",
     "круг",
+    "китай",
+    "театр",
+    "дедлайн",
 )
 
 
@@ -285,3 +288,25 @@ def test_generate_response_procrastination_has_style_marker() -> None:
     response = generate_response("я не могу начать", goal="Сделать webhook")
 
     assert _has_style_marker(response)
+
+
+def test_add_style_spark_adds_work_task_vibe_to_dry_response() -> None:
+    response = add_style_spark(
+        "До 14:00 собери список фрез: позиции, размеры, количество.",
+        "default",
+    )
+
+    assert "Китай ждёт ТЗ" in response
+    assert response.endswith("количество.")
+
+
+def test_add_style_spark_keeps_existing_vibe_once() -> None:
+    base = "Офисный театр табло не принимает.\n\nДо 14:00 список фрез."
+
+    assert add_style_spark(base, "default") == base
+
+
+def test_add_style_spark_does_not_sarcasm_fatigue() -> None:
+    base = "Устал — снижаем вес. Две минуты входа."
+
+    assert add_style_spark(base, "fatigue") == base

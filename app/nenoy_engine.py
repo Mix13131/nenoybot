@@ -297,6 +297,70 @@ EMOJI_BY_STATE: dict[str, tuple[str, ...]] = {
 
 _EMOJI_PALLET = tuple(sorted({emoji for values in EMOJI_BY_STATE.values() for emoji in values}))
 
+STYLE_SPARKS: dict[str, tuple[str, ...]] = {
+    "work_task": (
+        "Китай ждёт ТЗ, не твою внутреннюю драму.",
+        "Красоту наведёшь потом. Сейчас нужен грязный черновик.",
+        "Сначала скелет заказа, потом бантики.",
+        "Офисный театр табло не принимает.",
+    ),
+    "deadline": (
+        "Дедлайн не ждёт, он просто молча закрывает дверь.",
+        "К финишу без лирики.",
+        "Почти готово — сувенир из страны отмазок.",
+    ),
+    "sandbox": (
+        "Медаль за открытый файл не выдаём.",
+        "Это вход в зал, не тренировка.",
+        "Не продавай себе имитацию как прогресс.",
+    ),
+    "procrastination": (
+        "Диван опять баллотируется в президенты твоего дня.",
+        "Не хочется — это погода, не приказ.",
+        "Настроение сегодня не закупщик.",
+    ),
+    "report": (
+        "Факт на стол.",
+        "Табло без романтики: что сделано?",
+        "Без легенд. Где результат?",
+        "Показывай добычу.",
+    ),
+}
+
+_STYLE_SPARK_MARKERS = (
+    "бантики",
+    "бой",
+    "грязный черновик",
+    "дедлайн",
+    "диван",
+    "добыч",
+    "дымовая шашка",
+    "китай ждёт",
+    "медаль",
+    "не корми",
+    "офисный театр",
+    "погода, не приказ",
+    "скелет",
+    "табло",
+    "фанфары",
+    "финиш",
+)
+
+_STYLE_SPARK_CATEGORY_BY_STATE = {
+    "deadline_missing": "deadline",
+    "postpone": "deadline",
+    "postpone_after_fatigue": "deadline",
+    "procrastination": "procrastination",
+    "overplanning": "procrastination",
+    "report": "report",
+    "default": "work_task",
+    "goal_focus": "work_task",
+    "goal_start_request": "work_task",
+    "overloaded": "work_task",
+    "stuck": "work_task",
+    "bot_error": "work_task",
+}
+
 RESPONSES: dict[str, tuple[str, ...]] = {
     "crisis": (
         "Стоп. Это уже не задача дисциплины. Обратись к близкому человеку или в экстренную "
@@ -527,6 +591,33 @@ def _extract_recent_assistant_messages(recent_messages: tuple[tuple[str, str], .
     return tuple(assistant_messages[-limit:])
 
 
+def _has_style_spark(text: str) -> bool:
+    normalized_text = _normalize(text)
+    return any(marker in normalized_text for marker in _STYLE_SPARK_MARKERS)
+
+
+def add_style_spark(base: str, state: str) -> str:
+    if state in {"crisis", "instruction_request", "fatigue", "doubt", "clarification"}:
+        return base
+
+    if _has_style_spark(base):
+        return base
+
+    category = _STYLE_SPARK_CATEGORY_BY_STATE.get(state)
+    if category is None:
+        return base
+
+    sparks = STYLE_SPARKS.get(category)
+    if not sparks:
+        return base
+
+    spark = sparks[0]
+    if spark in base:
+        return base
+
+    return f"{spark}\n\n{base}"
+
+
 def pick_state_emoji(state: str, recent_text: str = "") -> str:
     if state in {"crisis", "instruction_request"}:
         return ""
@@ -671,4 +762,4 @@ def generate_response(
         if not _state_has_closing_variant(state)
         else template.format(goal_line=goal_line, closing=closing)
     )
-    return _append_state_emoji(state, response)
+    return _append_state_emoji(state, add_style_spark(response, state))
