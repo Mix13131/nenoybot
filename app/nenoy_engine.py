@@ -327,6 +327,29 @@ STYLE_SPARKS: dict[str, tuple[str, ...]] = {
     ),
 }
 
+OPENING_HOOKS: dict[str, tuple[str, ...]] = {
+    "task_list": (
+        "Связь есть. Совесть тоже на линии, не радуйся.",
+        "На связи. Диван под подозрением, задачи живы.",
+        "Проверка пройдена. Теперь без экскурсии по намерениям.",
+    ),
+    "deadline": (
+        "Дедлайн уже точит вилку.",
+        "Время не спрашивает, готов ли ты морально.",
+        "До финиша без лирики и внутреннего театра.",
+    ),
+    "procrastination": (
+        "Диван опять строит карьеру за твой счёт.",
+        "Лень пришла без приглашения. Не корми.",
+        "Не хочется — это погода, не приказ.",
+    ),
+    "report": (
+        "Факт на стол.",
+        "Табло двинулось, фанфары не арендуем.",
+        "Показывай добычу.",
+    ),
+}
+
 _STYLE_SPARK_MARKERS = (
     "бантики",
     "бой",
@@ -346,6 +369,18 @@ _STYLE_SPARK_MARKERS = (
     "финиш",
 )
 
+_OPENING_HOOK_MARKERS = (
+    "совесть тоже на линии",
+    "диван под подозрением",
+    "дедлайн уже точит",
+    "время не спрашивает",
+    "ленЬ пришла".casefold(),
+    "настроение сегодня",
+    "табло двинулось",
+    "факт на стол",
+    "показывай добычу",
+)
+
 _STYLE_SPARK_CATEGORY_BY_STATE = {
     "deadline_missing": "deadline",
     "postpone": "deadline",
@@ -360,6 +395,33 @@ _STYLE_SPARK_CATEGORY_BY_STATE = {
     "stuck": "work_task",
     "bot_error": "work_task",
 }
+
+_OPENING_HOOK_CATEGORY_BY_STATE = {
+    "deadline_missing": "deadline",
+    "postpone": "deadline",
+    "postpone_after_fatigue": "deadline",
+    "procrastination": "procrastination",
+    "overplanning": "procrastination",
+    "report": "report",
+    "default": "task_list",
+    "goal_focus": "task_list",
+    "goal_start_request": "task_list",
+    "overloaded": "task_list",
+    "stuck": "task_list",
+    "bot_error": "task_list",
+}
+
+_DRY_OPENING_PREFIXES = (
+    "связь есть",
+    "принял",
+    "принято",
+    "ок",
+    "окей",
+    "задача понятна",
+    "у тебя",
+    "по факту",
+    "цель есть",
+)
 
 RESPONSES: dict[str, tuple[str, ...]] = {
     "crisis": (
@@ -618,6 +680,39 @@ def add_style_spark(base: str, state: str) -> str:
     return f"{spark}\n\n{base}"
 
 
+def _has_opening_hook(text: str) -> bool:
+    normalized_text = _normalize(text)
+    return any(marker in normalized_text for marker in _OPENING_HOOK_MARKERS)
+
+
+def _starts_with_dry_opening(text: str) -> bool:
+    normalized_text = _normalize(text).lstrip()
+    return any(normalized_text.startswith(prefix) for prefix in _DRY_OPENING_PREFIXES)
+
+
+def add_opening_hook(response: str, state: str) -> str:
+    if state in {"crisis", "instruction_request", "fatigue", "doubt", "clarification"}:
+        return response
+
+    if _has_opening_hook(response):
+        return response
+
+    category = _OPENING_HOOK_CATEGORY_BY_STATE.get(state)
+    hooks = OPENING_HOOKS.get(category or "")
+    if not hooks:
+        return response
+
+    hook = hooks[0]
+    if not _starts_with_dry_opening(response):
+        return f"{hook}\n\n{response}"
+
+    _, separator, tail = response.partition(".")
+    if not separator or not tail.strip():
+        return hook
+
+    return f"{hook}\n\n{tail.strip()}"
+
+
 def pick_state_emoji(state: str, recent_text: str = "") -> str:
     if state in {"crisis", "instruction_request"}:
         return ""
@@ -762,4 +857,6 @@ def generate_response(
         if not _state_has_closing_variant(state)
         else template.format(goal_line=goal_line, closing=closing)
     )
-    return _append_state_emoji(state, add_style_spark(response, state))
+    response = add_opening_hook(response, state)
+    response = add_style_spark(response, state)
+    return _append_state_emoji(state, response)

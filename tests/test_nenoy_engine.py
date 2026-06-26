@@ -1,4 +1,4 @@
-from app.nenoy_engine import add_style_spark, detect_state, generate_response
+from app.nenoy_engine import add_opening_hook, add_style_spark, detect_state, generate_response
 
 
 STYLE_MARKERS = (
@@ -310,3 +310,23 @@ def test_add_style_spark_does_not_sarcasm_fatigue() -> None:
     base = "Устал — снижаем вес. Две минуты входа."
 
     assert add_style_spark(base, "fatigue") == base
+
+
+def test_add_opening_hook_replaces_dry_start() -> None:
+    response = add_opening_hook("Принял. До 17:00 отправляешь письмо.", "deadline_missing")
+
+    assert response.startswith("Дедлайн уже точит вилку.")
+    assert "Принял." not in response
+    assert "До 17:00 отправляешь письмо." in response
+
+
+def test_add_opening_hook_does_not_duplicate_existing_hook() -> None:
+    base = "Связь есть. Совесть тоже на линии, не радуйся.\n\nДо 14:00 фрезы."
+
+    assert add_opening_hook(base, "default") == base
+
+
+def test_add_opening_hook_skips_fatigue() -> None:
+    base = "Окей. Усталость видна, снижаем вес."
+
+    assert add_opening_hook(base, "fatigue") == base
