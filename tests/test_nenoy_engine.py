@@ -1,4 +1,10 @@
-from app.nenoy_engine import add_opening_hook, add_style_spark, detect_state, generate_response
+from app.nenoy_engine import (
+    add_motivation_stamp,
+    add_opening_hook,
+    add_style_spark,
+    detect_state,
+    generate_response,
+)
 
 
 STYLE_MARKERS = (
@@ -330,3 +336,21 @@ def test_add_opening_hook_skips_fatigue() -> None:
     base = "Окей. Усталость видна, снижаем вес."
 
     assert add_opening_hook(base, "fatigue") == base
+
+
+def test_add_motivation_stamp_adds_final_kick() -> None:
+    response = add_motivation_stamp("До 14:00 собираешь список фрез.", "default")
+
+    assert response.endswith("Погнали. Без героизма, но с результатом.")
+
+
+def test_add_motivation_stamp_does_not_duplicate() -> None:
+    base = "До 14:00 список.\n\nПогнали. Без героизма, но с результатом."
+
+    assert add_motivation_stamp(base, "default") == base
+
+
+def test_add_motivation_stamp_skips_crisis() -> None:
+    base = "Стоп. Это уже не задача дисциплины."
+
+    assert add_motivation_stamp(base, "crisis") == base

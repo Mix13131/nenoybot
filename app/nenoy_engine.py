@@ -350,6 +350,34 @@ OPENING_HOOKS: dict[str, tuple[str, ...]] = {
     ),
 }
 
+MOTIVATION_STAMPS: dict[str, tuple[str, ...]] = {
+    "default": (
+        "Погнали. Без героизма, но с результатом.",
+        "Сделай первый удар. Мотивация догонит по дороге.",
+        "Не надо быть великим. Надо быть конкретным.",
+    ),
+    "deadline": (
+        "Табло любит факты. Дай ему что пожевать.",
+        "До финиша без лирики.",
+        "Один нормальный рывок сейчас — минус вечерний позор.",
+    ),
+    "procrastination": (
+        "Сделай первый удар. Мотивация догонит по дороге.",
+        "Не жди настроения. Оно сегодня не начальник смены.",
+        "Диван подождёт. Уважение к себе — нет.",
+    ),
+    "fatigue": (
+        "Не геройствуй — просто начни.",
+        "Пять минут честной работы сильнее часа красивых обещаний.",
+        "Начни грязно. Закончишь красиво.",
+    ),
+    "report": (
+        "Открыл, собрал, добил. Красота потом.",
+        "Сегодня выигрывает не вдохновлённый, а начавший.",
+        "Вперёд. Ной ковчег не настроением строил.",
+    ),
+}
+
 _STYLE_SPARK_MARKERS = (
     "бантики",
     "бой",
@@ -381,6 +409,21 @@ _OPENING_HOOK_MARKERS = (
     "показывай добычу",
 )
 
+_MOTIVATION_STAMP_MARKERS = (
+    "без героизма",
+    "мотивация догонит",
+    "не начальник смены",
+    "табло любит факты",
+    "вечерний позор",
+    "надо быть конкретным",
+    "открыл, собрал, добил",
+    "уважение к себе",
+    "начни грязно",
+    "выигрывает не вдохновлённый",
+    "пять минут честной работы",
+    "ной ковчег",
+)
+
 _STYLE_SPARK_CATEGORY_BY_STATE = {
     "deadline_missing": "deadline",
     "postpone": "deadline",
@@ -409,6 +452,23 @@ _OPENING_HOOK_CATEGORY_BY_STATE = {
     "overloaded": "task_list",
     "stuck": "task_list",
     "bot_error": "task_list",
+}
+
+_MOTIVATION_STAMP_CATEGORY_BY_STATE = {
+    "deadline_missing": "deadline",
+    "postpone": "deadline",
+    "postpone_after_fatigue": "deadline",
+    "procrastination": "procrastination",
+    "overplanning": "procrastination",
+    "fatigue": "fatigue",
+    "report": "report",
+    "default": "default",
+    "goal_focus": "default",
+    "goal_start_request": "default",
+    "overloaded": "default",
+    "stuck": "default",
+    "bot_error": "default",
+    "whining": "default",
 }
 
 _DRY_OPENING_PREFIXES = (
@@ -713,6 +773,24 @@ def add_opening_hook(response: str, state: str) -> str:
     return f"{hook}\n\n{tail.strip()}"
 
 
+def _has_motivation_stamp(text: str) -> bool:
+    normalized_text = _normalize(text)
+    return any(marker in normalized_text for marker in _MOTIVATION_STAMP_MARKERS)
+
+
+def add_motivation_stamp(response: str, state: str) -> str:
+    if state in {"crisis", "instruction_request"}:
+        return response
+
+    if _has_motivation_stamp(response):
+        return response
+
+    category = _MOTIVATION_STAMP_CATEGORY_BY_STATE.get(state, "default")
+    stamps = MOTIVATION_STAMPS.get(category) or MOTIVATION_STAMPS["default"]
+    stamp = stamps[0]
+    return f"{response}\n\n{stamp}"
+
+
 def pick_state_emoji(state: str, recent_text: str = "") -> str:
     if state in {"crisis", "instruction_request"}:
         return ""
@@ -859,4 +937,5 @@ def generate_response(
     )
     response = add_opening_hook(response, state)
     response = add_style_spark(response, state)
+    response = add_motivation_stamp(response, state)
     return _append_state_emoji(state, response)
