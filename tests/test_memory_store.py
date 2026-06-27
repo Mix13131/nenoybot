@@ -2,6 +2,7 @@ from datetime import datetime, timedelta, timezone
 
 import app.memory_store as memory_store
 from app.memory_store import InMemoryStore, PostgresMemoryStore
+from app.work_blocks import WorkBlock
 
 
 def test_in_memory_store_keeps_goal_and_messages() -> None:
@@ -27,13 +28,19 @@ def test_in_memory_store_clears_goal() -> None:
 def test_in_memory_store_keeps_due_reminders() -> None:
     store = InMemoryStore()
     now = datetime(2026, 6, 24, 10, 0, tzinfo=timezone.utc)
-    reminder_id = store.add_reminder(123, "проверить API", now - timedelta(minutes=1))
+    reminder_id = store.add_reminder(
+        123,
+        "проверить API",
+        now - timedelta(minutes=1),
+        work_block_id="block-1",
+    )
 
     due = store.due_reminders(now)
 
     assert len(due) == 1
     assert due[0].id == reminder_id
     assert due[0].task_text == "проверить API"
+    assert due[0].work_block_id == "block-1"
 
     store.mark_reminder_sent(reminder_id)
 
@@ -68,6 +75,45 @@ def test_rescheduling_cancels_previous_checkin_only() -> None:
     assert second not in store.reminders
     assert reminder_only in store.reminders
     assert reminder_only != second
+
+
+def test_in_memory_store_lists_pending_reminders() -> None:
+    store = InMemoryStore()
+    now = datetime(2026, 6, 24, 10, 0, tzinfo=timezone.utc)
+    first = store.add_reminder(123, "фрезы", now + timedelta(hours=1), work_block_id="supply")
+    second = store.add_reminder(123, "договор", now + timedelta(hours=2), work_block_id="contracts")
+    store.add_reminder(456, "чужая задача", now + timedelta(hours=3))
+
+    pending = store.pending_reminders(123)
+
+    assert [event.id for event in pending] == [first, second]
+    assert pending[0].work_block_id == "supply"
+
+
+def test_upsert_and_list_active_work_blocks() -> None:
+    store = InMemoryStore()
+    active = WorkBlock(
+        id="supply",
+        chat_id=123,
+        title="Поставки / Китай",
+        domain="supply",
+        aliases=("китай", "фрез"),
+        entities=("китай",),
+    )
+    inactive = WorkBlock(
+        id="old",
+        chat_id=123,
+        title="Старый блок",
+        domain="unknown",
+        active=False,
+    )
+
+    store.upsert_work_block(active)
+    store.upsert_work_block(inactive)
+
+    assert store.list_active_work_blocks(123) == [active]
+    assert store.get_work_block(123, "supply") == active
+    assert store.get_work_block(456, "supply") is None
 
 
 def test_create_memory_store_falls_back_when_postgres_fails(monkeypatch) -> None:

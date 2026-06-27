@@ -25,6 +25,7 @@ try:
         find_forbidden_style_phrases,
         is_human_style_response,
     )
+    from .work_blocks import create_work_block, match_work_block
 except ImportError:  # Allows `python app/telegram_bot.py`.
     from config import AppConfig
     from memory_store import MemoryStore, create_memory_store
@@ -41,6 +42,7 @@ except ImportError:  # Allows `python app/telegram_bot.py`.
         find_forbidden_style_phrases,
         is_human_style_response,
     )
+    from work_blocks import create_work_block, match_work_block
 
 
 logger = logging.getLogger(__name__)
@@ -113,6 +115,15 @@ META_COMPLAINT_REPLY = (
     "а потом я ещё включил режим попугая.\n\n"
     "Фиксирую баг: проверяем, было ли событие на нужное время в памяти. "
     "Сейчас по задаче: дай факт, что собрано, и я помогу добить остаток без цирка. 🔧"
+)
+
+WORK_OVERVIEW_MARKERS = (
+    "что у меня в работе",
+    "что сейчас в работе",
+    "какие задачи",
+    "что по целям",
+    "что у меня по целям",
+    "что делать дальше",
 )
 
 
@@ -257,6 +268,11 @@ def is_meta_complaint(text: str) -> bool:
     return any(marker in normalized for marker in META_COMPLAINT_MARKERS)
 
 
+def is_work_overview_request(text: str) -> bool:
+    normalized = text.casefold()
+    return any(marker in normalized for marker in WORK_OVERVIEW_MARKERS)
+
+
 def build_reply(
     chat_id: int,
     text: str,
@@ -276,6 +292,13 @@ def build_reply(
         store.append_message(chat_id, "user", text)
         store.append_message(chat_id, "assistant", META_COMPLAINT_REPLY)
         return META_COMPLAINT_REPLY
+
+    if is_work_overview_request(text):
+        runtime_state.clear(chat_id)
+        response = build_work_overview(chat_id, store)
+        store.append_message(chat_id, "user", text)
+        store.append_message(chat_id, "assistant", response)
+        return response
 
     if text.startswith("/start") or text.startswith("/help") or text == BUTTON_HELP:
         runtime_state.clear(chat_id)
@@ -361,14 +384,23 @@ def schedule_reminder_if_found(chat_id: int, text: str, store: MemoryStore) -> s
     if commitment.active_checkin_time:
         store.cancel_previous_checkins_for_task(chat_id, commitment.task_text)
 
+    work_block_id = resolve_work_block_id(chat_id, commitment, store)
+
     if commitment.reminder_time:
-        store.add_reminder(chat_id, commitment.task_text, commitment.reminder_time, reminder_type="reminder")
+        store.add_reminder(
+            chat_id,
+            commitment.task_text,
+            commitment.reminder_time,
+            reminder_type="reminder",
+            work_block_id=work_block_id,
+        )
     if commitment.active_checkin_time:
         store.add_reminder(
             chat_id,
             commitment.task_text,
             commitment.active_checkin_time,
             reminder_type="checkin",
+            work_block_id=work_block_id,
         )
 
     confirmation = _format_commitment_confirmation(commitment, now)
@@ -380,6 +412,91 @@ def schedule_reminder_if_found(chat_id: int, text: str, store: MemoryStore) -> s
         "Это не дата в заметках. Это проверка факта. "
         "Вернешься с результатом или с новой отговоркой? 🔥"
     )
+
+
+def resolve_work_block_id(chat_id: int, commitment: Commitment, store: MemoryStore) -> str | None:
+    try:
+        blocks = store.list_active_work_blocks(chat_id)
+        match = match_work_block(commitment.task_text, blocks)
+        if match.block is not None:
+            return match.block.id
+        return store.upsert_work_block(create_work_block(chat_id, commitment.task_text)).id
+    except Exception as exc:
+        logger.warning("Work block assignment skipped chat_id=%s: %s", chat_id, exc)
+        return None
+
+
+def build_work_overview(chat_id: int, store: MemoryStore) -> str:
+    pending_events = store.pending_reminders(chat_id, limit=50)
+    if not pending_events:
+        return (
+            "Связь есть. Совесть тоже на линии, не радуйся.\n\n"
+            "В работе пусто: либо всё закрыто, либо задачи прячутся без срока.\n\n"
+            "Назови следующий фронт и время. Табло любит факты. ⛓️"
+        )
+
+    grouped: dict[str, list] = {}
+    for event in pending_events:
+        group_key = event.work_block_id or f"event:{event.id}"
+        grouped.setdefault(group_key, []).append(event)
+
+    block_rows = []
+    for group_key, events in grouped.items():
+        selected_event = _select_overview_event(events)
+        block_title = _work_block_title(chat_id, group_key, store)
+        block_rows.append((block_title, selected_event))
+
+    block_rows.sort(key=lambda item: item[1].due_at)
+    visible_rows = block_rows[:3]
+    fronts_label = _fronts_label(len(visible_rows))
+
+    lines = [
+        "Связь есть. Совесть тоже на линии, не радуйся.",
+        "",
+        f"В работе {fronts_label}:",
+    ]
+    for index, (title, event) in enumerate(visible_rows, start=1):
+        lines.append(
+            f"{index}. {title} — до {event.due_at:%H:%M}: {_compact_task_text(event.task_text)}."
+        )
+
+    first_title = visible_rows[0][0]
+    lines.extend(
+        [
+            "",
+            f"Сначала режешь ближайший дедлайн — {first_title}. "
+            "Остальное не трогаем, пока табло не получит факт. Погнали. ⛓️",
+        ]
+    )
+    return "\n".join(lines)
+
+
+def _select_overview_event(events: list) -> object:
+    checkins = [event for event in events if event.event_type == "checkin"]
+    candidates = checkins or events
+    return sorted(candidates, key=lambda event: event.due_at)[0]
+
+
+def _work_block_title(chat_id: int, group_key: str, store: MemoryStore) -> str:
+    if group_key.startswith("event:"):
+        return "Рабочий блок"
+    block = store.get_work_block(chat_id, group_key)
+    return block.title if block is not None else "Рабочий блок"
+
+
+def _fronts_label(count: int) -> str:
+    if count == 1:
+        return "один фронт"
+    if count == 2:
+        return "два фронта"
+    return "три фронта"
+
+
+def _compact_task_text(task_text: str) -> str:
+    compact = " ".join(task_text.split()).strip(" .,:;—-")
+    if len(compact) <= 90:
+        return compact
+    return f"{compact[:87].rstrip()}..."
 
 
 def _format_commitment_confirmation(commitment: Commitment, now: datetime) -> str | None:

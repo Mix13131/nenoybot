@@ -1,5 +1,7 @@
+from datetime import datetime, timezone
 from app.memory_store import InMemoryStore
 from app.reminders import build_reminder_message
+from app.work_blocks import WorkBlock
 from app.telegram_bot import (
     BOT_COMMANDS,
     BUTTON_CLEAR_GOAL,
@@ -15,6 +17,7 @@ from app.telegram_bot import (
     prepare_outgoing_text,
     pick_style_guard_fallback,
     build_reply,
+    build_work_overview,
     extract_text_message,
     schedule_reminder_if_found,
     build_due_event_message,
@@ -186,6 +189,85 @@ def test_schedule_reminder_updates_previous_times_for_same_task() -> None:
     assert len(checkin_times) == 1
     assert checkin_times[0].hour == 20
     assert checkin_times[0].minute == 35
+
+
+def test_schedule_event_gets_work_block_id() -> None:
+    store = InMemoryStore()
+
+    response = schedule_reminder_if_found(
+        123,
+        "подготовить список фрез для заказа в Китае завтра до 14 часов",
+        store,
+    )
+
+    reminders = list(store.reminders.values())
+    assert response is not None
+    assert len(reminders) == 1
+    assert reminders[0].work_block_id is not None
+
+    block = store.get_work_block(123, reminders[0].work_block_id)
+    assert block is not None
+    assert block.title == "Поставки / Китай"
+
+
+def test_work_overview_groups_pending_events_by_blocks() -> None:
+    store = InMemoryStore()
+    schedule_reminder_if_found(
+        123,
+        "подготовить список фрез для заказа в Китае завтра до 14 часов",
+        store,
+    )
+    schedule_reminder_if_found(
+        123,
+        "внести правки в договор с Аструмом завтра до 17 часов",
+        store,
+    )
+
+    response = build_work_overview(123, store)
+
+    assert "Связь есть. Совесть тоже на линии" in response
+    assert "В работе два фронта" in response
+    assert "Поставки / Китай" in response
+    assert "Договоры / Аструм" in response
+    assert "Погнали" in response
+
+
+def test_work_overview_prioritizes_nearest_deadline() -> None:
+    store = InMemoryStore()
+    schedule_reminder_if_found(
+        123,
+        "внести правки в договор с Аструмом завтра до 17 часов",
+        store,
+    )
+    schedule_reminder_if_found(
+        123,
+        "подготовить список фрез для заказа в Китае завтра до 14 часов",
+        store,
+    )
+
+    response = build_work_overview(123, store)
+
+    assert response.index("Поставки / Китай") < response.index("Договоры / Аструм")
+    assert "ближайший дедлайн — Поставки / Китай" in response
+
+
+def test_build_reply_uses_work_overview_route() -> None:
+    store = InMemoryStore()
+    due_at = datetime(2026, 6, 24, 14, 0, tzinfo=timezone.utc)
+    block = store.upsert_work_block(
+        WorkBlock(
+            id="supply",
+            chat_id=123,
+            title="Поставки / Китай",
+            domain="supply",
+        )
+    )
+    store.add_reminder(123, "список фрез", due_at, reminder_type="checkin", work_block_id=block.id)
+
+    response = build_reply(123, "что у меня в работе", store)
+
+    assert "Поставки / Китай" in response
+    assert "список фрез" in response
 
 
 def test_prepare_outgoing_text_replaces_bot_like_reply() -> None:

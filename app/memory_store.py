@@ -1,13 +1,16 @@
 from __future__ import annotations
 
+import json
 from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Protocol
 
 try:
     from .config import AppConfig
+    from .work_blocks import WorkBlock
 except ImportError:  # Allows direct script imports in local checks.
     from config import AppConfig
+    from work_blocks import WorkBlock
 
 
 class MemoryStore(Protocol):
@@ -31,13 +34,22 @@ class MemoryStore(Protocol):
         task_text: str,
         due_at: datetime,
         reminder_type: str = "checkin",
+        work_block_id: str | None = None,
     ) -> int: ...
 
     def due_reminders(self, now: datetime, limit: int = 10) -> list["ScheduledEvent"]: ...
 
+    def pending_reminders(self, chat_id: int, limit: int = 50) -> list["ScheduledEvent"]: ...
+
     def mark_reminder_sent(self, reminder_id: int) -> None: ...
 
     def cancel_previous_checkins_for_task(self, chat_id: int, task_text: str | None = None) -> None: ...
+
+    def list_active_work_blocks(self, chat_id: int) -> list[WorkBlock]: ...
+
+    def upsert_work_block(self, block: WorkBlock) -> WorkBlock: ...
+
+    def get_work_block(self, chat_id: int, block_id: str) -> WorkBlock | None: ...
 
 
 @dataclass(frozen=True)
@@ -47,6 +59,7 @@ class ScheduledEvent:
     task_text: str
     event_type: str
     due_at: datetime
+    work_block_id: str | None = None
 
     @property
     def reminder_type(self) -> str:
@@ -61,6 +74,7 @@ class InMemoryStore:
     reminders: dict[int, ScheduledEvent] = field(default_factory=dict)
     sent_reminders: set[int] = field(default_factory=set)
     next_reminder_id: int = 1
+    work_blocks: dict[str, WorkBlock] = field(default_factory=dict)
 
     def ensure_schema(self) -> None:
         return None
@@ -91,6 +105,7 @@ class InMemoryStore:
         task_text: str,
         due_at: datetime,
         reminder_type: str = "checkin",
+        work_block_id: str | None = None,
     ) -> int:
         reminder_id = self.next_reminder_id
         self.next_reminder_id += 1
@@ -100,6 +115,7 @@ class InMemoryStore:
             task_text=task_text,
             event_type=reminder_type,
             due_at=due_at,
+            work_block_id=work_block_id,
         )
         return reminder_id
 
@@ -128,8 +144,33 @@ class InMemoryStore:
         ]
         return sorted(due, key=lambda reminder: reminder.due_at)[:limit]
 
+    def pending_reminders(self, chat_id: int, limit: int = 50) -> list[ScheduledEvent]:
+        pending = [
+            reminder
+            for reminder in self.reminders.values()
+            if reminder.chat_id == chat_id and reminder.id not in self.sent_reminders
+        ]
+        return sorted(pending, key=lambda reminder: reminder.due_at)[:limit]
+
     def mark_reminder_sent(self, reminder_id: int) -> None:
         self.sent_reminders.add(reminder_id)
+
+    def list_active_work_blocks(self, chat_id: int) -> list[WorkBlock]:
+        return [
+            block
+            for block in self.work_blocks.values()
+            if block.chat_id == chat_id and block.active
+        ]
+
+    def upsert_work_block(self, block: WorkBlock) -> WorkBlock:
+        self.work_blocks[block.id] = block
+        return block
+
+    def get_work_block(self, chat_id: int, block_id: str) -> WorkBlock | None:
+        block = self.work_blocks.get(block_id)
+        if block is None or block.chat_id != chat_id:
+            return None
+        return block
 
 
 class PostgresMemoryStore:
@@ -182,6 +223,7 @@ class PostgresMemoryStore:
                         task_text TEXT NOT NULL,
                         due_at TIMESTAMPTZ NOT NULL,
                         reminder_type TEXT NOT NULL DEFAULT 'checkin',
+                        work_block_id TEXT,
                         status TEXT NOT NULL DEFAULT 'pending',
                         created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
                         sent_at TIMESTAMPTZ
@@ -196,8 +238,34 @@ class PostgresMemoryStore:
                 )
                 cursor.execute(
                     """
+                    ALTER TABLE IF EXISTS nenoy_reminders
+                    ADD COLUMN IF NOT EXISTS work_block_id TEXT
+                    """
+                )
+                cursor.execute(
+                    """
                     CREATE INDEX IF NOT EXISTS idx_nenoy_reminders_due
                     ON nenoy_reminders (status, due_at)
+                    """
+                )
+                cursor.execute(
+                    """
+                    CREATE TABLE IF NOT EXISTS nenoy_work_blocks (
+                        id TEXT PRIMARY KEY,
+                        chat_id BIGINT NOT NULL,
+                        title TEXT NOT NULL,
+                        domain TEXT NOT NULL,
+                        aliases JSONB NOT NULL DEFAULT '[]'::jsonb,
+                        entities JSONB NOT NULL DEFAULT '[]'::jsonb,
+                        active BOOLEAN NOT NULL DEFAULT TRUE,
+                        created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+                    )
+                    """
+                )
+                cursor.execute(
+                    """
+                    CREATE INDEX IF NOT EXISTS idx_nenoy_work_blocks_chat_active
+                    ON nenoy_work_blocks (chat_id, active)
                     """
                 )
 
@@ -280,16 +348,17 @@ class PostgresMemoryStore:
         task_text: str,
         due_at: datetime,
         reminder_type: str = "checkin",
+        work_block_id: str | None = None,
     ) -> int:
         with self._connect() as connection:
             with connection.cursor() as cursor:
                 cursor.execute(
                     """
-                    INSERT INTO nenoy_reminders (chat_id, task_text, due_at, reminder_type)
-                    VALUES (%s, %s, %s, %s)
+                    INSERT INTO nenoy_reminders (chat_id, task_text, due_at, reminder_type, work_block_id)
+                    VALUES (%s, %s, %s, %s, %s)
                     RETURNING id
                     """,
-                    (chat_id, task_text, due_at, reminder_type),
+                    (chat_id, task_text, due_at, reminder_type, work_block_id),
                 )
                 row = cursor.fetchone()
         return int(row[0])
@@ -320,7 +389,7 @@ class PostgresMemoryStore:
             with connection.cursor() as cursor:
                 cursor.execute(
                     """
-                    SELECT id, chat_id, task_text, due_at, reminder_type
+                    SELECT id, chat_id, task_text, due_at, reminder_type, work_block_id
                     FROM nenoy_reminders
                     WHERE status = 'pending' AND due_at <= %s
                     ORDER BY due_at ASC
@@ -336,8 +405,35 @@ class PostgresMemoryStore:
                 task_text=task_text,
                 event_type=reminder_type,
                 due_at=due_at,
+                work_block_id=work_block_id,
             )
-            for reminder_id, chat_id, task_text, due_at, reminder_type in rows
+            for reminder_id, chat_id, task_text, due_at, reminder_type, work_block_id in rows
+        ]
+
+    def pending_reminders(self, chat_id: int, limit: int = 50) -> list[ScheduledEvent]:
+        with self._connect() as connection:
+            with connection.cursor() as cursor:
+                cursor.execute(
+                    """
+                    SELECT id, chat_id, task_text, due_at, reminder_type, work_block_id
+                    FROM nenoy_reminders
+                    WHERE chat_id = %s AND status = 'pending'
+                    ORDER BY due_at ASC
+                    LIMIT %s
+                    """,
+                    (chat_id, limit),
+                )
+                rows = cursor.fetchall()
+        return [
+            ScheduledEvent(
+                id=int(reminder_id),
+                chat_id=int(row_chat_id),
+                task_text=task_text,
+                event_type=reminder_type,
+                due_at=due_at,
+                work_block_id=work_block_id,
+            )
+            for reminder_id, row_chat_id, task_text, due_at, reminder_type, work_block_id in rows
         ]
 
     def mark_reminder_sent(self, reminder_id: int) -> None:
@@ -351,6 +447,64 @@ class PostgresMemoryStore:
                     """,
                     (reminder_id,),
                 )
+
+    def list_active_work_blocks(self, chat_id: int) -> list[WorkBlock]:
+        with self._connect() as connection:
+            with connection.cursor() as cursor:
+                cursor.execute(
+                    """
+                    SELECT id, chat_id, title, domain, aliases, entities, active
+                    FROM nenoy_work_blocks
+                    WHERE chat_id = %s AND active = TRUE
+                    ORDER BY created_at ASC
+                    """,
+                    (chat_id,),
+                )
+                rows = cursor.fetchall()
+        return [_work_block_from_row(row) for row in rows]
+
+    def upsert_work_block(self, block: WorkBlock) -> WorkBlock:
+        with self._connect() as connection:
+            with connection.cursor() as cursor:
+                cursor.execute(
+                    """
+                    INSERT INTO nenoy_work_blocks (id, chat_id, title, domain, aliases, entities, active)
+                    VALUES (%s, %s, %s, %s, %s::jsonb, %s::jsonb, %s)
+                    ON CONFLICT (id)
+                    DO UPDATE SET
+                        title = EXCLUDED.title,
+                        domain = EXCLUDED.domain,
+                        aliases = EXCLUDED.aliases,
+                        entities = EXCLUDED.entities,
+                        active = EXCLUDED.active
+                    """,
+                    (
+                        block.id,
+                        block.chat_id,
+                        block.title,
+                        block.domain,
+                        json.dumps(block.aliases, ensure_ascii=False),
+                        json.dumps(block.entities, ensure_ascii=False),
+                        block.active,
+                    ),
+                )
+        return block
+
+    def get_work_block(self, chat_id: int, block_id: str) -> WorkBlock | None:
+        with self._connect() as connection:
+            with connection.cursor() as cursor:
+                cursor.execute(
+                    """
+                    SELECT id, chat_id, title, domain, aliases, entities, active
+                    FROM nenoy_work_blocks
+                    WHERE chat_id = %s AND id = %s
+                    """,
+                    (chat_id, block_id),
+                )
+                row = cursor.fetchone()
+        if row is None:
+            return None
+        return _work_block_from_row(row)
 
 
 def create_memory_store() -> MemoryStore:
@@ -366,3 +520,24 @@ def create_memory_store() -> MemoryStore:
         return InMemoryStore()
 
     return store
+
+
+def _work_block_from_row(row) -> WorkBlock:
+    block_id, chat_id, title, domain, aliases, entities, active = row
+    return WorkBlock(
+        id=str(block_id),
+        chat_id=int(chat_id),
+        title=str(title),
+        domain=str(domain),
+        aliases=_json_tuple(aliases),
+        entities=_json_tuple(entities),
+        active=bool(active),
+    )
+
+
+def _json_tuple(value) -> tuple[str, ...]:
+    if value is None:
+        return ()
+    if isinstance(value, str):
+        return tuple(json.loads(value))
+    return tuple(value)
