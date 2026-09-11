@@ -71,12 +71,14 @@ BUTTON_KICK = "🔥 Пинок"
 BUTTON_HELP = "📌 Меню"
 BUTTON_CLEAR_GOAL = "🧹 Сбросить цель"
 BUTTON_FEEDBACK = "Мои наблюдения по проекту"
-BUTTON_OBSERVATION = "📝 Поделиться наблюдением"
+BUTTON_OBSERVATION = "📝 Наблюдение"
 BUTTON_NEED_HELP = "🛟 Нужна помощь"
 BUTTON_SUPPORT_NOW = "🤝 Поддержи сейчас"
 BUTTON_SCHEDULE = "🕒 Расписание"
 BUTTON_PAUSE = "⏸ Тишина до завтра"
 BUTTON_COACH = "🔥 Тренер"
+BUTTON_FEEDBACK_SEND = "📨 Отправить"
+BUTTON_FEEDBACK_EDIT = "✏️ Изменить"
 
 SUPPORT_KEYBOARD = {"keyboard": [
     [{"text": BUTTON_SUPPORT_NOW}, {"text": BUTTON_SCHEDULE}],
@@ -99,6 +101,23 @@ MAIN_KEYBOARD = {
 FEEDBACK_KEYBOARD = {
     "keyboard": [
         [{"text": BUTTON_OBSERVATION}, {"text": BUTTON_NEED_HELP}],
+        [{"text": "Отмена"}],
+    ],
+    "resize_keyboard": True,
+    "one_time_keyboard": False,
+    "is_persistent": False,
+}
+
+FEEDBACK_TEXT_KEYBOARD = {
+    "keyboard": [[{"text": "Отмена"}]],
+    "resize_keyboard": True,
+    "one_time_keyboard": False,
+    "is_persistent": False,
+}
+
+FEEDBACK_PREVIEW_KEYBOARD = {
+    "keyboard": [
+        [{"text": BUTTON_FEEDBACK_SEND}, {"text": BUTTON_FEEDBACK_EDIT}],
         [{"text": "Отмена"}],
     ],
     "resize_keyboard": True,
@@ -400,11 +419,11 @@ def build_reply(
         if len(text) > 3000:
             return "Текст длиннее 3000 символов. Сократи его; черновик не отправлен."
         store.save_feedback_draft(chat_id, draft.category, text)
-        return feedback_preview(draft.category, text) + "\n\n📨 Отправить / ✏️ Изменить / Отмена"
-    if text in {"✏️ Изменить", "/feedback_edit"} and draft is not None and draft.body:
+        return feedback_preview(draft.category, text)
+    if text in {BUTTON_FEEDBACK_EDIT, "/feedback_edit"} and draft is not None and draft.body:
         store.save_feedback_draft(chat_id, draft.category, None)
         return "Пришли исправленный текст."
-    if text in {"📨 Отправить", "/feedback_send"} and draft is not None and draft.body:
+    if text in {BUTTON_FEEDBACK_SEND, "/feedback_send"} and draft is not None and draft.body:
         try:
             feedback = store.create_feedback(chat_id, draft.category or "observation", draft.body, settings.mode, None)
         except ValueError:
@@ -827,7 +846,15 @@ def run_telegram_bot() -> None:
                 recent_messages = tuple(store.recent_messages(chat_id, limit=5))
                 reply = build_reply(chat_id, text, store, runtime_state)
                 mode = store.get_support_settings(chat_id).mode
-                keyboard = FEEDBACK_KEYBOARD if store.get_feedback_draft(chat_id) is not None else None
+                draft = store.get_feedback_draft(chat_id)
+                keyboard = None
+                if draft is not None:
+                    if draft.category is None:
+                        keyboard = FEEDBACK_KEYBOARD
+                    elif draft.body is None:
+                        keyboard = FEEDBACK_TEXT_KEYBOARD
+                    else:
+                        keyboard = FEEDBACK_PREVIEW_KEYBOARD
                 api.send_guarded_message(
                     chat_id,
                     reply,
