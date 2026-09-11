@@ -17,6 +17,14 @@ class Feedback:
     notification_status: str = "pending"
 
 
+@dataclass(frozen=True)
+class FeedbackDraft:
+    chat_id: int
+    category: str | None
+    body: str | None
+    updated_at: datetime
+
+
 def feedback_preview(category: str, body: str) -> str:
     label = "Наблюдение" if category == "observation" else "Помощь"
     return f"Предпросмотр\nТип: {label}\n\n{body}\n\nОтправить это сообщение команде бота?"

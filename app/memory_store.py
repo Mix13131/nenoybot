@@ -9,12 +9,12 @@ try:
     from .config import AppConfig
     from .work_blocks import WorkBlock
     from .support import SupportSettings, SupportSlot, choose_content, due_slots
-    from .feedback import Feedback
+    from .feedback import Feedback, FeedbackDraft
 except ImportError:  # Allows direct script imports in local checks.
     from config import AppConfig
     from work_blocks import WorkBlock
     from support import SupportSettings, SupportSlot, choose_content, due_slots
-    from feedback import Feedback
+    from feedback import Feedback, FeedbackDraft
 
 
 class MemoryStore(Protocol):
@@ -66,6 +66,9 @@ class MemoryStore(Protocol):
     def get_feedback(self, feedback_id: int) -> Feedback | None: ...
     def pending_feedback(self, limit: int = 20) -> list[Feedback]: ...
     def mark_feedback_notification(self, feedback_id: int, status: str, message_id: int | None = None) -> None: ...
+    def get_feedback_draft(self, chat_id: int) -> FeedbackDraft | None: ...
+    def save_feedback_draft(self, chat_id: int, category: str | None, body: str | None) -> None: ...
+    def delete_feedback_draft(self, chat_id: int) -> None: ...
 
 
 @dataclass(frozen=True)
@@ -95,6 +98,7 @@ class InMemoryStore:
     support_deliveries: dict[tuple[int, date, str], dict] = field(default_factory=dict)
     feedback: dict[int, Feedback] = field(default_factory=dict)
     next_feedback_id: int = 1
+    feedback_drafts: dict[int, FeedbackDraft] = field(default_factory=dict)
 
     def ensure_schema(self) -> None:
         return None
@@ -254,6 +258,19 @@ class InMemoryStore:
         item = self.feedback[feedback_id]
         self.feedback[feedback_id] = Feedback(**{**item.__dict__, "notification_status": status})
 
+    def get_feedback_draft(self, chat_id: int) -> FeedbackDraft | None:
+        draft = self.feedback_drafts.get(chat_id)
+        if draft and draft.updated_at <= datetime.now(UTC) - timedelta(hours=24):
+            self.feedback_drafts.pop(chat_id, None)
+            return None
+        return draft
+
+    def save_feedback_draft(self, chat_id: int, category: str | None, body: str | None) -> None:
+        self.feedback_drafts[chat_id] = FeedbackDraft(chat_id, category, body, datetime.now(UTC))
+
+    def delete_feedback_draft(self, chat_id: int) -> None:
+        self.feedback_drafts.pop(chat_id, None)
+
 
 class PostgresMemoryStore:
     def __init__(self, database_url: str) -> None:
@@ -374,6 +391,12 @@ class PostgresMemoryStore:
                         notification_status TEXT NOT NULL DEFAULT 'pending', notification_message_id BIGINT,
                         replied_at TIMESTAMPTZ)
                 """)
+                cursor.execute("""
+                    CREATE TABLE IF NOT EXISTS nenoy_feedback_drafts (
+                        chat_id BIGINT PRIMARY KEY, category TEXT, body TEXT,
+                        updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW())
+                """)
+                cursor.execute("CREATE INDEX IF NOT EXISTS idx_nenoy_feedback_drafts_updated ON nenoy_feedback_drafts(updated_at)")
 
     def get_goal(self, chat_id: int) -> str | None:
         with self._connect() as connection:
@@ -702,6 +725,23 @@ class PostgresMemoryStore:
     def mark_feedback_notification(self, feedback_id: int, status: str, message_id: int | None = None) -> None:
         with self._connect() as connection, connection.cursor() as cursor:
             cursor.execute("UPDATE nenoy_feedback SET notification_status=%s, notification_message_id=%s WHERE id=%s", (status,message_id,feedback_id))
+
+    def get_feedback_draft(self, chat_id: int) -> FeedbackDraft | None:
+        with self._connect() as connection, connection.cursor() as cursor:
+            cursor.execute("DELETE FROM nenoy_feedback_drafts WHERE updated_at <= NOW() - INTERVAL '24 hours'")
+            cursor.execute("SELECT chat_id,category,body,updated_at FROM nenoy_feedback_drafts WHERE chat_id=%s", (chat_id,))
+            row = cursor.fetchone()
+        return FeedbackDraft(int(row[0]), row[1], row[2], row[3]) if row else None
+
+    def save_feedback_draft(self, chat_id: int, category: str | None, body: str | None) -> None:
+        with self._connect() as connection, connection.cursor() as cursor:
+            cursor.execute("""INSERT INTO nenoy_feedback_drafts(chat_id,category,body,updated_at)
+                VALUES(%s,%s,%s,NOW()) ON CONFLICT(chat_id) DO UPDATE SET
+                category=EXCLUDED.category, body=EXCLUDED.body, updated_at=NOW()""", (chat_id, category, body))
+
+    def delete_feedback_draft(self, chat_id: int) -> None:
+        with self._connect() as connection, connection.cursor() as cursor:
+            cursor.execute("DELETE FROM nenoy_feedback_drafts WHERE chat_id=%s", (chat_id,))
 
 
 def create_memory_store() -> MemoryStore:
