@@ -15,6 +15,7 @@ class Feedback:
     created_at: datetime
     status: str = "submitted"
     notification_status: str = "pending"
+    replied_at: datetime | None = None
 
 
 @dataclass(frozen=True)

@@ -66,6 +66,7 @@ class MemoryStore(Protocol):
     def get_feedback(self, feedback_id: int) -> Feedback | None: ...
     def pending_feedback(self, limit: int = 20) -> list[Feedback]: ...
     def mark_feedback_notification(self, feedback_id: int, status: str, message_id: int | None = None) -> None: ...
+    def mark_feedback_replied(self, feedback_id: int) -> None: ...
     def get_feedback_draft(self, chat_id: int) -> FeedbackDraft | None: ...
     def save_feedback_draft(self, chat_id: int, category: str | None, body: str | None) -> None: ...
     def delete_feedback_draft(self, chat_id: int) -> None: ...
@@ -257,6 +258,12 @@ class InMemoryStore:
     def mark_feedback_notification(self, feedback_id: int, status: str, message_id: int | None = None) -> None:
         item = self.feedback[feedback_id]
         self.feedback[feedback_id] = Feedback(**{**item.__dict__, "notification_status": status})
+
+    def mark_feedback_replied(self, feedback_id: int) -> None:
+        item = self.feedback[feedback_id]
+        self.feedback[feedback_id] = Feedback(
+            **{**item.__dict__, "status": "replied", "replied_at": datetime.now(UTC)}
+        )
 
     def get_feedback_draft(self, chat_id: int) -> FeedbackDraft | None:
         draft = self.feedback_drafts.get(chat_id)
@@ -712,19 +719,26 @@ class PostgresMemoryStore:
 
     def get_feedback(self, feedback_id: int) -> Feedback | None:
         with self._connect() as connection, connection.cursor() as cursor:
-            cursor.execute("SELECT id,chat_id,category,body,mode_at_submit,source_message_id,created_at,status,notification_status FROM nenoy_feedback WHERE id=%s", (feedback_id,))
+            cursor.execute("SELECT id,chat_id,category,body,mode_at_submit,source_message_id,created_at,status,notification_status,replied_at FROM nenoy_feedback WHERE id=%s", (feedback_id,))
             row = cursor.fetchone()
         return Feedback(*row) if row else None
 
     def pending_feedback(self, limit: int = 20) -> list[Feedback]:
         with self._connect() as connection, connection.cursor() as cursor:
-            cursor.execute("SELECT id,chat_id,category,body,mode_at_submit,source_message_id,created_at,status,notification_status FROM nenoy_feedback WHERE notification_status='pending' ORDER BY id LIMIT %s", (limit,))
+            cursor.execute("SELECT id,chat_id,category,body,mode_at_submit,source_message_id,created_at,status,notification_status,replied_at FROM nenoy_feedback WHERE notification_status='pending' ORDER BY id LIMIT %s", (limit,))
             rows = cursor.fetchall()
         return [Feedback(*row) for row in rows]
 
     def mark_feedback_notification(self, feedback_id: int, status: str, message_id: int | None = None) -> None:
         with self._connect() as connection, connection.cursor() as cursor:
             cursor.execute("UPDATE nenoy_feedback SET notification_status=%s, notification_message_id=%s WHERE id=%s", (status,message_id,feedback_id))
+
+    def mark_feedback_replied(self, feedback_id: int) -> None:
+        with self._connect() as connection, connection.cursor() as cursor:
+            cursor.execute(
+                "UPDATE nenoy_feedback SET status='replied', replied_at=NOW() WHERE id=%s",
+                (feedback_id,),
+            )
 
     def get_feedback_draft(self, chat_id: int) -> FeedbackDraft | None:
         with self._connect() as connection, connection.cursor() as cursor:

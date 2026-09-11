@@ -4,7 +4,8 @@ from app.feedback import FeedbackDraft
 from app.memory_store import InMemoryStore
 from app.telegram_bot import (
     BUTTON_FEEDBACK, BUTTON_NEED_HELP, BUTTON_OBSERVATION, TelegramDeliveryError,
-    TelegramRuntimeState, build_reply, deliver_telegram, requires_private_chat,
+    FEEDBACK_KEYBOARD, TelegramRuntimeState, build_reply, deliver_care_reply,
+    deliver_pending_feedback, deliver_telegram, requires_private_chat,
 )
 
 
@@ -52,13 +53,16 @@ def test_feedback_preview_cancel_and_submit(monkeypatch) -> None:
     assert store.recent_messages(1) == []  # Ordinary conversation is not attached.
 
 
-def test_exact_feedback_button_is_in_both_keyboards() -> None:
+def test_category_buttons_are_only_in_dedicated_feedback_keyboard() -> None:
     from app.telegram_bot import MAIN_KEYBOARD, SUPPORT_KEYBOARD
     for keyboard in (MAIN_KEYBOARD, SUPPORT_KEYBOARD):
         labels = [button["text"] for row in keyboard["keyboard"] for button in row]
         assert BUTTON_FEEDBACK in labels
-        assert BUTTON_OBSERVATION in labels
-        assert BUTTON_NEED_HELP in labels
+        assert BUTTON_OBSERVATION not in labels
+        assert BUTTON_NEED_HELP not in labels
+    feedback_labels = [button["text"] for row in FEEDBACK_KEYBOARD["keyboard"] for button in row]
+    assert BUTTON_OBSERVATION in feedback_labels
+    assert BUTTON_NEED_HELP in feedback_labels
 
 
 def test_feedback_draft_survives_runtime_restart_and_expires(monkeypatch) -> None:
@@ -95,3 +99,48 @@ def test_groups_keep_coach_but_reject_personal_support() -> None:
     assert not requires_private_chat("group", -10, "Обычный отчёт", store)
     assert requires_private_chat("group", -10, "/support", store)
     assert requires_private_chat("group", -10, BUTTON_FEEDBACK, store)
+
+
+class RecordingAPI:
+    def __init__(self, outcomes=()):
+        self.outcomes = iter(outcomes)
+        self.sent = []
+
+    def _send_raw_message(self, chat_id, text, keyboard=None):
+        self.sent.append((chat_id, text))
+        outcome = next(self.outcomes, "confirmed")
+        if outcome != "confirmed":
+            raise TelegramDeliveryError(outcome, outcome)
+        return len(self.sent)
+
+
+def test_confirmed_care_notification_acknowledges_user_only_after_delivery(monkeypatch) -> None:
+    store = InMemoryStore()
+    feedback = store.create_feedback(1, "help", "Нужна помощь", "support", None)
+    monkeypatch.setattr("app.telegram_bot.AppConfig.care_chat_id", -100123)
+    api = RecordingAPI()
+    deliver_pending_feedback(api, store)
+    assert store.get_feedback(feedback.id).notification_status == "confirmed"
+    assert api.sent[-1] == (1, f"Обращение №{feedback.id} передано команде. Ответ появится здесь.")
+
+
+def test_unconfirmed_care_notification_does_not_claim_delivery(monkeypatch) -> None:
+    for outcome in ("blocked", "rejected", "uncertain"):
+        store = InMemoryStore()
+        feedback = store.create_feedback(1, "help", "Нужна помощь", "support", None)
+        monkeypatch.setattr("app.telegram_bot.AppConfig.care_chat_id", -100123)
+        api = RecordingAPI((outcome,))
+        deliver_pending_feedback(api, store)
+        assert store.get_feedback(feedback.id).notification_status == outcome
+        assert len(api.sent) == 1
+
+
+def test_care_reply_marks_replied_only_after_confirmed_delivery() -> None:
+    for outcome in ("confirmed", "blocked", "rejected", "uncertain"):
+        store = InMemoryStore()
+        feedback = store.create_feedback(1, "help", "Нужна помощь", "support", None)
+        status = deliver_care_reply(RecordingAPI((outcome,)), store, feedback, "Ответ")
+        saved = store.get_feedback(feedback.id)
+        assert status == outcome
+        assert saved.status == ("replied" if outcome == "confirmed" else "submitted")
+        assert (saved.replied_at is not None) is (outcome == "confirmed")

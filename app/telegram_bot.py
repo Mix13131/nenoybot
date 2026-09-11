@@ -81,7 +81,6 @@ BUTTON_COACH = "🔥 Тренер"
 SUPPORT_KEYBOARD = {"keyboard": [
     [{"text": BUTTON_SUPPORT_NOW}, {"text": BUTTON_SCHEDULE}],
     [{"text": BUTTON_FEEDBACK}],
-    [{"text": BUTTON_OBSERVATION}, {"text": BUTTON_NEED_HELP}],
     [{"text": BUTTON_PAUSE}, {"text": BUTTON_COACH}],
 ], "resize_keyboard": True, "one_time_keyboard": False, "is_persistent": True}
 
@@ -91,11 +90,20 @@ MAIN_KEYBOARD = {
         [{"text": BUTTON_KICK}, {"text": BUTTON_HELP}],
         [{"text": BUTTON_CLEAR_GOAL}],
         [{"text": BUTTON_FEEDBACK}],
-        [{"text": BUTTON_OBSERVATION}, {"text": BUTTON_NEED_HELP}],
     ],
     "resize_keyboard": True,
     "one_time_keyboard": False,
     "is_persistent": True,
+}
+
+FEEDBACK_KEYBOARD = {
+    "keyboard": [
+        [{"text": BUTTON_OBSERVATION}, {"text": BUTTON_NEED_HELP}],
+        [{"text": "Отмена"}],
+    ],
+    "resize_keyboard": True,
+    "one_time_keyboard": False,
+    "is_persistent": False,
 }
 
 BOT_COMMANDS = (
@@ -225,9 +233,14 @@ class TelegramAPI:
         text: str,
         recent_messages: tuple[tuple[str, str], ...] = (),
         mode: str = "coach",
+        keyboard=None,
     ) -> int | None:
         guarded_text = text if mode == "support" else prepare_outgoing_text(chat_id, text, recent_messages=recent_messages)
-        return self._send_raw_message(chat_id, guarded_text, SUPPORT_KEYBOARD if mode == "support" else MAIN_KEYBOARD)
+        return self._send_raw_message(
+            chat_id,
+            guarded_text,
+            keyboard or (SUPPORT_KEYBOARD if mode == "support" else MAIN_KEYBOARD),
+        )
 
     def send_message(self, chat_id: int, text: str) -> None:
         self.send_guarded_message(chat_id, text)
@@ -714,14 +727,7 @@ def run_reminder_loop(api: TelegramAPI, store: MemoryStore) -> None:
                     lambda: api.send_guarded_message(slot.chat_id, slot.text, mode="support")
                 )
                 store.complete_support_slot(slot, status, message_id)
-            if AppConfig.care_chat_id:
-                for feedback in store.pending_feedback():
-                    notice = (f"Обращение №{feedback.id}\nТип: {feedback.category}\n"
-                              f"Время: {feedback.created_at.isoformat()}\nРежим: {feedback.mode_at_submit}\n\n{feedback.body}")
-                    status, message_id = deliver_telegram(
-                        lambda: api._send_raw_message(AppConfig.care_chat_id, notice)
-                    )
-                    store.mark_feedback_notification(feedback.id, status, message_id)
+            deliver_pending_feedback(api, store)
         except Exception as exc:
             print(f"Reminder loop failed: {type(exc).__name__}: {exc}")
         time.sleep(AppConfig.reminder_check_interval)
@@ -730,6 +736,35 @@ def run_reminder_loop(api: TelegramAPI, store: MemoryStore) -> None:
 def start_reminder_worker(api: TelegramAPI, store: MemoryStore) -> None:
     thread = threading.Thread(target=run_reminder_loop, args=(api, store), daemon=True)
     thread.start()
+
+
+def deliver_pending_feedback(api: TelegramAPI, store: MemoryStore) -> None:
+    """Deliver queued care notices and acknowledge only confirmed deliveries."""
+    if not AppConfig.care_chat_id:
+        return
+    for feedback in store.pending_feedback():
+        notice = (f"Обращение №{feedback.id}\nТип: {feedback.category}\n"
+                  f"Время: {feedback.created_at.isoformat()}\nРежим: {feedback.mode_at_submit}\n\n{feedback.body}")
+        status, message_id = deliver_telegram(
+            lambda: api._send_raw_message(AppConfig.care_chat_id, notice)
+        )
+        store.mark_feedback_notification(feedback.id, status, message_id)
+        if status == "confirmed":
+            # This second delivery has its own outcome: never turn a failed acknowledgement
+            # into a false statement about the care notification itself.
+            deliver_telegram(lambda: api._send_raw_message(
+                feedback.chat_id,
+                f"Обращение №{feedback.id} передано команде. Ответ появится здесь.",
+            ))
+
+
+def deliver_care_reply(api: TelegramAPI, store: MemoryStore, feedback, body: str) -> str:
+    status, _ = deliver_telegram(lambda: api._send_raw_message(
+        feedback.chat_id, f"🛟 Ответ службы заботы по обращению №{feedback.id}\n\n{body}"
+    ))
+    if status == "confirmed":
+        store.mark_feedback_replied(feedback.id)
+    return status
 
 
 def run_telegram_bot() -> None:
@@ -774,9 +809,7 @@ def run_telegram_bot() -> None:
                     if not feedback:
                         api._send_raw_message(chat_id, "Обращение не найдено.")
                         continue
-                    status, _ = deliver_telegram(lambda: api._send_raw_message(
-                        feedback.chat_id, f"🛟 Ответ службы заботы по обращению №{feedback.id}\n\n{parts[2]}"
-                    ))
+                    status = deliver_care_reply(api, store, feedback, parts[2])
                     if status == "confirmed":
                         api._send_raw_message(chat_id, "Ответ доставлен.")
                     elif status == "blocked":
@@ -794,11 +827,13 @@ def run_telegram_bot() -> None:
                 recent_messages = tuple(store.recent_messages(chat_id, limit=5))
                 reply = build_reply(chat_id, text, store, runtime_state)
                 mode = store.get_support_settings(chat_id).mode
+                keyboard = FEEDBACK_KEYBOARD if store.get_feedback_draft(chat_id) is not None else None
                 api.send_guarded_message(
                     chat_id,
                     reply,
                     recent_messages=recent_messages,
                     mode=mode,
+                    keyboard=keyboard,
                 )
         except RuntimeError as exc:
             print(exc)
