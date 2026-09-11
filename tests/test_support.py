@@ -16,6 +16,22 @@ def test_v4_catalog_contract() -> None:
     forbidden = ("поймай лучик", "обними себя", "ты достоин", "тёплое пространство")
     assert not any(word in item["text"].casefold() for item in catalog for word in forbidden)
 
+    semantic_emojis = (
+        "🎮", "🧩", "👀", "😎", "💬", "🔎", "🌿", "🎯", "😬", "🙂", "🔧", "⏱️",
+        "🧠", "🛠️", "✅", "😏", "📋", "🎭", "🧪", "🎲", "📊", "🤝", "❓", "📦",
+        "🔄", "💡", "🚫", "⚖️", "📈", "🔥", "🎓", "📜", "🗺️", "💪", "💰", "🎬",
+        "🗿", "😇", "🚀",
+    )
+    for item in catalog:
+        text = item["text"]
+        assert "\n\n" in text
+        assert sum(text.count(emoji) for emoji in semantic_emojis) >= 2
+        assert any(
+            0 < text.find(emoji) < len(text) - len(emoji)
+            for emoji in semantic_emojis
+            if emoji in text
+        )
+
 
 def test_schedule_validation_does_not_mutate_store() -> None:
     store = InMemoryStore()
