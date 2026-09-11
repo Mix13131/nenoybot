@@ -69,3 +69,14 @@ Postgres-слой сам создаёт таблицы `nenoy_user_state` и `ne
 - нет отдельной панели администратора.
 
 Эти части добавляются только после проверки локального каркаса.
+
+## Support v4
+
+`app/support.py` рассчитывает recurrence через `zoneinfo`, пропускает DST gaps и применяет
+30-минутное окно. `nenoy_support_deliveries` атомарно дедуплицирует
+`(chat_id, local_date, stable_slot_id)` до сети; `uncertain` не повторяется вслепую.
+Контент берётся без LLM из `app/lightness_action_v4.json` с семидневной ротацией.
+
+Mode хранится отдельно от opt-in. Coach reminders в support подавляются. Один существующий
+worker обслуживает reminders, support slots и care-очередь. Feedback-ответ разрешён только
+при совпадении care chat ID и user ID allowlist; адресат берётся из исходного обращения.

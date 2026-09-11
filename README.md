@@ -179,3 +179,14 @@ python -m app.telegram_bot
 - Для планирования и выполнения используются шаблоны в `docs/process/` и `.github/ISSUE_TEMPLATE/*`.
 - Roadmap: `docs/roadmap.md`.
 - В процессе обязательны этапы DoD: Код, Тесты, Отчёт, Code Review, Обновлён roadmap.
+
+## Режим поддержки
+
+`/support` включает отдельный разговорный режим без требования цели. Рассылка включается
+только самим пользователем: `/support_schedule 09:00,13:00,17:00 Europe/Moscow`.
+Доступны `/support_now`, `/support_pause`, `/support_resume`, `/support_off` и `/coach`.
+В production расписание требует Postgres; in-memory состояние предназначено для разработки.
+
+Кнопка **«Мои наблюдения по проекту»** открывает preview обращения. Для доставки нужны
+закрытый `NENOYBOT_CARE_CHAT_ID` и `NENOYBOT_CARE_ADMIN_IDS`; оператор отвечает командой
+`/care_reply <feedback_id> <текст>` из настроенного чата.

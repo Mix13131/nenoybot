@@ -27,3 +27,10 @@ class AppConfig:
     openai_api_key = os.getenv("OPENAI_API_KEY", "").strip() or None
     openai_model = os.getenv("OPENAI_MODEL", "gpt-5.5").strip() or "gpt-5.5"
     database_url = os.getenv("DATABASE_URL", "").strip() or None
+    care_chat_id = int(os.getenv("NENOYBOT_CARE_CHAT_ID", "0").strip() or "0") or None
+    care_admin_ids = frozenset(
+        int(value.strip())
+        for value in os.getenv("NENOYBOT_CARE_ADMIN_IDS", "").split(",")
+        if value.strip().lstrip("-").isdigit()
+    )
+    feedback_rate_limit = int(os.getenv("NENOYBOT_FEEDBACK_RATE_LIMIT", "5") or "5")

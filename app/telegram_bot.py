@@ -5,7 +5,7 @@ import logging
 import threading
 import time
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import UTC, datetime, timedelta
 from typing import Any
 from urllib import error, parse, request
 
@@ -26,6 +26,8 @@ try:
         is_human_style_response,
     )
     from .work_blocks import create_work_block, match_work_block
+    from .support import choose_content, next_run, parse_schedule
+    from .feedback import feedback_preview
 except ImportError:  # Allows `python app/telegram_bot.py`.
     from config import AppConfig
     from memory_store import MemoryStore, create_memory_store
@@ -43,6 +45,8 @@ except ImportError:  # Allows `python app/telegram_bot.py`.
         is_human_style_response,
     )
     from work_blocks import create_work_block, match_work_block
+    from support import choose_content, next_run, parse_schedule
+    from feedback import feedback_preview
 
 
 logger = logging.getLogger(__name__)
@@ -66,12 +70,24 @@ BUTTON_REPORT = "✅ Отчёт"
 BUTTON_KICK = "🔥 Пинок"
 BUTTON_HELP = "📌 Меню"
 BUTTON_CLEAR_GOAL = "🧹 Сбросить цель"
+BUTTON_FEEDBACK = "Мои наблюдения по проекту"
+BUTTON_SUPPORT_NOW = "🤝 Поддержи сейчас"
+BUTTON_SCHEDULE = "🕒 Расписание"
+BUTTON_PAUSE = "⏸ Тишина до завтра"
+BUTTON_COACH = "🔥 Тренер"
+
+SUPPORT_KEYBOARD = {"keyboard": [
+    [{"text": BUTTON_SUPPORT_NOW}, {"text": BUTTON_SCHEDULE}],
+    [{"text": BUTTON_FEEDBACK}],
+    [{"text": BUTTON_PAUSE}, {"text": BUTTON_COACH}],
+], "resize_keyboard": True, "one_time_keyboard": False, "is_persistent": True}
 
 MAIN_KEYBOARD = {
     "keyboard": [
         [{"text": BUTTON_SET_GOAL}, {"text": BUTTON_REPORT}],
         [{"text": BUTTON_KICK}, {"text": BUTTON_HELP}],
         [{"text": BUTTON_CLEAR_GOAL}],
+        [{"text": BUTTON_FEEDBACK}],
     ],
     "resize_keyboard": True,
     "one_time_keyboard": False,
@@ -83,6 +99,9 @@ BOT_COMMANDS = (
     {"command": "goal", "description": "Задать цель: /goal результат + срок"},
     {"command": "clear_goal", "description": "Сбросить цель"},
     {"command": "help", "description": "Показать команды"},
+    {"command": "support", "description": "Режим поддержки"},
+    {"command": "coach", "description": "Режим тренера"},
+    {"command": "feedback", "description": "Наблюдения по НеНойBot"},
 )
 
 STYLE_GUARD_FALLBACKS = (
@@ -131,6 +150,8 @@ WORK_OVERVIEW_MARKERS = (
 class TelegramRuntimeState:
     awaiting_goal: set[int] = field(default_factory=set)
     awaiting_report: set[int] = field(default_factory=set)
+    feedback_category: dict[int, str] = field(default_factory=dict)
+    feedback_drafts: dict[int, str] = field(default_factory=dict)
 
     def wait_for_goal(self, chat_id: int) -> None:
         self.awaiting_goal.add(chat_id)
@@ -176,24 +197,26 @@ class TelegramAPI:
             payload["offset"] = str(offset)
         return self.request("getUpdates", payload)
 
-    def _send_raw_message(self, chat_id: int, text: str) -> None:
-        self.request(
+    def _send_raw_message(self, chat_id: int, text: str, keyboard=None) -> int | None:
+        result = self.request(
             "sendMessage",
             {
                 "chat_id": str(chat_id),
                 "text": text,
-                "reply_markup": json.dumps(MAIN_KEYBOARD, ensure_ascii=False),
+                "reply_markup": json.dumps(keyboard or MAIN_KEYBOARD, ensure_ascii=False),
             },
         )
+        return result.get("message_id") if isinstance(result, dict) else None
 
     def send_guarded_message(
         self,
         chat_id: int,
         text: str,
         recent_messages: tuple[tuple[str, str], ...] = (),
-    ) -> None:
-        guarded_text = prepare_outgoing_text(chat_id, text, recent_messages=recent_messages)
-        self._send_raw_message(chat_id, guarded_text)
+        mode: str = "coach",
+    ) -> int | None:
+        guarded_text = text if mode == "support" else prepare_outgoing_text(chat_id, text, recent_messages=recent_messages)
+        return self._send_raw_message(chat_id, guarded_text, SUPPORT_KEYBOARD if mode == "support" else MAIN_KEYBOARD)
 
     def send_message(self, chat_id: int, text: str) -> None:
         self.send_guarded_message(chat_id, text)
@@ -284,6 +307,87 @@ def build_reply(
 
     if not text:
         return "Пусто. Назови цель или действие."
+
+    # Commands/navigation always win over transient coach and feedback states.
+    if text.startswith("/cancel") or text == "Отмена":
+        runtime_state.clear(chat_id)
+        runtime_state.feedback_category.pop(chat_id, None)
+        runtime_state.feedback_drafts.pop(chat_id, None)
+        return "Отменено. Сообщение команде не отправлено."
+
+    if text.startswith("/support") and not text.startswith(("/support_now", "/support_schedule", "/support_pause", "/support_resume", "/support_off")):
+        runtime_state.clear(chat_id)
+        store.set_mode(chat_id, "support")
+        return ("Здесь не нужно сдавать экзамен на продуктивность. Будем возвращаться к интересу: "
+                "пробовать, разбираться и общаться без лишнего напряжения. Можно говорить с ботом "
+                "или включить короткие напоминания в течение дня.")
+    if text.startswith("/coach") or text == BUTTON_COACH:
+        runtime_state.clear(chat_id)
+        store.set_mode(chat_id, "coach")
+        return "Режим тренера включён. Сохранённые цель и история на месте."
+
+    settings = store.get_support_settings(chat_id)
+    if text in {BUTTON_FEEDBACK, "/feedback", "📝 Мои наблюдения"}:
+        runtime_state.clear(chat_id)
+        if not AppConfig.care_chat_id:
+            return "Служба заботы сейчас не настроена, поэтому я не приму сообщение в никуда."
+        runtime_state.feedback_category[chat_id] = "observation"
+        return ("Какие наблюдения по проекту НеНойBot? Что в сообщениях, расписании или работе бота помогает, а что стоит изменить? "
+                "Здесь можно поделиться впечатлениями или обратиться в службу заботы.\n\n"
+                "Отправленное сообщение прочитает команда бота. Обычная переписка автоматически не передаётся. "
+                "Публично как отзыв его не разместим. Напиши текст до 3000 символов или /cancel.")
+    if chat_id in runtime_state.feedback_category:
+        if len(text) > 3000:
+            return "Текст длиннее 3000 символов. Сократи его; черновик не отправлен."
+        runtime_state.feedback_drafts[chat_id] = text
+        runtime_state.feedback_category.pop(chat_id, None)
+        return feedback_preview("observation", text) + "\n\n📨 Отправить / ✏️ Изменить / Отмена"
+    if text in {"✏️ Изменить", "/feedback_edit"} and chat_id in runtime_state.feedback_drafts:
+        runtime_state.feedback_category[chat_id] = "observation"
+        return "Пришли исправленный текст."
+    if text in {"📨 Отправить", "/feedback_send"} and chat_id in runtime_state.feedback_drafts:
+        draft = runtime_state.feedback_drafts[chat_id]
+        try:
+            feedback = store.create_feedback(chat_id, "observation", draft, settings.mode, None)
+        except ValueError:
+            return "Лимит — 5 новых обращений в час. Черновик сохранён в этом сеансе; попробуй позже."
+        runtime_state.feedback_drafts.pop(chat_id, None)
+        return f"Обращение №{feedback.id} сохранено. Уведомление команде ожидает подтверждения доставки."
+
+    if text.startswith("/support_schedule") or text == BUTTON_SCHEDULE:
+        value = text.removeprefix("/support_schedule").strip()
+        if not value:
+            run = next_run(settings, datetime.now(UTC))
+            return (f"Расписание: {', '.join(settings.times)}; timezone: {settings.timezone or 'не выбран'}; "
+                    f"статус: {'включено' if settings.enabled else 'выключено'}; следующий запуск: {run or 'нет'}.\n"
+                    "Изменить: /support_schedule 09:00,13:00,17:00 Europe/Moscow")
+        try:
+            times, timezone_name = parse_schedule(value)
+        except ValueError as exc:
+            return str(exc)
+        store.configure_support(chat_id, times, timezone_name)
+        return f"Рассылка включена ежедневно: {', '.join(times)} ({timezone_name})."
+    if text.startswith("/support_off"):
+        store.disable_support(chat_id)
+        return "Рассылка выключена. Режим и сохранённые часы не удалены."
+    if text.startswith("/support_pause") or text == BUTTON_PAUSE:
+        if not settings.timezone:
+            return "Сначала настрой timezone: /support_schedule 09:00,13:00,17:00 Europe/Moscow"
+        local_tomorrow = datetime.now(UTC).astimezone(__import__('zoneinfo').ZoneInfo(settings.timezone)).date() + timedelta(days=1)
+        store.pause_support(chat_id, local_tomorrow)
+        return "Тишина до завтра. Рассылка продолжится со следующего штатного слота."
+    if text.startswith("/support_resume"):
+        store.pause_support(chat_id, None)
+        return "Рассылка возобновлена со следующего будущего слота."
+    if text.startswith("/support_now") or text == BUTTON_SUPPORT_NOW:
+        return choose_content(set(), f"manual:{chat_id}:{datetime.now(UTC).date()}")["text"]
+
+    if settings.mode == "support":
+        context = ConversationContext(None, store.get_summary(chat_id), tuple(store.recent_messages(chat_id, 8)))
+        reply = generate_ai_response(text, context, mode="support")
+        store.append_message(chat_id, "user:support", text)
+        store.append_message(chat_id, "assistant:support", reply)
+        return reply
 
     reminder_source_text = text
 
@@ -530,11 +634,35 @@ def run_reminder_loop(api: TelegramAPI, store: MemoryStore) -> None:
         try:
             now = datetime.now(timezone)
             for reminder in store.due_reminders(now, limit=10):
+                if store.get_support_settings(reminder.chat_id).mode != "coach":
+                    store.mark_reminder_sent(reminder.id)
+                    continue
                 api.send_guarded_message(
                     reminder.chat_id,
                     build_due_event_message(reminder.task_text, reminder.event_type),
                 )
                 store.mark_reminder_sent(reminder.id)
+            for slot in store.claim_support_slots(datetime.now(UTC), limit=50):
+                # Re-check immediately before the network boundary.
+                current = store.get_support_settings(slot.chat_id)
+                if current.mode != "support" or not current.enabled:
+                    store.complete_support_slot(slot, "cancelled")
+                    continue
+                try:
+                    message_id = api.send_guarded_message(slot.chat_id, slot.text, mode="support")
+                    store.complete_support_slot(slot, "confirmed", message_id)
+                except RuntimeError:
+                    # A timeout may occur after Telegram accepted the request: never retry blindly.
+                    store.complete_support_slot(slot, "uncertain")
+            if AppConfig.care_chat_id:
+                for feedback in store.pending_feedback():
+                    notice = (f"Обращение №{feedback.id}\nТип: {feedback.category}\n"
+                              f"Время: {feedback.created_at.isoformat()}\nРежим: {feedback.mode_at_submit}\n\n{feedback.body}")
+                    try:
+                        message_id = api._send_raw_message(AppConfig.care_chat_id, notice)
+                        store.mark_feedback_notification(feedback.id, "confirmed", message_id)
+                    except RuntimeError:
+                        store.mark_feedback_notification(feedback.id, "uncertain")
         except Exception as exc:
             print(f"Reminder loop failed: {type(exc).__name__}: {exc}")
         time.sleep(AppConfig.reminder_check_interval)
@@ -572,11 +700,38 @@ def run_telegram_bot() -> None:
                     continue
 
                 chat_id, text = extracted
+                message = update.get("message") or update.get("edited_message") or {}
+                chat_type = (message.get("chat") or {}).get("type")
+                from_id = (message.get("from") or {}).get("id")
+                if text.startswith("/care_reply"):
+                    if chat_id != AppConfig.care_chat_id or from_id not in AppConfig.care_admin_ids:
+                        api._send_raw_message(chat_id, "Команда недоступна.")
+                        continue
+                    parts = text.split(maxsplit=2)
+                    if len(parts) != 3 or not parts[1].isdigit():
+                        api._send_raw_message(chat_id, "Формат: /care_reply <feedback_id> <текст>")
+                        continue
+                    feedback = store.get_feedback(int(parts[1]))
+                    if not feedback:
+                        api._send_raw_message(chat_id, "Обращение не найдено.")
+                        continue
+                    try:
+                        api._send_raw_message(feedback.chat_id, f"🛟 Ответ службы заботы по обращению №{feedback.id}\n\n{parts[2]}")
+                        api._send_raw_message(chat_id, "Ответ доставлен.")
+                    except RuntimeError:
+                        api._send_raw_message(chat_id, "Доставка ответа не подтверждена.")
+                    continue
+                if chat_type != "private":
+                    api._send_raw_message(chat_id, "Персональные режимы доступны только в личном чате с ботом.")
+                    continue
                 recent_messages = tuple(store.recent_messages(chat_id, limit=5))
+                reply = build_reply(chat_id, text, store, runtime_state)
+                mode = store.get_support_settings(chat_id).mode
                 api.send_guarded_message(
                     chat_id,
-                    build_reply(chat_id, text, store, runtime_state),
+                    reply,
                     recent_messages=recent_messages,
+                    mode=mode,
                 )
         except RuntimeError as exc:
             print(exc)
