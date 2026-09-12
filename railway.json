@@ -4,7 +4,7 @@
     "builder": "RAILPACK"
   },
   "deploy": {
-    "startCommand": "python -m app.care_ack_runtime",
+    "startCommand": "python -m app.care_followup_runtime",
     "restartPolicyType": "ON_FAILURE",
     "restartPolicyMaxRetries": 10
   }
