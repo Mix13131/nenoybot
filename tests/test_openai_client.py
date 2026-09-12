@@ -2,6 +2,7 @@ from app.openai_client import (
     ConversationContext,
     build_system_instructions,
     build_support_instructions,
+    build_support_user_input,
     build_user_input,
 )
 
@@ -62,9 +63,34 @@ def test_coach_uses_persona_v3_as_single_source_of_truth() -> None:
     assert "Буллинг направляй только на отмазку" in instructions
 
 
-def test_lightness_prompt_stays_independent() -> None:
+def test_lightness_uses_persona_and_approved_golden_corpus() -> None:
     instructions = build_support_instructions()
 
-    assert "# НеНойBot — режим поддержки" in instructions
-    assert "Не требуй цель, отчёт, дедлайн или обязательное действие" in instructions
+    assert "# НеНой Persona — 🌿 Лёгкость v1" in instructions
+    assert "Жизнь не экзамен" in instructions
+    assert "СИТУАЦИЯ → ЛИШНИЙ СЛОЙ → БОЛЬШЕ ПРОСТРАНСТВА" in instructions
+    assert "# Golden examples — lightness_action_v4" in instructions
+    assert "[M01]" in instructions
+    assert "ты не на экзамене" in instructions
+    assert "[D07]" in instructions
+    assert "Несогласие не обязательно означает" in instructions
+    assert "[A06]" in instructions
+    assert "Внутреннее напряжение не является обязательным приложением к серьёзности" in instructions
     assert "НеНой Persona v3" not in instructions
+
+
+def test_lightness_user_input_is_about_life_not_only_projects() -> None:
+    context = ConversationContext(
+        goal="Запустить продажи",
+        memory_summary="Пользователь хочет меньше превращать жизнь в экзамен.",
+        recent_messages=(("user", "Кажется, я выглядел глупо на встрече"),),
+    )
+
+    user_input = build_support_user_input("Теперь весь вечер это прокручиваю", context)
+
+    assert "режиме 🌿 Лёгкость" in user_input
+    assert "режим относится к жизни целиком" in user_input
+    assert "лишний внутренний экзамен" in user_input
+    assert "Не требуй действия" in user_input
+    assert "Ной не ныл" in user_input
+    assert "Пользователь хочет меньше превращать жизнь в экзамен" in user_input
