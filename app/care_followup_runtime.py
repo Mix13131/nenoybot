@@ -6,10 +6,13 @@ from . import care_ack_runtime as runtime
 from . import care_runtime as care
 from . import telegram_bot as base
 from .config import AppConfig
+from .user_registry import UserRegistry
 
 
 FOLLOWUP_WINDOW = timedelta(minutes=30)
+USERS = UserRegistry(AppConfig.database_url, AppConfig.timezone)
 _original_extract_text_message = base.extract_text_message
+_original_build_reply = base.build_reply
 
 _NAVIGATION_TEXTS = {
     base.BUTTON_SET_GOAL,
@@ -87,7 +90,15 @@ def _is_private(update) -> bool:
     return isinstance(chat, dict) and chat.get("type") == "private"
 
 
+def _track_user(update) -> None:
+    try:
+        USERS.track_private_message(update)
+    except Exception as exc:
+        print(f"User registry tracking skipped: {type(exc).__name__}: {exc}")
+
+
 def extract_text_message(update):
+    _track_user(update)
     result = _original_extract_text_message(update)
     if result is None:
         return None
@@ -108,8 +119,37 @@ def extract_text_message(update):
     return chat_id, care.CARE_USER_REPLY_SENTINEL
 
 
+def _command_name(text: str) -> str:
+    head = text.strip().split(maxsplit=1)[0] if text.strip() else ""
+    return head.split("@", 1)[0]
+
+
+def _users_limit(text: str) -> int:
+    parts = text.strip().split(maxsplit=1)
+    if len(parts) < 2:
+        return 10
+    try:
+        return max(1, min(int(parts[1]), 15))
+    except ValueError:
+        return 10
+
+
+def build_reply(chat_id: int, text: str, store, runtime_state=None) -> str:
+    command = _command_name(text)
+    if command in {"/users", "/stats"}:
+        if chat_id not in AppConfig.care_admin_ids:
+            return "Команда недоступна."
+        if command == "/stats":
+            return USERS.stats_text()
+        return USERS.users_text(_users_limit(text))
+    return _original_build_reply(chat_id, text, store, runtime_state)
+
+
 base.extract_text_message = extract_text_message
 care.extract_text_message = extract_text_message
+base.build_reply = build_reply
+care.build_reply = build_reply
+runtime.build_reply = build_reply
 
 
 def run() -> None:
