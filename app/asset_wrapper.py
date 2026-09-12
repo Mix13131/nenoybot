@@ -17,6 +17,64 @@ CATALOG = load_catalog()
 CONTENT_BY_ID = {item["id"]: item for item in CATALOG}
 CONTENT_ID_BY_TEXT = {item["text"]: item["id"] for item in CATALOG}
 
+BUTTON_MODE = "🎛 Режим"
+BUTTON_LIGHTNESS = "🌿 Лёгкость"
+BUTTON_BACK = "↩️ Назад"
+ASSET_IMAGE_RECEIVED = "__asset_image_received__"
+
+MODE_MENU_TEXT = (
+    "Как мне быть рядом сегодня?\n\n"
+    "🔥 Тренер\n"
+    "Когда нужен результат. Держу фокус, режу отговорки и возвращаю к следующему конкретному действию.\n\n"
+    "🌿 Лёгкость\n"
+    "Когда хочется убрать внутренний экзамен. Возвращаю интерес, игру, любопытство и помогаю двигаться без лишнего напряжения.\n\n"
+    "Переключаться можно в любой момент."
+)
+
+MODE_KEYBOARD = {
+    "keyboard": [
+        [{"text": base.BUTTON_COACH}, {"text": BUTTON_LIGHTNESS}],
+        [{"text": BUTTON_BACK}],
+    ],
+    "resize_keyboard": True,
+    "one_time_keyboard": False,
+    "is_persistent": True,
+}
+
+base.MAIN_KEYBOARD = {
+    "keyboard": [
+        [{"text": base.BUTTON_SET_GOAL}, {"text": base.BUTTON_REPORT}],
+        [{"text": base.BUTTON_KICK}, {"text": base.BUTTON_HELP}],
+        [{"text": base.BUTTON_CLEAR_GOAL}],
+        [{"text": BUTTON_MODE}, {"text": base.BUTTON_FEEDBACK}],
+    ],
+    "resize_keyboard": True,
+    "one_time_keyboard": False,
+    "is_persistent": True,
+}
+
+base.SUPPORT_KEYBOARD = {
+    "keyboard": [
+        [{"text": base.BUTTON_SUPPORT_NOW}, {"text": base.BUTTON_SCHEDULE}],
+        [{"text": base.BUTTON_FEEDBACK}],
+        [{"text": base.BUTTON_PAUSE}, {"text": BUTTON_MODE}],
+    ],
+    "resize_keyboard": True,
+    "one_time_keyboard": False,
+    "is_persistent": True,
+}
+
+base.BOT_COMMANDS = (
+    {"command": "start", "description": "Запустить НеНойBot"},
+    {"command": "goal", "description": "Задать цель: /goal результат + срок"},
+    {"command": "clear_goal", "description": "Сбросить цель"},
+    {"command": "help", "description": "Показать команды"},
+    {"command": "modes", "description": "Выбрать режим"},
+    {"command": "support", "description": "Режим «Лёгкость»"},
+    {"command": "coach", "description": "Режим «Тренер»"},
+    {"command": "feedback", "description": "Наблюдения по НеНойBot"},
+)
+
 
 @dataclass(frozen=True)
 class PendingAsset:
@@ -42,6 +100,7 @@ class AssetStore:
 
     def ensure_schema(self) -> None:
         if not self.database_url:
+            print("НеНойBot asset store: in-memory mode.")
             return
         with self._connect() as connection:
             with connection.cursor() as cursor:
@@ -54,6 +113,7 @@ class AssetStore:
                     )
                     """
                 )
+        print("НеНойBot asset store schema ready.")
 
     def set(self, content_id: str, file_id: str) -> None:
         if not self.database_url:
@@ -122,30 +182,23 @@ def _image_file_id(message: dict[str, Any]) -> str | None:
 
 
 def extract_text_message(update: dict[str, Any]) -> tuple[int, str] | None:
-    extracted = _original_extract_text_message(update)
-    if extracted is not None:
-        return extracted
-
     message = update.get("message") or update.get("edited_message")
-    if not isinstance(message, dict):
-        return None
+    if isinstance(message, dict):
+        chat = message.get("chat")
+        chat_id = chat.get("id") if isinstance(chat, dict) else None
+        chat_type = chat.get("type") if isinstance(chat, dict) else None
+        file_id = _image_file_id(message)
 
-    caption = message.get("caption")
-    chat = message.get("chat")
-    if not isinstance(caption, str) or not isinstance(chat, dict):
-        return None
+        if isinstance(chat_id, int) and chat_type == "private" and file_id:
+            sender = message.get("from") or {}
+            from_id = sender.get("id") if isinstance(sender, dict) else None
+            _PENDING_ASSETS[chat_id] = PendingAsset(chat_id, from_id, file_id)
+            caption = message.get("caption")
+            if isinstance(caption, str) and caption.strip():
+                return chat_id, caption.strip()
+            return chat_id, ASSET_IMAGE_RECEIVED
 
-    chat_id = chat.get("id")
-    if not isinstance(chat_id, int):
-        return None
-
-    file_id = _image_file_id(message)
-    if file_id:
-        sender = message.get("from") or {}
-        from_id = sender.get("id") if isinstance(sender, dict) else None
-        _PENDING_ASSETS[chat_id] = PendingAsset(chat_id, from_id, file_id)
-
-    return chat_id, caption.strip()
+    return _original_extract_text_message(update)
 
 
 def build_reply(
@@ -154,30 +207,77 @@ def build_reply(
     store,
     runtime_state=None,
 ) -> str:
-    if not text.startswith("/asset"):
-        return _original_build_reply(chat_id, text, store, runtime_state)
+    if text == ASSET_IMAGE_RECEIVED:
+        pending = _PENDING_ASSETS.get(chat_id)
+        if not ASSET_REGISTRATION_ENABLED:
+            _PENDING_ASSETS.pop(chat_id, None)
+            return "Регистрация изображений выключена."
+        if pending is None:
+            return "Фото не удалось прочитать. Пришли его ещё раз."
+        if pending.from_id not in AppConfig.care_admin_ids:
+            _PENDING_ASSETS.pop(chat_id, None)
+            return "Команда недоступна."
+        return "Фото поймал 🖼 Теперь пришли отдельным сообщением `/asset M01`."
 
-    pending = _PENDING_ASSETS.pop(chat_id, None)
+    if text.startswith("/asset"):
+        pending = _PENDING_ASSETS.pop(chat_id, None)
 
-    if not ASSET_REGISTRATION_ENABLED:
-        return "Регистрация изображений выключена."
+        if not ASSET_REGISTRATION_ENABLED:
+            return "Регистрация изображений выключена."
 
-    if pending is None:
-        return "Пришли изображение с подписью `/asset M01`."
+        if pending is None:
+            return "Сначала пришли изображение, затем `/asset M01`, или добавь `/asset M01` подписью к фото."
 
-    if pending.from_id not in AppConfig.care_admin_ids:
-        return "Команда недоступна."
+        if pending.from_id not in AppConfig.care_admin_ids:
+            return "Команда недоступна."
 
-    parts = text.split(maxsplit=1)
-    if len(parts) != 2:
-        return "Формат: `/asset M01`."
+        parts = text.split(maxsplit=1)
+        if len(parts) != 2:
+            return "Формат: `/asset M01`."
 
-    content_id = parts[1].strip().upper()
-    if content_id not in CONTENT_BY_ID:
-        return f"Неизвестный content_id: {content_id}."
+        content_id = parts[1].strip().upper()
+        if content_id not in CONTENT_BY_ID:
+            return f"Неизвестный content_id: {content_id}."
 
-    ASSETS.set(content_id, pending.file_id)
-    return f"🖼 {content_id} зарегистрирован. Следующая отправка этого сообщения будет с картинкой."
+        ASSETS.set(content_id, pending.file_id)
+        return f"🖼 {content_id} зарегистрирован. Следующая отправка этого сообщения будет с картинкой."
+
+    if text.startswith("/start") or text.startswith("/modes") or text == BUTTON_MODE:
+        if runtime_state is not None:
+            runtime_state.clear(chat_id)
+        return MODE_MENU_TEXT
+
+    if text == BUTTON_LIGHTNESS or (
+        text.startswith("/support")
+        and not text.startswith(("/support_now", "/support_schedule", "/support_pause", "/support_resume", "/support_off"))
+    ):
+        if runtime_state is not None:
+            runtime_state.clear(chat_id)
+        store.set_mode(chat_id, "support")
+        return (
+            "🌿 Режим «Лёгкость» включён. Здесь не нужно ничего доказывать — "
+            "можно разбираться, пробовать и двигаться через интерес."
+        )
+
+    if text.startswith("/coach") or text == base.BUTTON_COACH:
+        if runtime_state is not None:
+            runtime_state.clear(chat_id)
+        store.set_mode(chat_id, "coach")
+        return (
+            "🔥 Режим «Тренер» включён. Держу фокус, режу отговорки "
+            "и возвращаю к следующему конкретному действию."
+        )
+
+    if text == BUTTON_BACK:
+        return _original_build_reply(chat_id, "/help", store, runtime_state)
+
+    if text.startswith("/help") or text == base.BUTTON_HELP:
+        return (
+            _original_build_reply(chat_id, text, store, runtime_state)
+            + "\n\n🎛 Режим — выбрать «🔥 Тренер» или «🌿 Лёгкость»."
+        )
+
+    return _original_build_reply(chat_id, text, store, runtime_state)
 
 
 def _send_photo(
@@ -210,6 +310,9 @@ def send_guarded_message(
     mode: str = "coach",
     keyboard=None,
 ) -> int | None:
+    if text == MODE_MENU_TEXT:
+        return api._send_raw_message(chat_id, text, MODE_KEYBOARD)
+
     if mode == "support":
         content_id = CONTENT_ID_BY_TEXT.get(text)
         if content_id:
@@ -239,6 +342,7 @@ base.TelegramAPI.send_guarded_message = send_guarded_message
 
 
 def run() -> None:
+    print("НеНойBot asset wrapper active.")
     base.run_telegram_bot()
 
 
