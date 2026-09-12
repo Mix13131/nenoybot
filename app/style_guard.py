@@ -1,9 +1,9 @@
 from __future__ import annotations
 
+# Guard only against clearly mechanical templates. Do not reject an otherwise
+# natural reply because it contains ordinary words such as «понял» or «хорошо».
 STYLE_BLOCKLIST: tuple[tuple[str, str], ...] = (
-    ("по плану", "CRM/task-tracker tone"),
     ("срок поймал", "task-tracker tone"),
-    ("принято", "soft assistant tone"),
     ("главный срок", "manager tone"),
     ("главный удар", "artificial coach cliché"),
     ("отчёт ожидаю", "manager tone"),
@@ -20,20 +20,13 @@ STYLE_BLOCKLIST: tuple[tuple[str, str], ...] = (
 BOTLIKE_PHRASES: tuple[str, ...] = (
     "усталость принята",
     "запрос принят",
-    "принято",
-    "понял",
-    "хорошо",
-    "выполнено",
     "я не друг",
     "я не будильник",
     "я не ставлю реальные напоминания",
-    "я не могу",
-    "я не умею",
     "как ии",
     "как искусственный интеллект",
     "функция недоступна",
     "системные ограничения",
-    "технически невозможно",
 )
 
 
@@ -55,11 +48,11 @@ def is_style_guard_passed(text: str) -> bool:
 
 
 def find_botlike_phrases(text: str) -> list[str]:
-    """Возвращает список роботских фраз, найденных в тексте."""
+    """Return only unmistakably mechanical assistant phrases."""
     normalized = _normalize(text)
     return [phrase for phrase in BOTLIKE_PHRASES if phrase in normalized]
 
 
 def is_human_style_response(text: str) -> bool:
-    """True, если ответ не звучит как служебный/ботовский автоответ."""
+    """True when the reply does not read like a service notification."""
     return not find_botlike_phrases(text)
