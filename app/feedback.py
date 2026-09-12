@@ -27,5 +27,5 @@ class FeedbackDraft:
 
 
 def feedback_preview(category: str, body: str) -> str:
-    label = "Наблюдение" if category == "observation" else "Помощь"
+    label = "Идея или отзыв о проекте" if category == "observation" else "Нужна помощь команды"
     return f"Предпросмотр\nТип: {label}\n\n{body}\n\nОтправить это сообщение команде бота?"
