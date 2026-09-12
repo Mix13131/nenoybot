@@ -2,15 +2,19 @@ from __future__ import annotations
 
 import json
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import UTC, date, datetime, timedelta
 from typing import Protocol
 
 try:
     from .config import AppConfig
     from .work_blocks import WorkBlock
+    from .support import SupportSettings, SupportSlot, choose_content, due_slots
+    from .feedback import Feedback, FeedbackDraft
 except ImportError:  # Allows direct script imports in local checks.
     from config import AppConfig
     from work_blocks import WorkBlock
+    from support import SupportSettings, SupportSlot, choose_content, due_slots
+    from feedback import Feedback, FeedbackDraft
 
 
 class MemoryStore(Protocol):
@@ -51,6 +55,22 @@ class MemoryStore(Protocol):
 
     def get_work_block(self, chat_id: int, block_id: str) -> WorkBlock | None: ...
 
+    def get_support_settings(self, chat_id: int) -> SupportSettings: ...
+    def set_mode(self, chat_id: int, mode: str) -> None: ...
+    def configure_support(self, chat_id: int, times: tuple[str, ...], timezone: str) -> None: ...
+    def pause_support(self, chat_id: int, until: date | None) -> None: ...
+    def disable_support(self, chat_id: int) -> None: ...
+    def claim_support_slots(self, now: datetime, limit: int = 50) -> list[SupportSlot]: ...
+    def complete_support_slot(self, slot: SupportSlot, status: str, message_id: int | None = None) -> None: ...
+    def create_feedback(self, chat_id: int, category: str, body: str, mode: str, source_message_id: int | None) -> Feedback: ...
+    def get_feedback(self, feedback_id: int) -> Feedback | None: ...
+    def pending_feedback(self, limit: int = 20) -> list[Feedback]: ...
+    def mark_feedback_notification(self, feedback_id: int, status: str, message_id: int | None = None) -> None: ...
+    def mark_feedback_replied(self, feedback_id: int) -> None: ...
+    def get_feedback_draft(self, chat_id: int) -> FeedbackDraft | None: ...
+    def save_feedback_draft(self, chat_id: int, category: str | None, body: str | None) -> None: ...
+    def delete_feedback_draft(self, chat_id: int) -> None: ...
+
 
 @dataclass(frozen=True)
 class ScheduledEvent:
@@ -75,6 +95,11 @@ class InMemoryStore:
     sent_reminders: set[int] = field(default_factory=set)
     next_reminder_id: int = 1
     work_blocks: dict[str, WorkBlock] = field(default_factory=dict)
+    support_settings: dict[int, SupportSettings] = field(default_factory=dict)
+    support_deliveries: dict[tuple[int, date, str], dict] = field(default_factory=dict)
+    feedback: dict[int, Feedback] = field(default_factory=dict)
+    next_feedback_id: int = 1
+    feedback_drafts: dict[int, FeedbackDraft] = field(default_factory=dict)
 
     def ensure_schema(self) -> None:
         return None
@@ -172,6 +197,87 @@ class InMemoryStore:
             return None
         return block
 
+    def get_support_settings(self, chat_id: int) -> SupportSettings:
+        return self.support_settings.get(chat_id, SupportSettings(chat_id))
+
+    def set_mode(self, chat_id: int, mode: str) -> None:
+        current = self.get_support_settings(chat_id)
+        self.support_settings[chat_id] = SupportSettings(**{**current.__dict__, "mode": mode})
+
+    def configure_support(self, chat_id: int, times: tuple[str, ...], timezone: str) -> None:
+        current = self.get_support_settings(chat_id)
+        self.support_settings[chat_id] = SupportSettings(
+            chat_id, current.mode, True, timezone, times, None
+        )
+
+    def pause_support(self, chat_id: int, until: date | None) -> None:
+        current = self.get_support_settings(chat_id)
+        self.support_settings[chat_id] = SupportSettings(**{**current.__dict__, "paused_until": until})
+
+    def disable_support(self, chat_id: int) -> None:
+        current = self.get_support_settings(chat_id)
+        self.support_settings[chat_id] = SupportSettings(**{**current.__dict__, "enabled": False})
+
+    def claim_support_slots(self, now: datetime, limit: int = 50) -> list[SupportSlot]:
+        claimed = []
+        for settings in list(self.support_settings.values()):
+            for local_day, slot_id, due_at in due_slots(settings, now):
+                key = (settings.chat_id, local_day, slot_id)
+                if key in self.support_deliveries:
+                    continue
+                recent = {
+                    value["content_id"] for value in self.support_deliveries.values()
+                    if value["chat_id"] == settings.chat_id
+                    and value["local_date"] >= local_day - timedelta(days=7)
+                }
+                content = choose_content(recent, f"{settings.chat_id}:{local_day}:{slot_id}")
+                self.support_deliveries[key] = {
+                    "chat_id": settings.chat_id, "local_date": local_day,
+                    "content_id": content["id"], "status": "claimed",
+                }
+                claimed.append(SupportSlot(settings.chat_id, local_day, slot_id, due_at, content["id"], content["text"]))
+                if len(claimed) >= limit:
+                    return claimed
+        return claimed
+
+    def complete_support_slot(self, slot: SupportSlot, status: str, message_id: int | None = None) -> None:
+        self.support_deliveries[(slot.chat_id, slot.local_date, slot.slot_id)].update(status=status, message_id=message_id)
+
+    def create_feedback(self, chat_id: int, category: str, body: str, mode: str, source_message_id: int | None) -> Feedback:
+        feedback = Feedback(self.next_feedback_id, chat_id, category, body, mode, source_message_id, datetime.now(UTC))
+        self.feedback[feedback.id] = feedback
+        self.next_feedback_id += 1
+        return feedback
+
+    def get_feedback(self, feedback_id: int) -> Feedback | None:
+        return self.feedback.get(feedback_id)
+
+    def pending_feedback(self, limit: int = 20) -> list[Feedback]:
+        return [item for item in self.feedback.values() if item.notification_status == "pending"][:limit]
+
+    def mark_feedback_notification(self, feedback_id: int, status: str, message_id: int | None = None) -> None:
+        item = self.feedback[feedback_id]
+        self.feedback[feedback_id] = Feedback(**{**item.__dict__, "notification_status": status})
+
+    def mark_feedback_replied(self, feedback_id: int) -> None:
+        item = self.feedback[feedback_id]
+        self.feedback[feedback_id] = Feedback(
+            **{**item.__dict__, "status": "replied", "replied_at": datetime.now(UTC)}
+        )
+
+    def get_feedback_draft(self, chat_id: int) -> FeedbackDraft | None:
+        draft = self.feedback_drafts.get(chat_id)
+        if draft and draft.updated_at <= datetime.now(UTC) - timedelta(hours=24):
+            self.feedback_drafts.pop(chat_id, None)
+            return None
+        return draft
+
+    def save_feedback_draft(self, chat_id: int, category: str | None, body: str | None) -> None:
+        self.feedback_drafts[chat_id] = FeedbackDraft(chat_id, category, body, datetime.now(UTC))
+
+    def delete_feedback_draft(self, chat_id: int) -> None:
+        self.feedback_drafts.pop(chat_id, None)
+
 
 class PostgresMemoryStore:
     def __init__(self, database_url: str) -> None:
@@ -268,6 +374,36 @@ class PostgresMemoryStore:
                     ON nenoy_work_blocks (chat_id, active)
                     """
                 )
+                cursor.execute("ALTER TABLE nenoy_user_state ADD COLUMN IF NOT EXISTS mode TEXT NOT NULL DEFAULT 'coach'")
+                cursor.execute("""
+                    CREATE TABLE IF NOT EXISTS nenoy_support_settings (
+                        chat_id BIGINT PRIMARY KEY, enabled BOOLEAN NOT NULL DEFAULT FALSE,
+                        timezone TEXT, times JSONB NOT NULL DEFAULT '[\"09:00\",\"13:00\",\"17:00\"]',
+                        paused_until DATE, updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW())
+                """)
+                cursor.execute("""
+                    CREATE TABLE IF NOT EXISTS nenoy_support_deliveries (
+                        chat_id BIGINT NOT NULL, local_date DATE NOT NULL, slot_id TEXT NOT NULL,
+                        due_at TIMESTAMPTZ NOT NULL, content_version TEXT NOT NULL,
+                        content_id TEXT NOT NULL, status TEXT NOT NULL, telegram_message_id BIGINT,
+                        claimed_at TIMESTAMPTZ NOT NULL DEFAULT NOW(), completed_at TIMESTAMPTZ,
+                        PRIMARY KEY(chat_id, local_date, slot_id))
+                """)
+                cursor.execute("CREATE INDEX IF NOT EXISTS idx_nenoy_support_delivery_recent ON nenoy_support_deliveries(chat_id, local_date DESC)")
+                cursor.execute("""
+                    CREATE TABLE IF NOT EXISTS nenoy_feedback (
+                        id BIGSERIAL PRIMARY KEY, chat_id BIGINT NOT NULL, category TEXT NOT NULL,
+                        body TEXT NOT NULL, mode_at_submit TEXT NOT NULL, source_message_id BIGINT,
+                        created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(), status TEXT NOT NULL DEFAULT 'submitted',
+                        notification_status TEXT NOT NULL DEFAULT 'pending', notification_message_id BIGINT,
+                        replied_at TIMESTAMPTZ)
+                """)
+                cursor.execute("""
+                    CREATE TABLE IF NOT EXISTS nenoy_feedback_drafts (
+                        chat_id BIGINT PRIMARY KEY, category TEXT, body TEXT,
+                        updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW())
+                """)
+                cursor.execute("CREATE INDEX IF NOT EXISTS idx_nenoy_feedback_drafts_updated ON nenoy_feedback_drafts(updated_at)")
 
     def get_goal(self, chat_id: int) -> str | None:
         with self._connect() as connection:
@@ -505,6 +641,121 @@ class PostgresMemoryStore:
         if row is None:
             return None
         return _work_block_from_row(row)
+
+
+    def get_support_settings(self, chat_id: int) -> SupportSettings:
+        with self._connect() as connection, connection.cursor() as cursor:
+            cursor.execute("""
+                SELECT COALESCE(u.mode, 'coach'), COALESCE(s.enabled, FALSE), s.timezone,
+                       COALESCE(s.times, '[\"09:00\",\"13:00\",\"17:00\"]'::jsonb), s.paused_until
+                FROM (SELECT %s::bigint AS chat_id) x
+                LEFT JOIN nenoy_user_state u USING(chat_id)
+                LEFT JOIN nenoy_support_settings s USING(chat_id)
+            """, (chat_id,))
+            mode, enabled, timezone, times, paused_until = cursor.fetchone()
+        return SupportSettings(chat_id, mode, enabled, timezone, tuple(times), paused_until)
+
+    def set_mode(self, chat_id: int, mode: str) -> None:
+        if mode not in {"coach", "support"}:
+            raise ValueError("invalid mode")
+        with self._connect() as connection, connection.cursor() as cursor:
+            cursor.execute("""INSERT INTO nenoy_user_state(chat_id, mode) VALUES(%s,%s)
+                ON CONFLICT(chat_id) DO UPDATE SET mode=EXCLUDED.mode, updated_at=NOW()""", (chat_id, mode))
+
+    def configure_support(self, chat_id: int, times: tuple[str, ...], timezone: str) -> None:
+        with self._connect() as connection, connection.cursor() as cursor:
+            cursor.execute("""INSERT INTO nenoy_support_settings(chat_id,enabled,timezone,times,paused_until)
+                VALUES(%s,TRUE,%s,%s::jsonb,NULL) ON CONFLICT(chat_id) DO UPDATE SET
+                enabled=TRUE, timezone=EXCLUDED.timezone, times=EXCLUDED.times,
+                paused_until=NULL, updated_at=NOW()""", (chat_id, timezone, json.dumps(times)))
+
+    def pause_support(self, chat_id: int, until: date | None) -> None:
+        with self._connect() as connection, connection.cursor() as cursor:
+            cursor.execute("UPDATE nenoy_support_settings SET paused_until=%s, updated_at=NOW() WHERE chat_id=%s", (until, chat_id))
+
+    def disable_support(self, chat_id: int) -> None:
+        with self._connect() as connection, connection.cursor() as cursor:
+            cursor.execute("UPDATE nenoy_support_settings SET enabled=FALSE, updated_at=NOW() WHERE chat_id=%s", (chat_id,))
+
+    def claim_support_slots(self, now: datetime, limit: int = 50) -> list[SupportSlot]:
+        # INSERT ... ON CONFLICT is the cross-worker claim; network I/O happens only after commit.
+        claimed = []
+        with self._connect() as connection, connection.cursor() as cursor:
+            cursor.execute("SELECT chat_id FROM nenoy_support_settings WHERE enabled=TRUE ORDER BY chat_id")
+            chat_ids = [int(row[0]) for row in cursor.fetchall()]
+            for chat_id in chat_ids:
+                settings = self.get_support_settings(chat_id)
+                for local_day, slot_id, due_at in due_slots(settings, now):
+                    cursor.execute("SELECT content_id FROM nenoy_support_deliveries WHERE chat_id=%s AND local_date >= %s", (chat_id, local_day-timedelta(days=7)))
+                    recent = {row[0] for row in cursor.fetchall()}
+                    content = choose_content(recent, f"{chat_id}:{local_day}:{slot_id}")
+                    cursor.execute("""INSERT INTO nenoy_support_deliveries
+                        (chat_id,local_date,slot_id,due_at,content_version,content_id,status)
+                        VALUES(%s,%s,%s,%s,'lightness_action_v4',%s,'claimed')
+                        ON CONFLICT DO NOTHING RETURNING chat_id""",
+                        (chat_id, local_day, slot_id, due_at, content["id"]))
+                    if cursor.fetchone():
+                        claimed.append(SupportSlot(chat_id, local_day, slot_id, due_at, content["id"], content["text"]))
+                    if len(claimed) >= limit:
+                        return claimed
+        return claimed
+
+    def complete_support_slot(self, slot: SupportSlot, status: str, message_id: int | None = None) -> None:
+        with self._connect() as connection, connection.cursor() as cursor:
+            cursor.execute("""UPDATE nenoy_support_deliveries SET status=%s, telegram_message_id=%s,
+                completed_at=NOW() WHERE chat_id=%s AND local_date=%s AND slot_id=%s""",
+                (status, message_id, slot.chat_id, slot.local_date, slot.slot_id))
+
+    def create_feedback(self, chat_id: int, category: str, body: str, mode: str, source_message_id: int | None) -> Feedback:
+        with self._connect() as connection, connection.cursor() as cursor:
+            cursor.execute("""INSERT INTO nenoy_feedback(chat_id,category,body,mode_at_submit,source_message_id)
+                SELECT %s,%s,%s,%s,%s WHERE (SELECT COUNT(*) FROM nenoy_feedback
+                WHERE chat_id=%s AND created_at > NOW()-INTERVAL '1 hour') < %s RETURNING id,created_at""",
+                (chat_id,category,body,mode,source_message_id,chat_id,AppConfig.feedback_rate_limit))
+            row = cursor.fetchone()
+            if not row:
+                raise ValueError("feedback rate limit")
+        return Feedback(int(row[0]), chat_id, category, body, mode, source_message_id, row[1])
+
+    def get_feedback(self, feedback_id: int) -> Feedback | None:
+        with self._connect() as connection, connection.cursor() as cursor:
+            cursor.execute("SELECT id,chat_id,category,body,mode_at_submit,source_message_id,created_at,status,notification_status,replied_at FROM nenoy_feedback WHERE id=%s", (feedback_id,))
+            row = cursor.fetchone()
+        return Feedback(*row) if row else None
+
+    def pending_feedback(self, limit: int = 20) -> list[Feedback]:
+        with self._connect() as connection, connection.cursor() as cursor:
+            cursor.execute("SELECT id,chat_id,category,body,mode_at_submit,source_message_id,created_at,status,notification_status,replied_at FROM nenoy_feedback WHERE notification_status='pending' ORDER BY id LIMIT %s", (limit,))
+            rows = cursor.fetchall()
+        return [Feedback(*row) for row in rows]
+
+    def mark_feedback_notification(self, feedback_id: int, status: str, message_id: int | None = None) -> None:
+        with self._connect() as connection, connection.cursor() as cursor:
+            cursor.execute("UPDATE nenoy_feedback SET notification_status=%s, notification_message_id=%s WHERE id=%s", (status,message_id,feedback_id))
+
+    def mark_feedback_replied(self, feedback_id: int) -> None:
+        with self._connect() as connection, connection.cursor() as cursor:
+            cursor.execute(
+                "UPDATE nenoy_feedback SET status='replied', replied_at=NOW() WHERE id=%s",
+                (feedback_id,),
+            )
+
+    def get_feedback_draft(self, chat_id: int) -> FeedbackDraft | None:
+        with self._connect() as connection, connection.cursor() as cursor:
+            cursor.execute("DELETE FROM nenoy_feedback_drafts WHERE updated_at <= NOW() - INTERVAL '24 hours'")
+            cursor.execute("SELECT chat_id,category,body,updated_at FROM nenoy_feedback_drafts WHERE chat_id=%s", (chat_id,))
+            row = cursor.fetchone()
+        return FeedbackDraft(int(row[0]), row[1], row[2], row[3]) if row else None
+
+    def save_feedback_draft(self, chat_id: int, category: str | None, body: str | None) -> None:
+        with self._connect() as connection, connection.cursor() as cursor:
+            cursor.execute("""INSERT INTO nenoy_feedback_drafts(chat_id,category,body,updated_at)
+                VALUES(%s,%s,%s,NOW()) ON CONFLICT(chat_id) DO UPDATE SET
+                category=EXCLUDED.category, body=EXCLUDED.body, updated_at=NOW()""", (chat_id, category, body))
+
+    def delete_feedback_draft(self, chat_id: int) -> None:
+        with self._connect() as connection, connection.cursor() as cursor:
+            cursor.execute("DELETE FROM nenoy_feedback_drafts WHERE chat_id=%s", (chat_id,))
 
 
 def create_memory_store() -> MemoryStore:

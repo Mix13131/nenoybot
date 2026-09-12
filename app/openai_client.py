@@ -32,38 +32,30 @@ def build_system_instructions() -> str:
     return "\n\n---\n\n".join(sections)
 
 
+def build_support_instructions() -> str:
+    return (AppConfig.project_root / "app" / "support_system_prompt.md").read_text(encoding="utf-8")
+
+
 def build_user_input(message: str, context: ConversationContext) -> str:
     goal = context.goal or "Цель не указана"
-    recent = "\n".join(
-        f"{role}: {content}" for role, content in context.recent_messages[-8:]
-    )
-    if not recent:
-        recent = "Нет предыдущих сообщений."
-
+    recent = "\n".join(f"{role}: {content}" for role, content in context.recent_messages[-8:])
+    recent = recent or "Нет предыдущих сообщений."
     summary = context.memory_summary or "Нет сохранённого резюме."
     return (
-        f"Текущая цель пользователя:\n{goal}\n\n"
-        f"Память по пользователю:\n{summary}\n\n"
-        f"Последние сообщения:\n{recent}\n\n"
-        f"Новое сообщение пользователя:\n{message}\n\n"
+        f"Текущая цель пользователя:\n{goal}\n\nПамять по пользователю:\n{summary}\n\n"
+        f"Последние сообщения:\n{recent}\n\nНовое сообщение пользователя:\n{message}\n\n"
         "Ответь как НеНойBot: коротко, живо, с характером, жёстко к бездействию. "
-        "Но сначала учти состояние пользователя. Не дави одинаково на усталость, слив, "
-        "оффтоп и желание всё бросить.\n"
-        "Каждый ответ держи в стиле тренера: иронично, с лёгким подколом и рабочей метафорой "
-        "про старт/подход/таймер/разминку — без занудного менеджерского тона.\n"
-        "Вдохновляй через действие, не через морали.\n"
-        "Не обязан каждый раз заканчивать вопросом о сроке. Выбирай подходящий финал: "
-        "микро-действие, точное время, выбор из двух вариантов, короткий контракт или "
-        "честное закрытие дня без самообмана.\n"
-        "Не повторяй однотипные команды про цель чаще, чем раз в 3 сообщения; чередуй формулировки.\n"
-        "Если пользователь просит музыку/трек/настроение — давай конкретные 1-2 опции (не длинный список), "
-        "потом давай микро-вход в задачу.\n"
-        "Не повторяй одинаковый микро-шаг или тот же вопрос, если похожая формулировка была "
-        "уже в последних сообщениях.\n"
-        "Не выдумывай конкретные задачи, которых пользователь не называл. "
-        "Если цель или контекст неизвестны, спрашивай цель в стиле НеНойBot, "
-        "а не подставляй «тест», «пост», «автоматизацию», «API» или другую техническую задачу.\n"
+        "Но сначала учти состояние пользователя. Не обязан каждый раз заканчивать вопросом о сроке. "
+        "Не выдумывай задачи и не повторяйся. "
+        "Вдохновляй через действие, не через морали."
     )
+
+
+def build_support_user_input(message: str, context: ConversationContext) -> str:
+    recent = "\n".join(f"{role}: {content}" for role, content in context.recent_messages[-8:])
+    return (f"Последние сообщения режима support:\n{recent or 'Нет предыдущих сообщений.'}\n\n"
+            f"Новое сообщение:\n{message}\n\nОтветь в режиме поддержки. "
+            "Не предполагай наличие цели или проекта и не создавай напоминание.")
 
 
 class OpenAINenoyClient:
@@ -83,8 +75,10 @@ class OpenAINenoyClient:
             self._client = OpenAI(api_key=AppConfig.openai_api_key)
         return self._client
 
-    def generate(self, message: str, context: ConversationContext) -> str:
+    def generate(self, message: str, context: ConversationContext, mode: str = "coach") -> str:
         if not self.enabled:
+            if mode == "support":
+                return support_fallback(message)
             return generate_local_response(
                 message,
                 goal=context.goal,
@@ -93,8 +87,8 @@ class OpenAINenoyClient:
 
         response = self._get_client().responses.create(
             model=AppConfig.openai_model,
-            instructions=build_system_instructions(),
-            input=build_user_input(message, context),
+            instructions=build_support_instructions() if mode == "support" else build_system_instructions(),
+            input=build_support_user_input(message, context) if mode == "support" else build_user_input(message, context),
             reasoning={"effort": "low"},
             text={"verbosity": "low"},
         )
@@ -110,11 +104,17 @@ class OpenAINenoyClient:
         )
 
 
-def generate_ai_response(message: str, context: ConversationContext) -> str:
+def support_fallback(message: str) -> str:
+    if any(word in message.casefold() for word in ("нет сил", "устал", "устала", "выгорел")):
+        return "Тогда без дополнительного задания. Необязательное можно отложить; разбираться с ним сейчас не требуется."
+    return "Не обязательно превращать это в экзамен. Можно разобраться по дороге и попробовать один естественный вариант — без задачи кого-то впечатлить."
+
+
+def generate_ai_response(message: str, context: ConversationContext, mode: str = "coach") -> str:
     try:
-        return OpenAINenoyClient().generate(message, context)
+        return OpenAINenoyClient().generate(message, context, mode=mode)
     except Exception as exc:
-        fallback = generate_local_response(
+        fallback = support_fallback(message) if mode == "support" else generate_local_response(
             message,
             goal=context.goal,
             recent_messages=context.recent_messages,

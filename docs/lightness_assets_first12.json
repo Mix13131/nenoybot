@@ -1,0 +1,18 @@
+{
+  "version": "first12-v1",
+  "note": "Semantic mapping of the first 12 approved visual posters to the current lightness_action_v4 content IDs. Binary assets are prepared separately; aspect ratios are preserved to avoid cropping text.",
+  "assets": [
+    {"content_id":"M01","source_file":"M01.png","prepared_file":"M01.jpg"},
+    {"content_id":"M02","source_file":"M02.png","prepared_file":"M02.jpg"},
+    {"content_id":"M06","source_file":"M03.png","prepared_file":"M06.jpg"},
+    {"content_id":"M08","source_file":"M04.png","prepared_file":"M08.jpg"},
+    {"content_id":"M05","source_file":"M05.png","prepared_file":"M05.jpg"},
+    {"content_id":"D01","source_file":"M06.png","prepared_file":"D01.jpg"},
+    {"content_id":"D10","source_file":"M07.png","prepared_file":"D10.jpg"},
+    {"content_id":"D08","source_file":"M08.png","prepared_file":"D08.jpg"},
+    {"content_id":"A03","source_file":"M09.png","prepared_file":"A03.jpg"},
+    {"content_id":"A04","source_file":"M10.png","prepared_file":"A04.jpg"},
+    {"content_id":"M07","source_file":"M11.png","prepared_file":"M07.jpg"},
+    {"content_id":"A05","source_file":"M12.png","prepared_file":"A05.jpg"}
+  ]
+}

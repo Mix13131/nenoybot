@@ -42,3 +42,11 @@
 - **v0.5** — Напоминания — planned
 - **v1.0** — MVP — planned
 
+
+## Issue #1 — support/lightness_action_v4
+
+- [x] Код: mode, opt-in recurrence, каталог v4, feedback/care routing.
+- [x] Unit/regression tests: каталог, DST, 14 дней, dedupe, режимы, категории, draft TTL и Telegram 429/403.
+- [ ] Postgres integration/concurrency и ручная Telegram-приёмка.
+- [ ] Review, миграция/backup/rollback с одним polling worker.
+- [ ] Merge/deploy и фактическая доставка — только после release gate.
