@@ -64,6 +64,7 @@ class UserRegistry:
                 INSERT INTO nenoy_users (chat_id, first_seen_at, last_seen_at)
                 SELECT chat_id, MIN(created_at), MAX(created_at)
                 FROM nenoy_messages
+                WHERE chat_id > 0
                 GROUP BY chat_id
                 ON CONFLICT (chat_id) DO UPDATE SET
                     first_seen_at = LEAST(nenoy_users.first_seen_at, EXCLUDED.first_seen_at),
