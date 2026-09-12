@@ -2,15 +2,13 @@ from app.style_guard import find_forbidden_style_phrases, is_style_guard_passed
 from app.style_guard import find_botlike_phrases, is_human_style_response
 
 
-def test_style_guard_rejects_bad_answers() -> None:
+def test_style_guard_rejects_clearly_mechanical_answers() -> None:
     bad_replies = [
-        "Срок поймал до 17:00. По плану проверишь webhook.",
-        "Принято, следующий шаг назначен.",
-        "Главный срок без отчёта — это просто формальность.",
-        "Главный удар не нужен, просто отчёт ожидаю.",
-        "Заходи поздно: задача зафиксирована. Напоминание создано.",
+        "Срок поймал до 17:00. Отчёт ожидаю.",
+        "Задача зафиксирована. Напоминание создано.",
         "Эмоции зафиксированы, ближайший шаг назначен.",
         "Приходи за фирменностью. Стиль не строит webhook.",
+        "Главный удар не нужен, просто отчёт ожидаю.",
         "Срок без отчёта — это не оправдание.",
     ]
 
@@ -23,7 +21,7 @@ def test_style_guard_rejects_bad_answers() -> None:
 
 
 def test_style_guard_reports_reason() -> None:
-    violations = find_forbidden_style_phrases("Срок поймал. По плану.")
+    violations = find_forbidden_style_phrases("Срок поймал. Отчёт ожидаю.")
 
     assert any(
         violation["pattern"] == "срок поймал"
@@ -31,18 +29,31 @@ def test_style_guard_reports_reason() -> None:
         for violation in violations
     )
     assert any(
-        violation["pattern"] == "по плану"
-        and violation["reason"] == "CRM/task-tracker tone"
+        violation["pattern"] == "отчёт ожидаю"
+        and violation["reason"] == "manager tone"
         for violation in violations
     )
 
 
+def test_style_guard_allows_natural_everyday_words() -> None:
+    replies = [
+        "Понял. Тут проект пока вообще не трогаем — расскажи, что именно бесит.",
+        "Хорошо, это уже звучит как нормальный разговор 😏",
+        "Принято. Тогда сегодня без геройства.",
+        "По плану всё ок, но сейчас ты явно хочешь просто выдохнуть.",
+    ]
+
+    for text in replies:
+        assert is_style_guard_passed(text), text
+        assert is_human_style_response(text), text
+
+
 def test_style_guard_allows_nenoy_style_examples() -> None:
     good_replies = [
-        "Срок пришёл. Теперь нужен факт, а не красивая легенда про потом. Что сделал? 🔥",
-        "Напоминалка сработала. Теперь пусть сработает дисциплина. Где результат? 💥",
-        "План уже наговорили. До 17:00 запускаешь первый API-запрос и приносишь факт. ⛓️",
-        "Ты пришёл не с отчётом по KPI, а с тратой оправданий. Что закрываешь первым?",
+        "Диван опять баллотируется в президенты твоего дня. Но сегодня у него сильная кампания 😏",
+        "Красоту наведёшь потом. Сейчас нужен грязный черновик.",
+        "О, это уже маленький развод с проектом. Ты его реально больше не хочешь — или сегодня видеть не можешь?",
+        "Факт есть 🔥 Теперь можно секунду порадоваться и решить, нужен ли следующий кусок прямо сейчас.",
     ]
 
     for text in good_replies:
@@ -81,5 +92,5 @@ def test_find_botlike_phrases_catches_explicit_botness() -> None:
 
 
 def test_is_human_style_response() -> None:
-    assert is_human_style_response("Устал? Бывает. Десять минут найдёшь. Открывай проект. 🔥")
-    assert not is_human_style_response("Я не могу, это слишком сложно.")
+    assert is_human_style_response("Устал? Тогда без цирка. Хочешь выдохнуть — выдыхай.")
+    assert not is_human_style_response("Системные ограничения не позволяют это сделать.")
