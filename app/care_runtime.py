@@ -177,6 +177,17 @@ class CareStore:
             row = cursor.fetchone()
         return int(row[0]) if row else None
 
+    def get_user_mode(self, chat_id: int) -> str:
+        if not self.database_url:
+            return "coach"
+        with self._connect() as connection, connection.cursor() as cursor:
+            cursor.execute(
+                "SELECT COALESCE(mode, 'coach') FROM nenoy_user_state WHERE chat_id = %s",
+                (chat_id,),
+            )
+            row = cursor.fetchone()
+        return str(row[0]) if row else "coach"
+
     def latest_care_message_id(self, feedback_id: int) -> int | None:
         if not self.database_url:
             candidates = [
@@ -446,20 +457,39 @@ def send_guarded_message(
     keyboard=None,
 ) -> int | None:
     if text.startswith(CARE_SETUP_OK_PREFIX):
-        return api._send_raw_message(
+        config = CARE.get_config()
+        return _send_group_message(
+            api,
             chat_id,
             text.removeprefix(CARE_SETUP_OK_PREFIX),
+            message_thread_id=(config.message_thread_id if config else None),
         )
 
     if text == CARE_GROUP_REPLY_SENTINEL:
         pending = _PENDING_GROUP_REPLY.pop(chat_id, None)
+        config = CARE.get_config()
         if pending is None:
-            return api._send_raw_message(chat_id, "Не смог связать ответ с обращением.")
+            return _send_group_message(
+                api,
+                chat_id,
+                "Не смог связать ответ с обращением.",
+                message_thread_id=(config.message_thread_id if config else None),
+            )
         feedback_id, body = pending
         user_chat_id = CARE.get_user_chat_id(feedback_id)
         if user_chat_id is None:
-            return api._send_raw_message(chat_id, "Пользователь обращения не найден.")
+            return _send_group_message(
+                api,
+                chat_id,
+                "Пользователь обращения не найден.",
+                message_thread_id=(config.message_thread_id if config else None),
+            )
 
+        user_keyboard = (
+            base.SUPPORT_KEYBOARD
+            if CARE.get_user_mode(user_chat_id) == "support"
+            else base.MAIN_KEYBOARD
+        )
         status, user_message_id = base.deliver_telegram(
             lambda: api._send_raw_message(
                 user_chat_id,
@@ -468,6 +498,7 @@ def send_guarded_message(
                     f"{body}\n\n"
                     "Можно ответить прямо на это сообщение — ответ вернётся в службу заботы."
                 ),
+                user_keyboard,
             )
         )
         if status == "confirmed" and user_message_id is not None:
@@ -477,13 +508,17 @@ def send_guarded_message(
                 direction="care_to_user",
             )
             CARE.mark_replied(feedback_id)
-            return api._send_raw_message(
+            return _send_group_message(
+                api,
                 chat_id,
                 f"✅ Ответ доставлен пользователю по обращению №{feedback_id}.",
+                message_thread_id=(config.message_thread_id if config else None),
             )
-        return api._send_raw_message(
+        return _send_group_message(
+            api,
             chat_id,
             f"⚠️ Ответ по обращению №{feedback_id} не доставлен: {status}.",
+            message_thread_id=(config.message_thread_id if config else None),
         )
 
     if text == CARE_USER_REPLY_SENTINEL:
@@ -569,6 +604,11 @@ def deliver_pending_feedback(api: base.TelegramAPI, store) -> None:
                 care_message_id=message_id,
                 direction="user_to_care",
             )
+            user_keyboard = (
+                base.SUPPORT_KEYBOARD
+                if feedback.mode_at_submit == "support"
+                else base.MAIN_KEYBOARD
+            )
             base.deliver_telegram(
                 lambda: api._send_raw_message(
                     feedback.chat_id,
@@ -576,6 +616,7 @@ def deliver_pending_feedback(api: base.TelegramAPI, store) -> None:
                         f"Обращение №{feedback.id} передано в службу заботы. "
                         "Ответ появится здесь."
                     ),
+                    user_keyboard,
                 )
             )
 
