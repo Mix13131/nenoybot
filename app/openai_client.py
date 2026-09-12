@@ -5,11 +5,11 @@ from dataclasses import dataclass
 try:
     from .config import AppConfig
     from .nenoy_engine import generate_response as generate_local_response
-    from .prompt_loader import load_all_prompts
+    from .prompt_loader import load_prompt
 except ImportError:  # Allows direct script imports in local checks.
     from config import AppConfig
     from nenoy_engine import generate_response as generate_local_response
-    from prompt_loader import load_all_prompts
+    from prompt_loader import load_prompt
 
 
 @dataclass(frozen=True)
@@ -20,19 +20,12 @@ class ConversationContext:
 
 
 def build_system_instructions() -> str:
-    prompts = load_all_prompts()
-    ordered_names = (
-        "system_prompt",
-        "response_algorithm",
-        "state_classifier",
-        "reaction_scenarios",
-        "combat_dictionary",
-    )
-    sections = [prompts[name] for name in ordered_names if name in prompts]
-    return "\n\n---\n\n".join(sections)
+    """Single source of truth for the coach persona."""
+    return load_prompt("persona_v2.md")
 
 
 def build_support_instructions() -> str:
+    # Lightness mode intentionally stays independent from Persona v2.
     return (AppConfig.project_root / "app" / "support_system_prompt.md").read_text(encoding="utf-8")
 
 
@@ -42,20 +35,24 @@ def build_user_input(message: str, context: ConversationContext) -> str:
     recent = recent or "Нет предыдущих сообщений."
     summary = context.memory_summary or "Нет сохранённого резюме."
     return (
-        f"Текущая цель пользователя:\n{goal}\n\nПамять по пользователю:\n{summary}\n\n"
-        f"Последние сообщения:\n{recent}\n\nНовое сообщение пользователя:\n{message}\n\n"
-        "Ответь как НеНойBot: коротко, живо, с характером, жёстко к бездействию. "
-        "Но сначала учти состояние пользователя. Не обязан каждый раз заканчивать вопросом о сроке. "
-        "Не выдумывай задачи и не повторяйся. "
-        "Вдохновляй через действие, не через морали."
+        f"Текущая цель пользователя:\n{goal}\n\n"
+        f"Память по пользователю:\n{summary}\n\n"
+        f"Последние сообщения:\n{recent}\n\n"
+        f"Новое сообщение пользователя:\n{message}\n\n"
+        "Ответь именно на новое сообщение с учётом контекста. "
+        "Не тащи пользователя к действию автоматически: сначала выбери уместную реакцию по Persona v2. "
+        "Если действие не нужно — не придумывай его. Если нужно — дай минимально достаточный взрослый ход. "
+        "Не выдумывай факты, задачи, сроки или детали. Не повторяй недавние формулы и метафоры."
     )
 
 
 def build_support_user_input(message: str, context: ConversationContext) -> str:
     recent = "\n".join(f"{role}: {content}" for role, content in context.recent_messages[-8:])
-    return (f"Последние сообщения режима support:\n{recent or 'Нет предыдущих сообщений.'}\n\n"
-            f"Новое сообщение:\n{message}\n\nОтветь в режиме поддержки. "
-            "Не предполагай наличие цели или проекта и не создавай напоминание.")
+    return (
+        f"Последние сообщения режима support:\n{recent or 'Нет предыдущих сообщений.'}\n\n"
+        f"Новое сообщение:\n{message}\n\n"
+        "Ответь в режиме поддержки. Не предполагай наличие цели или проекта и не создавай напоминание."
+    )
 
 
 class OpenAINenoyClient:
