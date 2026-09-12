@@ -21,6 +21,7 @@ BUTTON_MODE = "🎛 Режим"
 BUTTON_LIGHTNESS = "🌿 Лёгкость"
 BUTTON_BACK = "↩️ Назад"
 ASSET_IMAGE_RECEIVED = "__asset_image_received__"
+ASSET_SHOW_PREFIX = "__asset_show__:"
 
 MODE_MENU_TEXT = (
     "Как мне быть рядом сегодня?\n\n"
@@ -150,6 +151,21 @@ class AssetStore:
                 row = cursor.fetchone()
         return row[0] if row else None
 
+    def list_ids(self) -> list[str]:
+        if not self.database_url:
+            return sorted(self._memory)
+        with self._connect() as connection:
+            with connection.cursor() as cursor:
+                cursor.execute(
+                    """
+                    SELECT content_id
+                    FROM nenoy_lightness_assets
+                    ORDER BY content_id
+                    """
+                )
+                rows = cursor.fetchall()
+        return [str(row[0]) for row in rows]
+
 
 ASSETS = AssetStore(AppConfig.database_url)
 
@@ -218,6 +234,37 @@ def build_reply(
             _PENDING_ASSETS.pop(chat_id, None)
             return "Команда недоступна."
         return "Фото поймал 🖼 Теперь пришли отдельным сообщением `/asset M01`."
+
+    if text.startswith("/asset_show"):
+        if chat_id not in AppConfig.care_admin_ids:
+            return "Команда недоступна."
+        parts = text.split(maxsplit=1)
+        if len(parts) != 2:
+            return "Формат: `/asset_show D01`."
+        content_id = parts[1].strip().upper()
+        if content_id not in CONTENT_BY_ID:
+            return f"Неизвестный content_id: {content_id}."
+        if not ASSETS.get(content_id):
+            return f"🖼 {content_id} пока не зарегистрирован."
+        return f"{ASSET_SHOW_PREFIX}{content_id}"
+
+    if text.strip() == "/asset_list":
+        if chat_id not in AppConfig.care_admin_ids:
+            return "Команда недоступна."
+        registered = ASSETS.list_ids()
+        registered_set = set(registered)
+        missing = [content_id for content_id in sorted(CONTENT_BY_ID) if content_id not in registered_set]
+        by_prefix = {
+            prefix: [content_id for content_id in registered if content_id.startswith(prefix)]
+            for prefix in ("M", "D", "A")
+        }
+        return "\n".join([
+            f"🖼 Зарегистрировано: {len(registered)}/{len(CONTENT_BY_ID)}",
+            f"M: {' '.join(by_prefix['M']) or '—'}",
+            f"D: {' '.join(by_prefix['D']) or '—'}",
+            f"A: {' '.join(by_prefix['A']) or '—'}",
+            f"Не хватает: {' '.join(missing) if missing else 'ничего — комплект полный ✅'}",
+        ])
 
     if text.startswith("/asset"):
         pending = _PENDING_ASSETS.pop(chat_id, None)
@@ -310,6 +357,23 @@ def send_guarded_message(
     mode: str = "coach",
     keyboard=None,
 ) -> int | None:
+    if text.startswith(ASSET_SHOW_PREFIX):
+        content_id = text.removeprefix(ASSET_SHOW_PREFIX).strip().upper()
+        item = CONTENT_BY_ID.get(content_id)
+        file_id = ASSETS.get(content_id)
+        if not item or not file_id:
+            return api._send_raw_message(chat_id, f"🖼 {content_id} не найден.")
+        caption = f"🖼 {content_id}\n\n{item['text']}"
+        if len(caption) > 1024:
+            caption = caption[:1021].rstrip() + "…"
+        return _send_photo(
+            api,
+            chat_id,
+            file_id,
+            caption,
+            keyboard or (base.SUPPORT_KEYBOARD if mode == "support" else base.MAIN_KEYBOARD),
+        )
+
     if text == MODE_MENU_TEXT:
         return api._send_raw_message(chat_id, text, MODE_KEYBOARD)
 
