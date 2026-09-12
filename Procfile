@@ -1,1 +1,1 @@
-worker: python -m app.asset_runtime
+worker: python -m app.schedule_runtime
