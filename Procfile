@@ -1,1 +1,1 @@
-worker: python -m app.schedule_runtime
+worker: python -m app.care_runtime
