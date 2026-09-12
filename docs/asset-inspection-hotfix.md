@@ -1,0 +1,1 @@
+Hotfix notes: adds admin-only /asset_show <ID> and /asset_list commands for production asset verification.
