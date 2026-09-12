@@ -1,1 +1,1 @@
-worker: python -m app.ui_runtime
+worker: python -m app.topic_runtime
