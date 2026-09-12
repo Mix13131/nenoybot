@@ -1,1 +1,1 @@
-worker: python -m app.telegram_bot
+worker: python -m app.asset_wrapper
