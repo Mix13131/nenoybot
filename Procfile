@@ -1,1 +1,1 @@
-worker: python -m app.asset_wrapper
+worker: python -m app.asset_runtime
