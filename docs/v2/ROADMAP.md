@@ -44,34 +44,7 @@
 
 **Статус: DONE**
 
-Зафиксированы:
-
-- отдельный runtime v2;
-- новый namespace `app_v2/` вместо постепенного переписывания legacy `app/`;
-- отдельные Railway web + worker + PostgreSQL;
-- быстрый Telegram webhook;
-- Event Ingestor;
-- PostgreSQL durable queue без Redis;
-- Dispatcher / Scene Analyzer;
-- Context Builder;
-- Personality Engine;
-- Memory Mapper / Retrieval Engine;
-- Response Generator;
-- Action Engine;
-- Scheduler;
-- Feedback Collector;
-- Outbox;
-- idempotency;
-- schema основных таблиц;
-- task-based model routing;
-- cost tracking;
-- privacy boundaries;
-- observability;
-- error/degradation policy;
-- maintenance jobs;
-- testing strategy;
-- deployment sequence;
-- architecture acceptance criteria.
+Зафиксированы отдельный runtime v2, namespace `app_v2/`, Railway web + worker + PostgreSQL, Telegram webhook, PostgreSQL durable queue, Dispatcher, Scene Analyzer, Memory/Context/Personality layers, outbox, idempotency, model routing, cost tracking, privacy boundaries, observability, maintenance и deployment sequence.
 
 Артефакт: `ARCHITECTURE.md`.
 
@@ -79,57 +52,79 @@
 
 ## Phase 4.5 — MVP Build Plan
 
-**Статус: NEXT**
+**Статус: DONE**
 
-Превратить архитектуру в последовательность маленьких задач для Codex.
+Архитектура разбита на 28 маленьких последовательных задач Codex.
 
-Каждая задача должна иметь:
+Для каждой стадии определены:
 
-- цель;
-- ограниченный scope;
-- какие файлы разрешено менять;
-- что нельзя трогать;
+- scope;
+- разрешённые изменения;
+- запреты;
 - acceptance criteria;
-- обязательные tests/checks;
-- rollback / failure notes;
-- форму отчёта после выполнения.
-
-Предварительный critical build order:
-
-```text
-01 Skeleton app_v2
-02 Configuration + contracts
-03 DB migrations
-04 Telegram webhook ingest
-05 PostgreSQL event queue
-06 Worker + idempotency
-07 Dispatcher deterministic policy
-08 Scene Analyzer + Model Router
-09 Memory repositories / mapper / retrieval
-10 Context Builder + Personality Engine
-11 Response Generator
-12 Outbox + Telegram sender
-13 Actions / Reminders / Scheduler
-14 Feedback Collector
-15 Analytics + cost tracking
-16 Personal E2E
-17 Group E2E
-18 Railway v2 deployment
-19 Personal smoke test
-20 Friends Group test
-```
+- обязательные tests;
+- build gates;
+- обязательная форма отчёта Codex.
 
 Артефакт: `MVP_BUILD_PLAN.md`.
+
+Build order:
+
+```text
+Stage A — Foundation
+01 Skeleton
+02 Contracts
+03 DB
+04 Webhook
+05 Event Queue
+06 Outbox
+
+Stage B — Decision Brain
+07 Dispatcher deterministic
+08 Model Router
+09 Scene Analyzer
+
+Stage C — Memory + Character
+10 Memory Repository
+11 Memory Mapper
+12 Personality Engine
+13 Context Builder
+
+Stage D — Personal MVP
+14 Response Generator
+15 Personal E2E
+16 Actions / Reminders
+
+Stage E — Group MVP
+17 Group Whitelist
+18 Group Silence First
+19 Roast / Callback
+20 Adaptive Initiative
+
+Stage F — Feedback / Cost / Reliability
+21 Feedback
+22 Analytics / Cost
+23 Maintenance
+24 Reliability
+
+Stage G — Deployment / Real Test
+25 Railway v2
+26 Personal Smoke
+27 Friends Preflight
+28 Friends Test
+```
 
 ---
 
 ## Phase 5 — Personal MVP 2.0
 
-**Статус: PLANNED**
+**Статус: READY TO BUILD**
 
-MVP должен уметь помнить пользователя, цели, проекты, решения и обещания; использовать callbacks; выбирать Coach/Mirror/Care/Assistant/Observer; создавать задачи/напоминания и проявлять контролируемую инициативу.
+Реализация начинается с `TASK 01 — app_v2 Skeleton` и проходит через Gate A до Personal E2E.
 
-Тест: 7–14 дней реального использования владельцем.
+Personal MVP должен уметь помнить пользователя, цели, проекты, решения и обещания; использовать callbacks; выбирать Coach/Mirror/Care/Assistant/Observer; создавать задачи/напоминания и проявлять контролируемую инициативу.
+
+Тест: 7–14 дней реального использования владельцем после deployment.
 
 Проверяем false memory, полезность callbacks, неуместные вмешательства, ощущение «он меня знает», раздражение и переключение режимов.
 
@@ -246,4 +241,4 @@ Group: roast, sarcasm, profanity level/frequency, initiative, callbacks, max int
 
 # Critical Path
 
-`Vision ✅ → Personality ✅ → Memory ✅ → Dispatcher ✅ → Architecture ✅ → MVP Build Plan ← NEXT → Personal MVP → Group MVP → Friends Test → Analytics/Economics → v0.2 → Closed Beta → Monetization`
+`Vision ✅ → Personality ✅ → Memory ✅ → Dispatcher ✅ → Architecture ✅ → MVP Build Plan ✅ → TASK 01 Skeleton ← NEXT → Gate A → Personal MVP → Group MVP → Friends Test → Analytics/Economics → v0.2 → Closed Beta → Monetization`
