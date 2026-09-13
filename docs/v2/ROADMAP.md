@@ -63,29 +63,31 @@
 
 ## Phase 3 — Dispatcher & Intervention Logic
 
-**Статус: NEXT**
+**Статус: DONE**
 
-Определить pipeline:
+Зафиксированы:
 
-`event → understand → remember? → act? → speak? → mode`
-
-Нужно зафиксировать:
-
-- ignore / remember / reply / act / schedule;
-- Event Classification;
-- Social Energy detection;
+- единый Event Envelope;
+- private/group/feedback/scheduler/memory events;
+- `ignore / reply / act / schedule`;
+- secondary memory/action operations;
+- Social Energy signals;
 - Intervention Score;
-- direct mention priority;
-- callback opportunity;
-- roast opportunity;
-- useful-help opportunity;
-- cooldown;
-- max proactive interventions;
-- serious/conflict override;
-- response to ignore / positive / negative feedback;
-- связь Dispatcher с Personality Engine и Memory Mapper;
-- JSON contracts;
-- acceptance tests.
+- hard gates и Silence Policy;
+- Group cooldown и daily limits;
+- activity-aware behavior;
+- Personal mode selection;
+- proactive Personal policy;
+- Group mode selection;
+- Roast Gate и Callback Gate;
+- Memory Decision и Action Decision;
+- reason codes;
+- deterministic vs LLM logic;
+- cost-aware model tiers;
+- failure/degradation policy;
+- feedback loop;
+- JSON decision contract;
+- MVP success criteria.
 
 Артефакт: `DISPATCHER_SPEC.md`.
 
@@ -93,24 +95,35 @@
 
 ## Phase 4 — Technical Architecture
 
-**Статус: PLANNED**
+**Статус: NEXT**
 
 Спроектировать MVP без лишней инфраструктуры.
 
-Компоненты:
+Нужно зафиксировать:
 
-- Telegram webhook;
+- отдельный runtime v2;
+- Telegram webhook и adapter;
 - Event Ingestor;
 - Personal Engine;
 - Group Engine;
 - Dispatcher;
 - Context Builder;
 - Personality Engine;
-- Memory Mapper;
+- Memory Mapper / Retrieval Engine;
+- Response Generator;
+- Action Engine;
 - Scheduler;
 - Feedback Collector;
-- Analytics;
-- PostgreSQL.
+- Analytics / cost tracking;
+- PostgreSQL schema;
+- background jobs / queue policy;
+- model routing;
+- retries / idempotency;
+- observability;
+- privacy boundaries;
+- deployment topology Railway;
+- end-to-end request flows;
+- acceptance criteria для старта разработки.
 
 Минимальные сущности БД:
 
@@ -386,4 +399,4 @@ MVP должен уметь:
 
 # Critical Path
 
-`Product Vision ✅ → Personality Spec ✅ → Memory Spec ✅ → Dispatcher Spec ← NEXT → Architecture → Personal MVP → Group MVP → Friends Test → Analytics/Economics → v0.2 → Closed Beta → Monetization`
+`Product Vision ✅ → Personality Spec ✅ → Memory Spec ✅ → Dispatcher Spec ✅ → Architecture ← NEXT → Personal MVP → Group MVP → Friends Test → Analytics/Economics → v0.2 → Closed Beta → Monetization`
