@@ -38,8 +38,8 @@
 - [ROADMAP.md](./ROADMAP.md) — последовательность разработки и тестов.
 - [PERSONALITY_SPEC.md](./PERSONALITY_SPEC.md) — модель характера и поведения.
 - [MEMORY_SPEC.md](./MEMORY_SPEC.md) — Memory Map, HOT/WARM/LONG, Memory Cards, retrieval, compaction и privacy.
-- `DISPATCHER_SPEC.md` — следующий документ: ignore / remember / reply / act / schedule и Intervention Score.
-- `ARCHITECTURE.md` — далее: техническая архитектура MVP.
+- [DISPATCHER_SPEC.md](./DISPATCHER_SPEC.md) — decision engine: ignore / reply / act / schedule, Intervention Score, cooldown, Silence Policy и model routing.
+- `ARCHITECTURE.md` — следующий документ: техническая архитектура MVP.
 - [DECISIONS.md](./DECISIONS.md) — журнал принятых решений.
 
 ## Базовые архитектурные принципы
@@ -55,6 +55,8 @@
 9. Сначала проверяем поведение на реальных чатах, потом наращиваем инфраструктуру.
 10. LONG Memory должна расти существенно медленнее сырых сообщений за счёт merge, decay и compaction.
 11. Любая память должна иметь понятный scope, evidence и правила допустимого использования.
+12. Dispatcher обязан объяснимо решать, когда НеНой говорит, действует или молчит.
+13. При деградации инфраструктуры Group Mode должен становиться тише, а не начинать фантазировать.
 
 ## Текущий Critical Path
 
@@ -65,9 +67,9 @@ Personality Spec ✅
       ↓
 Memory Spec ✅
       ↓
-Dispatcher Spec ← СЕЙЧАС
+Dispatcher Spec ✅
       ↓
-Architecture
+Architecture ← СЕЙЧАС
       ↓
 Personal MVP
       ↓
