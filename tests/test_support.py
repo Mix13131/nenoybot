@@ -72,8 +72,14 @@ def test_fourteen_days_recur_without_incoming_messages_and_dedupe() -> None:
         assert slot.content_id not in {old.content_id for old in sent[max(0, index-20):index]}
 
 
-def test_coach_mode_suppresses_support_delivery_but_keeps_opt_in() -> None:
+def test_coach_mode_keeps_enabled_lightness_schedule_delivery() -> None:
     store = InMemoryStore()
+    # configure_support enables the schedule while the default live persona remains coach.
     store.configure_support(1, ("09:00",), "UTC")
-    assert store.claim_support_slots(datetime(2026, 9, 11, 9, 0, tzinfo=UTC)) == []
+
+    slots = store.claim_support_slots(datetime(2026, 9, 11, 9, 0, tzinfo=UTC))
+
+    assert len(slots) == 1
+    assert slots[0].slot_id == "time-09:00"
+    assert store.get_support_settings(1).mode == "coach"
     assert store.get_support_settings(1).enabled
