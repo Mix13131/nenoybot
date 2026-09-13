@@ -89,7 +89,9 @@ def next_run(settings: SupportSettings, now: datetime) -> datetime | None:
 
 
 def due_slots(settings: SupportSettings, now: datetime) -> list[tuple[date, str, datetime]]:
-    if settings.mode != "support" or not settings.enabled or not settings.timezone:
+    # Scheduled Lightness messages are an independent subscription.
+    # Switching the live chat persona between Trainer and Lightness must not stop them.
+    if not settings.enabled or not settings.timezone:
         return []
     now = now.astimezone(UTC)
     local_day = now.astimezone(ZoneInfo(settings.timezone)).date()
