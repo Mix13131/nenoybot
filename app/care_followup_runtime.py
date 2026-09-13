@@ -147,11 +147,45 @@ def build_reply(chat_id: int, text: str, store, runtime_state=None) -> str:
     return _original_build_reply(chat_id, text, store, runtime_state)
 
 
+def run_reminder_loop(api, store) -> None:
+    """Run trainer reminders and scheduled Lightness messages independently."""
+    timezone = base.get_timezone(AppConfig.timezone)
+    while True:
+        try:
+            now = datetime.now(timezone)
+            for reminder in store.due_reminders(now, limit=10):
+                if store.get_support_settings(reminder.chat_id).mode != "coach":
+                    store.mark_reminder_sent(reminder.id)
+                    continue
+                api.send_guarded_message(
+                    reminder.chat_id,
+                    base.build_due_event_message(reminder.task_text, reminder.event_type),
+                )
+                store.mark_reminder_sent(reminder.id)
+
+            for slot in store.claim_support_slots(datetime.now(UTC), limit=50):
+                # Schedule is its own opt-in subscription. Chat persona must not cancel it.
+                current = store.get_support_settings(slot.chat_id)
+                if not current.enabled:
+                    store.complete_support_slot(slot, "cancelled")
+                    continue
+                status, message_id = base.deliver_telegram(
+                    lambda: api.send_guarded_message(slot.chat_id, slot.text, mode="support")
+                )
+                store.complete_support_slot(slot, status, message_id)
+
+            base.deliver_pending_feedback(api, store)
+        except Exception as exc:
+            print(f"Reminder loop failed: {type(exc).__name__}: {exc}")
+        base.time.sleep(AppConfig.reminder_check_interval)
+
+
 base.extract_text_message = extract_text_message
 care.extract_text_message = extract_text_message
 base.build_reply = build_reply
 care.build_reply = build_reply
 runtime.build_reply = build_reply
+base.run_reminder_loop = run_reminder_loop
 
 
 def run() -> None:
