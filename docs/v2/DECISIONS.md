@@ -111,3 +111,47 @@ Running jokes хранятся отдельно от generic pattern и имею
 ### D-022 — Следующая спецификация — Dispatcher
 
 После Personality и Memory следующим фиксируем `DISPATCHER_SPEC.md`: решение `ignore / remember / reply / act / schedule`, Intervention Score, cooldown и социальную инициативу.
+
+### D-023 — Dispatcher возвращает решение, а не текст
+
+Dispatcher не генерирует финальную реплику. Он возвращает структурированный Decision Contract, после чего Context Builder и Response Generator формируют ответ при необходимости.
+
+### D-024 — Group unsolicited intervention использует score + gates
+
+Обычная сумма баллов недостаточна. Порядок: hard blockers → explicit intents → context gates → Intervention Score → cooldown → rate limits → mode selection.
+
+### D-025 — Silence является нормальным primary outcome
+
+`ignore` — не fallback и не ошибка. В Group Mode это стандартный результат для большинства обычных сообщений.
+
+### D-026 — Прямые обращения не блокируются обычным Group cooldown
+
+Cooldown и daily limits регулируют самостоятельные вмешательства. Если участник сам обращается к НеНою, бот должен ответить независимо от unsolicited cooldown.
+
+### D-027 — Group proactive behavior имеет guardrails
+
+Стартовые ориентиры MVP: `12 минут` минимального unsolicited cooldown, soft limit `6` и hard limit `10` самостоятельных вмешательств в сутки. Значения конфигурируемые и будут пересмотрены после Friends Test.
+
+### D-028 — Negative feedback влияет быстрее positive feedback
+
+Несколько игноров или явное «заткнись» быстро уменьшают инициативность и увеличивают cooldown. Позитивные реакции повышают дерзость и инициативу медленно.
+
+### D-029 — Не всё решает LLM
+
+Детерминированно обрабатываются direct mention, reply-to-bot, mute/silence, cooldown, limits, privacy scope, duplicate events и явные системные правила. Lightweight model оценивает социальный контекст. Strong model вызывается только после решения отвечать.
+
+### D-030 — Дорогая модель не принимает решение о собственном вызове
+
+Model routing должен быть cost-aware. Для `ignore` model tier = `none`; memory/classification — лёгкий tier; generation — standard/strong по сложности.
+
+### D-031 — При деградации система становится тише
+
+Если classifier, memory retrieval или strong generation недоступны, Group Mode не должен придумывать callbacks или aggressive roast. Лучше пропустить вмешательство, чем уверенно соврать.
+
+### D-032 — Каждое вмешательство должно быть объяснимо reason codes
+
+Dispatcher сохраняет стабильные `reason_codes`, Intervention Score, mode и policy version. Это основа для analytics и настройки thresholds после живого теста.
+
+### D-033 — Следующий этап — Technical Architecture
+
+После Product Vision, Personality, Memory и Dispatcher переходим к `ARCHITECTURE.md`: реальные компоненты, PostgreSQL schema, runtime v2, model routing, scheduler, queues/jobs, idempotency, observability и end-to-end flows.
