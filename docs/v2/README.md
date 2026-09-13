@@ -1,6 +1,6 @@
 # НеНой 2.0
 
-Статус: **active product design / pre-MVP**
+Статус: **architecture complete / pre-build**
 
 НеНой 2.0 — отдельное развитие продукта. Версия 1 продолжает жить независимо и не должна ломаться изменениями v2.
 
@@ -11,52 +11,56 @@
 - Не сливать `v2` в `main` без отдельного решения.
 - Новые продуктовые документы, спецификации и код v2 вести в ветке `v2`.
 
-## Принцип будущего развёртывания
+## Runtime separation
 
-Чтобы v1 и v2 реально существовали одновременно, одного разделения по веткам недостаточно. Для v2 потребуется отдельный runtime-контур:
+v2 будет иметь отдельный runtime-контур:
 
 - отдельный Telegram Bot token;
-- отдельный Railway service/deployment из ветки `v2`;
 - отдельный webhook;
-- отдельное пространство данных / БД или жёстко разделённый namespace;
-- отдельные env-переменные.
+- отдельные Railway web + worker services;
+- отдельную PostgreSQL database;
+- отдельные env-переменные;
+- отдельный cost/analytics контур.
 
-До начала runtime-разработки v1 не трогаем.
+Новый runtime строится в `app_v2/`. Унаследованный `app/` из v1 временно остаётся reference implementation и не переписывается по частям в v2.
 
 ## Продуктовая формула
 
 **НеНой помнит → замечает → действует → иногда подъёбывает.**
 
-НеНой 2.0 — AI-персонаж с характером, памятью и инициативой, который может работать:
+НеНой 2.0 работает в двух режимах:
 
-1. **Personal** — один на один с человеком: тренер, зеркало, забота, ассистент, наблюдатель, действия.
-2. **Group** — в групповых чатах: кореш, roast, callbacks, память компании, организация, арбитраж фактов, умение молчать.
+1. **Personal** — тренер, зеркало, забота, ассистент, наблюдатель, действия.
+2. **Group** — кореш, roast, callbacks, память компании, организация, арбитраж фактов, умение молчать.
 
 ## Ключевые документы
 
 - [PRODUCT_VISION.md](./PRODUCT_VISION.md) — общее видение продукта.
 - [ROADMAP.md](./ROADMAP.md) — последовательность разработки и тестов.
 - [PERSONALITY_SPEC.md](./PERSONALITY_SPEC.md) — модель характера и поведения.
-- [MEMORY_SPEC.md](./MEMORY_SPEC.md) — Memory Map, HOT/WARM/LONG, Memory Cards, retrieval, compaction и privacy.
-- [DISPATCHER_SPEC.md](./DISPATCHER_SPEC.md) — decision engine: ignore / reply / act / schedule, Intervention Score, cooldown, Silence Policy и model routing.
-- `ARCHITECTURE.md` — следующий документ: техническая архитектура MVP.
+- [MEMORY_SPEC.md](./MEMORY_SPEC.md) — HOT/WARM/LONG, Memory Cards, retrieval, compaction и privacy.
+- [DISPATCHER_SPEC.md](./DISPATCHER_SPEC.md) — ignore/reply/act/schedule, Intervention Score, cooldown, Silence Policy и model routing.
+- [ARCHITECTURE.md](./ARCHITECTURE.md) — runtime, PostgreSQL queue, data model, outbox, workers, model routing, observability и deployment.
+- `MVP_BUILD_PLAN.md` — следующий документ: пошаговый план реализации для Codex.
 - [DECISIONS.md](./DECISIONS.md) — журнал принятых решений.
 
-## Базовые архитектурные принципы
+## Архитектурные принципы
 
 1. Один Core, два режима: Personal и Group.
-2. Personal Memory и Group Memory физически разделены по scope.
-3. Не хранить бесконечную простыню контекста: сообщения превращаются в компактные Memory Cards.
+2. Personal Memory и Group Memory жёстко разделены по scope.
+3. Сообщения превращаются в компактные Memory Cards вместо бесконечного контекста.
 4. Умение молчать — функция системы.
 5. Сильная модель вызывается только там, где действительно нужна.
-6. Характер задаётся параметрами, а не одним огромным системным промптом.
-7. Group personality настраивается отдельно для каждой группы, включая roast, sarcasm, profanity и initiative.
-8. Мат — настраиваемый максимум, а не обязательная частота.
-9. Сначала проверяем поведение на реальных чатах, потом наращиваем инфраструктуру.
-10. LONG Memory должна расти существенно медленнее сырых сообщений за счёт merge, decay и compaction.
-11. Любая память должна иметь понятный scope, evidence и правила допустимого использования.
-12. Dispatcher обязан объяснимо решать, когда НеНой говорит, действует или молчит.
-13. При деградации инфраструктуры Group Mode должен становиться тише, а не начинать фантазировать.
+6. Характер задаётся параметрами, а не одним огромным промптом.
+7. У каждой группы свой roast/sarcasm/profanity/initiative profile.
+8. LONG Memory растёт медленнее raw messages за счёт merge/decay/compaction.
+9. Dispatcher объяснимо решает, когда говорить, действовать или молчать.
+10. При деградации Group Mode становится тише, а не фантазирует.
+11. Telegram webhook не ждёт LLM; тяжёлая работа идёт через durable PostgreSQL queue.
+12. Для MVP нет Redis/Kafka/Celery/graph DB/vector DB без доказанной необходимости.
+13. Outbox + idempotency защищают от duplicate replies.
+14. Каждый AI-вызов логирует task kind, tokens, latency и cost.
+15. Новый код v2 строится отдельно в `app_v2/`, не ломая legacy reference.
 
 ## Текущий Critical Path
 
@@ -69,17 +73,19 @@ Memory Spec ✅
       ↓
 Dispatcher Spec ✅
       ↓
-Architecture ← СЕЙЧАС
+Architecture ✅
+      ↓
+MVP Build Plan ← СЕЙЧАС
       ↓
 Personal MVP
       ↓
 Group MVP
       ↓
-Friends Test
+Friends Test 😈
 ```
 
 ## Первый полигон
 
 - Personal: использование владельцем бота.
 - Group: один реальный чат друзей по whitelist.
-- Цель: понять, начинают ли другие участники сами обращаться к НеНою и воспринимать его как живого участника группы.
+- Главный сигнал Group успеха: другие участники сами начинают обращаться к НеНою без подталкивания владельца.
