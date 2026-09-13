@@ -37,9 +37,10 @@
 - [PRODUCT_VISION.md](./PRODUCT_VISION.md) — общее видение продукта.
 - [ROADMAP.md](./ROADMAP.md) — последовательность разработки и тестов.
 - [PERSONALITY_SPEC.md](./PERSONALITY_SPEC.md) — модель характера и поведения.
-- `MEMORY_SPEC.md` — следующий документ: Memory Map, HOT/WARM/LONG, Memory Cards, сжатие и связи.
-- `DISPATCHER_SPEC.md` — далее: решение ignore / remember / reply / act / schedule.
+- [MEMORY_SPEC.md](./MEMORY_SPEC.md) — Memory Map, HOT/WARM/LONG, Memory Cards, retrieval, compaction и privacy.
+- `DISPATCHER_SPEC.md` — следующий документ: ignore / remember / reply / act / schedule и Intervention Score.
 - `ARCHITECTURE.md` — далее: техническая архитектура MVP.
+- [DECISIONS.md](./DECISIONS.md) — журнал принятых решений.
 
 ## Базовые архитектурные принципы
 
@@ -52,6 +53,28 @@
 7. Group personality настраивается отдельно для каждой группы, включая roast, sarcasm, profanity и initiative.
 8. Мат — настраиваемый максимум, а не обязательная частота.
 9. Сначала проверяем поведение на реальных чатах, потом наращиваем инфраструктуру.
+10. LONG Memory должна расти существенно медленнее сырых сообщений за счёт merge, decay и compaction.
+11. Любая память должна иметь понятный scope, evidence и правила допустимого использования.
+
+## Текущий Critical Path
+
+```text
+Product Vision ✅
+      ↓
+Personality Spec ✅
+      ↓
+Memory Spec ✅
+      ↓
+Dispatcher Spec ← СЕЙЧАС
+      ↓
+Architecture
+      ↓
+Personal MVP
+      ↓
+Group MVP
+      ↓
+Friends Test
+```
 
 ## Первый полигон
 
