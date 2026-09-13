@@ -155,3 +155,51 @@ Dispatcher сохраняет стабильные `reason_codes`, Intervention 
 ### D-033 — Следующий этап — Technical Architecture
 
 После Product Vision, Personality, Memory и Dispatcher переходим к `ARCHITECTURE.md`: реальные компоненты, PostgreSQL schema, runtime v2, model routing, scheduler, queues/jobs, idempotency, observability и end-to-end flows.
+
+### D-034 — Новый runtime v2 строится в `app_v2/`
+
+Унаследованный `app/` из v1 остаётся временным reference implementation. Не переписываем его по частям в новую архитектуру. Entry point v2 будет отдельным.
+
+### D-035 — v2 использует отдельную PostgreSQL database
+
+Для MVP Personal/Group v2 не делят operational DB с v1. Это проще и безопаснее, чем schema-prefix или shared tables.
+
+### D-036 — Web и Worker разделены
+
+`nenoy-v2-web` быстро принимает webhook и сохраняет event. `nenoy-v2-worker` выполняет LLM, memory, dispatch, generation, scheduler и outbox processing.
+
+### D-037 — PostgreSQL используется как durable queue
+
+На MVP не добавляем Redis/RabbitMQ/Kafka/Celery. Events и jobs claims реализуются через PostgreSQL и `FOR UPDATE SKIP LOCKED`.
+
+### D-038 — Telegram webhook не ждёт AI
+
+Webhook выполняет verify → normalize → deduplicate → persist → enqueue → `200 OK`. Цель — быстрый и предсказуемый HTTP path без LLM latency.
+
+### D-039 — Outbox и idempotency обязательны
+
+`telegram_update_id` защищает inbound от duplicate processing. `dedupe_key` в outbox защищает от повторной отправки ответа после retry/restart.
+
+### D-040 — Personality settings на MVP хранятся versioned JSONB
+
+Personal profile — в user context, Group profile — в chat context, Participant adaptation — в membership context. Нормализация в отдельные columns откладывается до появления реального query pressure.
+
+### D-041 — Model routing task-based и конфигурируемый
+
+Используются логические роли `MODEL_CLASSIFIER / MODEL_MEMORY / MODEL_GENERATOR / MODEL_DEEP`, а конкретные модели задаются конфигурацией. Model names не размазываются по бизнес-логике.
+
+### D-042 — Group retrieval никогда не fallback-ится в Personal memory
+
+Любой repository/retrieval API требует scope. Cross-scope transfer в MVP отсутствует.
+
+### D-043 — Каждый AI-вызов имеет usage record
+
+Сохраняются task kind, model, input/output tokens, latency, success и estimated cost. Экономика считается по реальному usage.
+
+### D-044 — При сбоях отвечает более простой контекст, а не выдуманная память
+
+Недоступная Memory/Classifier подсистема не должна провоцировать fake callback. Для unsolicited Group лучше silence; для direct Personal — безопасный reply без LONG-memory утверждений.
+
+### D-045 — Следующий этап — MVP Build Plan
+
+После архитектуры создаём `MVP_BUILD_PLAN.md`: маленькие последовательные задачи для Codex с ограниченным scope, acceptance criteria, tests и обязательным отчётом после выполнения.
