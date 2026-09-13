@@ -14,19 +14,7 @@
 
 **Статус: DONE**
 
-Зафиксированы:
-
-- Core Personality;
-- Personal Profile;
-- Group Profile;
-- directness / brevity / warmth / pressure;
-- humor / sarcasm / roast;
-- profanity level / profanity frequency;
-- initiative / callback / challenge / care / playfulness / sensitivity;
-- Participant Adaptation;
-- Situational Override;
-- приоритеты настроек;
-- feedback adaptation.
+Зафиксированы Core Personality, Personal/Group profiles, roast, sarcasm, profanity, initiative, callback, care, sensitivity, Participant Adaptation, Situational Override и feedback adaptation.
 
 Артефакт: `PERSONALITY_SPEC.md`.
 
@@ -36,26 +24,7 @@
 
 **Статус: DONE**
 
-Зафиксированы:
-
-- Personal / Group memory isolation;
-- HOT / WARM / LONG memory;
-- `Memory Card` schema;
-- типы памяти;
-- evidence;
-- importance / confidence / freshness;
-- create / update / merge / supersede / archive / contradict;
-- memory relations;
-- patterns;
-- running jokes и callback fatigue;
-- usage policy;
-- raw-message retention;
-- Memory Mapper contract;
-- Retrieval scoring;
-- Context budget;
-- compaction;
-- quality metrics;
-- MVP acceptance tests.
+Зафиксированы Personal/Group isolation, HOT/WARM/LONG memory, Memory Cards, evidence, quality fields, relations, merge/decay/archive, running jokes, callback fatigue, retrieval, compaction, retention и acceptance tests.
 
 Артефакт: `MEMORY_SPEC.md`.
 
@@ -65,29 +34,7 @@
 
 **Статус: DONE**
 
-Зафиксированы:
-
-- единый Event Envelope;
-- private/group/feedback/scheduler/memory events;
-- `ignore / reply / act / schedule`;
-- secondary memory/action operations;
-- Social Energy signals;
-- Intervention Score;
-- hard gates и Silence Policy;
-- Group cooldown и daily limits;
-- activity-aware behavior;
-- Personal mode selection;
-- proactive Personal policy;
-- Group mode selection;
-- Roast Gate и Callback Gate;
-- Memory Decision и Action Decision;
-- reason codes;
-- deterministic vs LLM logic;
-- cost-aware model tiers;
-- failure/degradation policy;
-- feedback loop;
-- JSON decision contract;
-- MVP success criteria.
+Зафиксированы Event Envelope, Social Energy, `ignore/reply/act/schedule`, Intervention Score, hard gates, Silence Policy, Group cooldown/limits, Personal/Group mode selection, Roast/Callback Gates, reason codes, model tiers, degradation policy и feedback loop.
 
 Артефакт: `DISPATCHER_SPEC.md`.
 
@@ -95,18 +42,17 @@
 
 ## Phase 4 — Technical Architecture
 
-**Статус: NEXT**
+**Статус: DONE**
 
-Спроектировать MVP без лишней инфраструктуры.
-
-Нужно зафиксировать:
+Зафиксированы:
 
 - отдельный runtime v2;
-- Telegram webhook и adapter;
+- новый namespace `app_v2/` вместо постепенного переписывания legacy `app/`;
+- отдельные Railway web + worker + PostgreSQL;
+- быстрый Telegram webhook;
 - Event Ingestor;
-- Personal Engine;
-- Group Engine;
-- Dispatcher;
+- PostgreSQL durable queue без Redis;
+- Dispatcher / Scene Analyzer;
 - Context Builder;
 - Personality Engine;
 - Memory Mapper / Retrieval Engine;
@@ -114,32 +60,66 @@
 - Action Engine;
 - Scheduler;
 - Feedback Collector;
-- Analytics / cost tracking;
-- PostgreSQL schema;
-- background jobs / queue policy;
-- model routing;
-- retries / idempotency;
-- observability;
+- Outbox;
+- idempotency;
+- schema основных таблиц;
+- task-based model routing;
+- cost tracking;
 - privacy boundaries;
-- deployment topology Railway;
-- end-to-end request flows;
-- acceptance criteria для старта разработки.
-
-Минимальные сущности БД:
-
-- users;
-- chats;
-- chat_members;
-- messages;
-- memory_cards;
-- memory_relations;
-- tasks;
-- reminders;
-- interventions;
-- feedback_events;
-- settings.
+- observability;
+- error/degradation policy;
+- maintenance jobs;
+- testing strategy;
+- deployment sequence;
+- architecture acceptance criteria.
 
 Артефакт: `ARCHITECTURE.md`.
+
+---
+
+## Phase 4.5 — MVP Build Plan
+
+**Статус: NEXT**
+
+Превратить архитектуру в последовательность маленьких задач для Codex.
+
+Каждая задача должна иметь:
+
+- цель;
+- ограниченный scope;
+- какие файлы разрешено менять;
+- что нельзя трогать;
+- acceptance criteria;
+- обязательные tests/checks;
+- rollback / failure notes;
+- форму отчёта после выполнения.
+
+Предварительный critical build order:
+
+```text
+01 Skeleton app_v2
+02 Configuration + contracts
+03 DB migrations
+04 Telegram webhook ingest
+05 PostgreSQL event queue
+06 Worker + idempotency
+07 Dispatcher deterministic policy
+08 Scene Analyzer + Model Router
+09 Memory repositories / mapper / retrieval
+10 Context Builder + Personality Engine
+11 Response Generator
+12 Outbox + Telegram sender
+13 Actions / Reminders / Scheduler
+14 Feedback Collector
+15 Analytics + cost tracking
+16 Personal E2E
+17 Group E2E
+18 Railway v2 deployment
+19 Personal smoke test
+20 Friends Group test
+```
+
+Артефакт: `MVP_BUILD_PLAN.md`.
 
 ---
 
@@ -147,27 +127,11 @@
 
 **Статус: PLANNED**
 
-MVP должен уметь:
-
-- помнить пользователя;
-- помнить цели и проекты;
-- хранить обещания и решения;
-- видеть повторяющиеся паттерны;
-- использовать callbacks;
-- выбирать Coach / Mirror / Care / Assistant / Observer;
-- создавать задачи и напоминания;
-- проявлять контролируемую инициативу.
+MVP должен уметь помнить пользователя, цели, проекты, решения и обещания; использовать callbacks; выбирать Coach/Mirror/Care/Assistant/Observer; создавать задачи/напоминания и проявлять контролируемую инициативу.
 
 Тест: 7–14 дней реального использования владельцем.
 
-Проверки:
-
-- false memory;
-- полезные callbacks;
-- неуместные вмешательства;
-- ощущение «он меня знает»;
-- раздражение;
-- качество переключения режимов.
+Проверяем false memory, полезность callbacks, неуместные вмешательства, ощущение «он меня знает», раздражение и переключение режимов.
 
 ---
 
@@ -175,21 +139,9 @@ MVP должен уметь:
 
 **Статус: PLANNED**
 
-Подключить один реальный чат друзей через whitelist.
+Один реальный чат друзей через whitelist.
 
-Первая версия должна:
-
-- различать участников;
-- читать контекст;
-- держать HOT memory;
-- создавать Group Memory Cards;
-- отвечать при прямом обращении;
-- иногда вмешиваться самостоятельно;
-- использовать callbacks;
-- поддерживать running jokes;
-- делать roast;
-- учитывать `profanity_level` и `profanity_frequency` группы;
-- уметь молчать.
+Первая версия должна различать участников, читать HOT context, создавать Group Memory Cards, отвечать при обращении, иногда вмешиваться сама, использовать callbacks/running jokes, делать roast, учитывать profanity profile и уметь молчать.
 
 ---
 
@@ -201,7 +153,7 @@ MVP должен уметь:
 
 `opportunity → target → context → callback → running joke → profanity → timing → reply/silence`
 
-Главный принцип:
+Принцип:
 
 > Не придумывать шутку из воздуха. Замечать смешное в контексте и добивать.
 
@@ -211,24 +163,7 @@ MVP должен уметь:
 
 **Статус: PLANNED**
 
-Собирать сигналы после каждого вмешательства.
-
-Позитивные:
-
-- 😂 / ❤️ / 👍;
-- reply;
-- повторное обращение;
-- organic mention.
-
-Негативные:
-
-- игнор;
-- «заткнись»;
-- mute;
-- remove bot;
-- явное недовольство.
-
-Сохранять context, reason, mode, generated text, reactions и follow-up.
+Собирать позитивные/негативные/нейтральные сигналы после вмешательств и связывать их с intervention/reason codes для последующей адаптации.
 
 ---
 
@@ -236,77 +171,35 @@ MVP должен уметь:
 
 **Статус: PLANNED**
 
-Продолжительность: 7 дней.
+7 дней живого теста.
 
-### День 1–2
-
-- initiative: low;
-- преимущественно наблюдать;
-- собирать карту участников.
-
-### День 3–4
-
-- callbacks: ON;
-- initiative: medium;
-- использовать накопленную память.
-
-### День 5–7
-
-- roast: высокий;
-- profanity: по настройке группы;
-- adaptive initiative: ON.
+- День 1–2: low initiative, наблюдение.
+- День 3–4: callbacks ON, medium initiative.
+- День 5–7: высокий roast, profanity по настройке группы, adaptive initiative.
 
 Главная Group North Star:
 
 > **Количество участников, кроме владельца, которые сами начали обращаться к НеНою.**
 
-Дополнительные метрики:
-
-- bot mentions;
-- replies to bot;
-- reactions;
-- roast hit rate;
-- memory requests;
-- reminders;
-- ignored interventions;
-- negative feedback;
-- mute requests;
-- bot removed.
+Дополнительно: mentions, replies, reactions, roast hit rate, memory requests, reminders, ignored interventions, negative feedback, mute requests, bot removed.
 
 ---
 
 ## Phase 10 — Product Review v0.2
 
-После теста не добавлять функции автоматически.
-
-Сначала разобрать:
-
-- какие roast попадали;
-- какие проваливались;
-- какие callbacks были сильными;
-- где память ошибалась;
-- где НеНой говорил слишком часто;
-- какие функции пользователи начали использовать сами.
-
-После этого корректировать prompts, thresholds, personality, mapper, context builder и initiative.
+Не добавлять функции автоматически. Сначала разобрать данные живого теста: roast hit/miss, callbacks, ошибки памяти, навязчивость, organically used functions. После этого корректировать thresholds, personality, mapper, context builder и initiative.
 
 ---
 
 ## Phase 11 — Economics & Cost Tracking
 
-Для каждого AI-вызова сохранять:
-
-- model;
-- input tokens;
-- output tokens;
-- cost;
-- event type.
+Для каждого AI-вызова считать model, tokens, latency, cost и task kind.
 
 Внутренние ориентиры:
 
 - Personal normal: AI COGS < $3 / month;
 - Group normal: AI COGS < $3 / month;
-- Heavy: контролируемый верхний диапазон.
+- Heavy usage: контролируемый верхний диапазон.
 
 Экономику считать на реальном usage.
 
@@ -314,89 +207,43 @@ MVP должен уметь:
 
 ## Phase 12 — Settings UX
 
-### Personal
+Personal: жёсткость, юмор, подъёб, мат, инициативность, забота, память, напоминания.
 
-- жёсткость;
-- юмор;
-- подъёб;
-- мат;
-- инициативность;
-- забота;
-- память;
-- напоминания.
-
-### Group
-
-Администратор задаёт:
-
-- roast;
-- sarcasm;
-- profanity level;
-- profanity frequency;
-- initiative;
-- callbacks;
-- max interventions;
-- sensitivity.
-
-Каждая группа имеет свой профиль.
+Group: roast, sarcasm, profanity level/frequency, initiative, callbacks, max interventions, sensitivity.
 
 ---
 
 ## Phase 13 — Closed Beta
 
-Подключить 5–10 групп разных типов:
-
-- друзья;
-- семья;
-- неформальная команда;
-- клуб / сообщество;
-- другие естественные групповые чаты.
-
-Проверить Character Engine в разных социальных средах.
+5–10 групп разных типов: друзья, семья, неформальная команда, клуб/сообщество. Проверить Character Engine в разных социальных средах.
 
 ---
 
 ## Phase 14 — Monetization
 
-Монетизацию проектировать после retention и измерения себестоимости.
-
-Предварительные направления:
-
-- Free;
-- Personal;
-- Personal Pro;
-- Group;
-- Personal + Group bundle.
+После подтверждения retention и реальной себестоимости: Free / Personal / Personal Pro / Group / Personal + Group bundle.
 
 ---
 
 ## Phase 15 — Platform Expansion
 
-Только после подтверждения core-продукта:
-
-- Voice;
-- Telegram Mini App;
-- Web UI;
-- Calendar;
-- Gmail;
-- Drive;
-- Web Search;
-- агенты;
-- shared tasks;
-- другие мессенджеры.
+Только после подтверждения core-продукта: Voice, Telegram Mini App, Web UI, Calendar, Gmail, Drive, Web Search, agents, shared tasks, другие мессенджеры.
 
 ---
 
 # Не строим до подтверждения MVP
 
-- отдельное мобильное приложение;
-- сложную graph DB;
+- отдельное mobile app;
+- Redis без доказанной необходимости;
+- Kafka/Celery;
+- graph DB;
+- dedicated vector DB;
+- Kubernetes;
 - десятки агентов;
 - сложную тарификацию;
 - огромную админку;
-- integrations-first архитектуру;
-- лишнюю инфраструктуру ради инфраструктуры.
+- integrations-first архитектуру.
 
 # Critical Path
 
-`Product Vision ✅ → Personality Spec ✅ → Memory Spec ✅ → Dispatcher Spec ✅ → Architecture ← NEXT → Personal MVP → Group MVP → Friends Test → Analytics/Economics → v0.2 → Closed Beta → Monetization`
+`Vision ✅ → Personality ✅ → Memory ✅ → Dispatcher ✅ → Architecture ✅ → MVP Build Plan ← NEXT → Personal MVP → Group MVP → Friends Test → Analytics/Economics → v0.2 → Closed Beta → Monetization`
