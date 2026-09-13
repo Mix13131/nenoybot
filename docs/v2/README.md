@@ -1,6 +1,6 @@
 # НеНой 2.0
 
-Статус: **architecture complete / pre-build**
+Статус: **build plan complete / ready to implement**
 
 НеНой 2.0 — отдельное развитие продукта. Версия 1 продолжает жить независимо и не должна ломаться изменениями v2.
 
@@ -36,12 +36,12 @@ v2 будет иметь отдельный runtime-контур:
 ## Ключевые документы
 
 - [PRODUCT_VISION.md](./PRODUCT_VISION.md) — общее видение продукта.
-- [ROADMAP.md](./ROADMAP.md) — последовательность разработки и тестов.
+- [ROADMAP.md](./ROADMAP.md) — продуктовый roadmap.
 - [PERSONALITY_SPEC.md](./PERSONALITY_SPEC.md) — модель характера и поведения.
 - [MEMORY_SPEC.md](./MEMORY_SPEC.md) — HOT/WARM/LONG, Memory Cards, retrieval, compaction и privacy.
 - [DISPATCHER_SPEC.md](./DISPATCHER_SPEC.md) — ignore/reply/act/schedule, Intervention Score, cooldown, Silence Policy и model routing.
 - [ARCHITECTURE.md](./ARCHITECTURE.md) — runtime, PostgreSQL queue, data model, outbox, workers, model routing, observability и deployment.
-- `MVP_BUILD_PLAN.md` — следующий документ: пошаговый план реализации для Codex.
+- [MVP_BUILD_PLAN.md](./MVP_BUILD_PLAN.md) — 28 последовательных задач реализации, build gates, acceptance criteria и обязательный формат отчёта Codex.
 - [DECISIONS.md](./DECISIONS.md) — журнал принятых решений.
 
 ## Архитектурные принципы
@@ -61,6 +61,7 @@ v2 будет иметь отдельный runtime-контур:
 13. Outbox + idempotency защищают от duplicate replies.
 14. Каждый AI-вызов логирует task kind, tokens, latency и cost.
 15. Новый код v2 строится отдельно в `app_v2/`, не ломая legacy reference.
+16. Одна задача Codex имеет ограниченный scope, acceptance criteria и реально запущенные tests.
 
 ## Текущий Critical Path
 
@@ -75,7 +76,9 @@ Dispatcher Spec ✅
       ↓
 Architecture ✅
       ↓
-MVP Build Plan ← СЕЙЧАС
+MVP Build Plan ✅
+      ↓
+TASK 01 — app_v2 Skeleton ← СЛЕДУЮЩИЙ ШАГ
       ↓
 Personal MVP
       ↓
@@ -83,6 +86,14 @@ Group MVP
       ↓
 Friends Test 😈
 ```
+
+## Build gates
+
+- **Gate A** — webhook + DB + event queue + worker + outbox без LLM.
+- **Gate B** — рабочий Personal MVP с памятью и reminders.
+- **Gate C** — Group MVP: silence, callbacks, roast, profanity и initiative.
+- **Gate D** — отдельный Railway v2 runtime.
+- **Gate E** — готовность к реальному Friends Test.
 
 ## Первый полигон
 
