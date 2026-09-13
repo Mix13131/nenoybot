@@ -4,16 +4,7 @@
 
 **Статус: DONE**
 
-Зафиксировать продуктовую модель:
-
-- один Core;
-- Personal и Group как два режима;
-- Memory Map;
-- Personality Engine;
-- Dispatcher;
-- Context Builder;
-- Action Engine;
-- Analytics.
+Зафиксирована продуктовая модель: один Core, Personal и Group, Memory Map, Personality Engine, Dispatcher, Context Builder, Action Engine и Analytics.
 
 Артефакт: `PRODUCT_VISION.md`.
 
@@ -21,35 +12,21 @@
 
 ## Phase 1 — Personality Specification
 
-**Статус: IN PROGRESS**
+**Статус: DONE**
 
-Определить все поведенческие параметры НеНоя:
-
-- directness;
-- brevity;
-- warmth;
-- pressure;
-- humor;
-- sarcasm;
-- roast;
-- profanity level;
-- profanity frequency;
-- initiative;
-- callback;
-- challenge;
-- care;
-- playfulness;
-- sensitivity.
-
-Также описать:
+Зафиксированы:
 
 - Core Personality;
 - Personal Profile;
 - Group Profile;
+- directness / brevity / warmth / pressure;
+- humor / sarcasm / roast;
+- profanity level / profanity frequency;
+- initiative / callback / challenge / care / playfulness / sensitivity;
 - Participant Adaptation;
 - Situational Override;
-- порядок приоритетов настроек;
-- медленную адаптацию по feedback signals.
+- приоритеты настроек;
+- feedback adaptation.
 
 Артефакт: `PERSONALITY_SPEC.md`.
 
@@ -57,19 +34,28 @@
 
 ## Phase 2 — Memory Specification
 
-**Следующий этап**
+**Статус: DONE**
 
-Определить:
+Зафиксированы:
 
+- Personal / Group memory isolation;
 - HOT / WARM / LONG memory;
-- структуру `Memory Card`;
+- `Memory Card` schema;
 - типы памяти;
+- evidence;
 - importance / confidence / freshness;
-- source references;
-- создание, обновление, merge, decay и archive;
+- create / update / merge / supersede / archive / contradict;
 - memory relations;
-- правила privacy scope;
-- алгоритм сжатия большого потока сообщений в компактную карту.
+- patterns;
+- running jokes и callback fatigue;
+- usage policy;
+- raw-message retention;
+- Memory Mapper contract;
+- Retrieval scoring;
+- Context budget;
+- compaction;
+- quality metrics;
+- MVP acceptance tests.
 
 Артефакт: `MEMORY_SPEC.md`.
 
@@ -77,21 +63,29 @@
 
 ## Phase 3 — Dispatcher & Intervention Logic
 
+**Статус: NEXT**
+
 Определить pipeline:
 
 `event → understand → remember? → act? → speak? → mode`
 
-Нужны:
+Нужно зафиксировать:
 
 - ignore / remember / reply / act / schedule;
+- Event Classification;
+- Social Energy detection;
 - Intervention Score;
+- direct mention priority;
+- callback opportunity;
+- roast opportunity;
+- useful-help opportunity;
 - cooldown;
-- limits per day;
-- serious-context override;
-- direct mentions;
-- callback opportunities;
-- roast opportunities;
-- реакция на игнор и негативные сигналы.
+- max proactive interventions;
+- serious/conflict override;
+- response to ignore / positive / negative feedback;
+- связь Dispatcher с Personality Engine и Memory Mapper;
+- JSON contracts;
+- acceptance tests.
 
 Артефакт: `DISPATCHER_SPEC.md`.
 
@@ -99,9 +93,11 @@
 
 ## Phase 4 — Technical Architecture
 
+**Статус: PLANNED**
+
 Спроектировать MVP без лишней инфраструктуры.
 
-Базовые компоненты:
+Компоненты:
 
 - Telegram webhook;
 - Event Ingestor;
@@ -136,7 +132,7 @@
 
 ## Phase 5 — Personal MVP 2.0
 
-Обновить личного НеНоя на новой архитектуре.
+**Статус: PLANNED**
 
 MVP должен уметь:
 
@@ -145,16 +141,15 @@ MVP должен уметь:
 - хранить обещания и решения;
 - видеть повторяющиеся паттерны;
 - использовать callbacks;
-- выбирать между Coach / Mirror / Care / Assistant / Observer;
-- создавать задачи;
-- создавать напоминания;
+- выбирать Coach / Mirror / Care / Assistant / Observer;
+- создавать задачи и напоминания;
 - проявлять контролируемую инициативу.
 
 Тест: 7–14 дней реального использования владельцем.
 
-Основные проверки:
+Проверки:
 
-- ложные воспоминания;
+- false memory;
 - полезные callbacks;
 - неуместные вмешательства;
 - ощущение «он меня знает»;
@@ -165,7 +160,9 @@ MVP должен уметь:
 
 ## Phase 6 — Group MVP
 
-Подключить только один реальный чат друзей через whitelist.
+**Статус: PLANNED**
+
+Подключить один реальный чат друзей через whitelist.
 
 Первая версия должна:
 
@@ -178,14 +175,16 @@ MVP должен уметь:
 - использовать callbacks;
 - поддерживать running jokes;
 - делать roast;
-- учитывать `profanity_level` и `profanity_frequency` конкретной группы;
+- учитывать `profanity_level` и `profanity_frequency` группы;
 - уметь молчать.
 
 ---
 
 ## Phase 7 — Roast Engine
 
-Выделить отдельную логику:
+**Статус: PLANNED**
+
+Логика:
 
 `opportunity → target → context → callback → running joke → profanity → timing → reply/silence`
 
@@ -197,7 +196,9 @@ MVP должен уметь:
 
 ## Phase 8 — Feedback Loop
 
-Собирать сигналы после каждого вмешательства:
+**Статус: PLANNED**
+
+Собирать сигналы после каждого вмешательства.
 
 Позитивные:
 
@@ -214,18 +215,13 @@ MVP должен уметь:
 - remove bot;
 - явное недовольство.
 
-Сохранять:
-
-- context;
-- reason;
-- mode;
-- generated text;
-- reactions;
-- follow-up.
+Сохранять context, reason, mode, generated text, reactions и follow-up.
 
 ---
 
 ## Phase 9 — Friends Test
+
+**Статус: PLANNED**
 
 Продолжительность: 7 дней.
 
@@ -239,7 +235,7 @@ MVP должен уметь:
 
 - callbacks: ON;
 - initiative: medium;
-- начать использовать накопленную память.
+- использовать накопленную память.
 
 ### День 5–7
 
@@ -268,7 +264,7 @@ MVP должен уметь:
 
 ## Phase 10 — Product Review v0.2
 
-После теста не добавлять новые функции сразу.
+После теста не добавлять функции автоматически.
 
 Сначала разобрать:
 
@@ -279,14 +275,7 @@ MVP должен уметь:
 - где НеНой говорил слишком часто;
 - какие функции пользователи начали использовать сами.
 
-После этого корректировать:
-
-- prompts;
-- thresholds;
-- personality parameters;
-- mapper;
-- context builder;
-- initiative.
+После этого корректировать prompts, thresholds, personality, mapper, context builder и initiative.
 
 ---
 
@@ -300,21 +289,19 @@ MVP должен уметь:
 - cost;
 - event type.
 
-Целевые внутренние ориентиры:
+Внутренние ориентиры:
 
 - Personal normal: AI COGS < $3 / month;
 - Group normal: AI COGS < $3 / month;
-- Heavy users/groups: контролируемый верхний диапазон.
+- Heavy: контролируемый верхний диапазон.
 
-Проверять экономику на реальных данных, а не оценках из головы.
+Экономику считать на реальном usage.
 
 ---
 
 ## Phase 12 — Settings UX
 
 ### Personal
-
-Настройки:
 
 - жёсткость;
 - юмор;
@@ -327,7 +314,7 @@ MVP должен уметь:
 
 ### Group
 
-Администратор задаёт профиль конкретной группы:
+Администратор задаёт:
 
 - roast;
 - sarcasm;
@@ -352,13 +339,13 @@ MVP должен уметь:
 - клуб / сообщество;
 - другие естественные групповые чаты.
 
-Проверить, работает ли один Character Engine в разных социальных средах.
+Проверить Character Engine в разных социальных средах.
 
 ---
 
 ## Phase 14 — Monetization
 
-Монетизацию проектировать только после подтверждения retention и измерения себестоимости.
+Монетизацию проектировать после retention и измерения себестоимости.
 
 Предварительные направления:
 
@@ -387,7 +374,7 @@ MVP должен уметь:
 
 ---
 
-# Что не строим до подтверждения MVP
+# Не строим до подтверждения MVP
 
 - отдельное мобильное приложение;
 - сложную graph DB;
@@ -399,4 +386,4 @@ MVP должен уметь:
 
 # Critical Path
 
-`Product Vision → Personality Spec → Memory Spec → Dispatcher Spec → Architecture → Personal MVP → Group MVP → Friends Test → Analytics/Economics → v0.2 → Closed Beta → Monetization`
+`Product Vision ✅ → Personality Spec ✅ → Memory Spec ✅ → Dispatcher Spec ← NEXT → Architecture → Personal MVP → Group MVP → Friends Test → Analytics/Economics → v0.2 → Closed Beta → Monetization`
