@@ -29,6 +29,8 @@ _NAVIGATION_TEXTS = {
     base.BUTTON_COACH,
     base.BUTTON_FEEDBACK_SEND,
     base.BUTTON_FEEDBACK_EDIT,
+    # Keep the old persistent Telegram keyboard safe during the rollout.
+    "Мои наблюдения по проекту",
     "Отмена",
     "🎛 Режим",
     "🌿 Лёгкость",
