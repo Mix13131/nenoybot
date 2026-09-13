@@ -61,4 +61,53 @@
 
 `Vision → Personality → Memory → Dispatcher → Architecture → Personal MVP → Group MVP → Test`.
 
-Следующий документ: `MEMORY_SPEC.md`.
+### D-012 — Память имеет три горизонта
+
+- HOT — текущая сцена и ограниченный токен-бюджет последних сообщений.
+- WARM — недавние raw events с ограниченным retention.
+- LONG — структурные Memory Cards.
+
+### D-013 — LONG Memory хранится в универсальных Memory Cards
+
+Для MVP не создаём отдельную таблицу под каждый тип памяти. Основной объект — `memory_cards` с JSONB payload, quality fields, evidence и usage policy.
+
+### D-014 — Active Memory имеет soft cap
+
+Ориентиры MVP:
+
+- Personal: около 150 active LONG cards;
+- Group: около 250 active LONG cards.
+
+Это не hard delete limit. При росте запускаются merge, dedup, decay, archive и compaction.
+
+### D-015 — Обычный raw text хранится ограниченное время
+
+MVP default для WARM raw messages — 30 дней. После этого обычный текст может очищаться, а нужное доказательство остаётся как короткий evidence excerpt внутри Memory Card.
+
+### D-016 — Memory Card обязана иметь evidence и quality state
+
+Карточка несёт как минимум confidence, importance, freshness, status, origin и evidence. Inference модели не превращается автоматически в факт.
+
+### D-017 — Память имеет Usage Policy
+
+Одну и ту же память можно разрешить для assist/coach и запретить для roast/callback. Участник группы может отдельно запретить использование конкретной темы для подъёба.
+
+### D-018 — Patterns требуют повторяемости
+
+Ориентир MVP: минимум 3 evidence points в минимум 2 независимых эпизодах. Формулировка pattern должна описывать наблюдаемое поведение, а не ставить диагноз.
+
+### D-019 — Running Joke — отдельный тип памяти
+
+Running jokes хранятся отдельно от generic pattern и имеют callback fatigue, чтобы НеНой не убивал хороший локальный мем бесконечным повторением.
+
+### D-020 — Graph DB не нужна для MVP
+
+Карту строим на PostgreSQL через `memory_cards` + `memory_relations`. `pgvector`/vector retrieval можно добавить позже через абстракцию Retrieval Engine.
+
+### D-021 — Context Builder получает только малый набор релевантной памяти
+
+Обычно 3–8 Memory Cards, а не весь active memory scope. LONG memory budget ориентировочно до 800–1200 токенов на generation request.
+
+### D-022 — Следующая спецификация — Dispatcher
+
+После Personality и Memory следующим фиксируем `DISPATCHER_SPEC.md`: решение `ignore / remember / reply / act / schedule`, Intervention Score, cooldown и социальную инициативу.
