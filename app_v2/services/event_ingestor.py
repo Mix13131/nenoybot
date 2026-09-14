@@ -1,11 +1,15 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import logging
 from typing import Any
 
 from app_v2.adapters.postgres import connect
 from app_v2.adapters.telegram_webhook import normalize_update
 from app_v2.repositories.ingest_repo import TelegramIngestRepository
+
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True)
@@ -31,6 +35,15 @@ def ingest_telegram_update(
     )
     if normalized is None:
         return IngestResult(status="ignored")
+
+    if normalized.is_group:
+        logger.info(
+            "telegram group update seen update_id=%s chat_id=%s title=%r event_type=%s",
+            normalized.telegram_update_id,
+            normalized.envelope.scope_id,
+            normalized.telegram_chat.get("title"),
+            normalized.envelope.event_type.value,
+        )
 
     with connect(database_url) as conn:
         repo = TelegramIngestRepository(conn)
