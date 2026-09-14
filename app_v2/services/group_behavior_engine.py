@@ -47,15 +47,11 @@ class GroupBehaviorPlan:
 
 
 class GroupBehaviorEngine:
-    """Build deterministic Group behavior state from profile + scoped memory.
+    """Build deterministic Group behavior state from profile, memory and history."""
 
-    The engine never generates text. It can only strengthen an already grounded
-    callback/roast opportunity when current Group-scope memory survives fatigue
-    and policy gates.
-    """
-
-    def __init__(self, retrieval_engine: Any) -> None:
+    def __init__(self, retrieval_engine: Any, initiative_service: Any | None = None) -> None:
         self.retrieval_engine = retrieval_engine
+        self.initiative_service = initiative_service
 
     def plan(
         self,
@@ -80,15 +76,34 @@ class GroupBehaviorEngine:
         roast_tolerance = _int(participant.get("roast_tolerance"), 7)
         fatigue = _int(profile.get("callback_fatigue_minutes"), 180, low=0, high=1440)
 
+        dynamic = None
+        if self.initiative_service is not None:
+            dynamic = self.initiative_service.evaluate(
+                event=event,
+                group_context=group_context,
+                now=now,
+            )
+
+        silence_requested = bool(dynamic and dynamic.silence_requested)
+        effective_scene = scene
+        if silence_requested:
+            effective_scene = scene.model_copy(
+                update={
+                    "command_intent": "mute",
+                    "roast_opportunity": 0.0,
+                    "callback_opportunity": 0.0,
+                }
+            )
+
         safe_scene = (
-            scene.seriousness_score < 0.75
-            and scene.conflict_score < 0.75
-            and scene.sensitivity_score < 0.75
+            effective_scene.seriousness_score < 0.75
+            and effective_scene.conflict_score < 0.75
+            and effective_scene.sensitivity_score < 0.75
         )
         subject_keys = [f"user:{event.actor_user_id}"] if event.actor_user_id else []
 
         probe = []
-        if callback_level > 0 and roast_tolerance >= 3:
+        if not silence_requested and callback_level > 0 and roast_tolerance >= 3:
             probe = self.retrieval_engine.retrieve(
                 ScopeType.GROUP,
                 event.scope_id,
@@ -110,25 +125,62 @@ class GroupBehaviorEngine:
             for item in callback_cards
         )
 
-        allow_callbacks = callback_level > 0 and roast_tolerance >= 3 and bool(callback_cards)
-        allow_roast = roast_level > 0 and roast_tolerance >= 5 and safe_scene
+        allow_callbacks = (
+            not silence_requested
+            and callback_level > 0
+            and roast_tolerance >= 3
+            and bool(callback_cards)
+        )
+        allow_roast = (
+            not silence_requested
+            and roast_level > 0
+            and roast_tolerance >= 5
+            and safe_scene
+        )
 
-        effective_scene = scene
         if allow_callbacks:
             changes: dict[str, float] = {
-                "callback_opportunity": max(scene.callback_opportunity, 0.82)
+                "callback_opportunity": max(effective_scene.callback_opportunity, 0.82)
             }
-            # A fresh running joke is evidence-backed social material, not a
-            # random quip. Let it also satisfy Roast Gate when the scene is safe.
             if running_joke_fit and allow_roast:
-                changes["roast_opportunity"] = max(scene.roast_opportunity, 0.80)
-            effective_scene = scene.model_copy(update=changes)
+                changes["roast_opportunity"] = max(effective_scene.roast_opportunity, 0.80)
+            effective_scene = effective_scene.model_copy(update=changes)
 
-        muted = bool(group_context.silent_until and group_context.silent_until > now)
+        if dynamic is not None:
+            muted = dynamic.group_muted
+            cooldown_active = (not unsolicited_enabled) or dynamic.cooldown_active
+            initiative = dynamic.initiative_level
+            unsolicited_today = dynamic.unsolicited_today
+            soft_daily_limit = dynamic.soft_daily_limit
+            hard_daily_limit = dynamic.hard_daily_limit
+            bot_spoke_recently = dynamic.bot_spoke_recently
+            ignored_recent = dynamic.ignored_unsolicited_recent
+            dynamic_metadata = {
+                **dynamic.metadata,
+                "silence_requested_control": dynamic.silence_requested,
+                "bot_share_blocked": dynamic.bot_share_blocked,
+                "positive_feedback_recent": dynamic.positive_feedback_recent,
+                "negative_feedback_recent": dynamic.negative_feedback_recent,
+            }
+        else:
+            muted = bool(group_context.silent_until and group_context.silent_until > now)
+            cooldown_active = not unsolicited_enabled
+            unsolicited_today = 0
+            soft_daily_limit = 6
+            hard_daily_limit = 10
+            bot_spoke_recently = False
+            ignored_recent = 0
+            dynamic_metadata = {}
+
         state = DispatcherPolicyState(
             group_muted=muted,
-            cooldown_active=not unsolicited_enabled,
+            cooldown_active=cooldown_active,
+            unsolicited_today=unsolicited_today,
+            soft_daily_limit=soft_daily_limit,
+            hard_daily_limit=hard_daily_limit,
             initiative_level=initiative,
+            bot_spoke_recently=bot_spoke_recently,
+            ignored_unsolicited_recent=ignored_recent,
             running_joke_fit=running_joke_fit,
             broken_commitment_relevant=broken_commitment,
             allow_roast=allow_roast,
@@ -138,6 +190,7 @@ class GroupBehaviorEngine:
                 "unsolicited_enabled": unsolicited_enabled,
                 "roast_tolerance": roast_tolerance,
                 "callback_probe_ids": list(callback_ids),
+                **dynamic_metadata,
             },
         )
 
