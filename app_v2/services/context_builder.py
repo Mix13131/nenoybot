@@ -84,22 +84,40 @@ class ContextBuilder:
         if not event.scope_id.strip():
             raise ValueError("event.scope_id must not be empty")
 
-        hot = self.message_repo.recent_for_scope(
-            event.scope_type,
-            event.scope_id,
-            limit=self.hot_max_messages,
-        )
-        hot_messages, hot_tokens = self._fit_hot(hot)
+        degraded: dict[str, bool] = {}
+        try:
+            hot = self.message_repo.recent_for_scope(
+                event.scope_type,
+                event.scope_id,
+                limit=self.hot_max_messages,
+            )
+            hot_messages, hot_tokens = self._fit_hot(hot)
+        except Exception:
+            # HOT history is optional context. A storage hiccup must not force a
+            # Personal reply to invent history or crash the whole pipeline.
+            hot_messages, hot_tokens = [], 0
+            degraded["hot_messages_unavailable"] = True
 
-        ranked = self.retrieval_engine.retrieve(
-            event.scope_type,
-            event.scope_id,
-            usage=memory_usage,
-            subject_keys=subject_keys,
-            callback_fatigue_minutes=callback_fatigue_minutes,
-            limit=self.memory_max_cards,
-        )
-        memories, memory_tokens = self._fit_memories(ranked)
+        try:
+            ranked = self.retrieval_engine.retrieve(
+                event.scope_type,
+                event.scope_id,
+                usage=memory_usage,
+                subject_keys=subject_keys,
+                callback_fatigue_minutes=callback_fatigue_minutes,
+                limit=self.memory_max_cards,
+            )
+            memories, memory_tokens = self._fit_memories(ranked)
+        except Exception:
+            # Fail closed on LONG memory: no callback claims are safer than a
+            # fabricated memory. ResponseGenerator separately rejects a Group
+            # callback with zero provided Memory Cards.
+            memories, memory_tokens = [], 0
+            degraded["memory_unavailable"] = True
+
+        effective_action_state = dict(action_state or {})
+        if degraded:
+            effective_action_state["_degraded_context"] = degraded
 
         return GenerationContext(
             scope_type=event.scope_type,
@@ -111,7 +129,7 @@ class ContextBuilder:
             hot_messages=tuple(hot_messages),
             memories=tuple(memories),
             target_user_id=decision.target_user_id,
-            action_state=dict(action_state or {}),
+            action_state=effective_action_state,
             estimated_hot_tokens=hot_tokens,
             estimated_memory_tokens=memory_tokens,
         )
