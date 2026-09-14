@@ -116,3 +116,18 @@ def test_creator_can_stop_only_one_targets_reminders():
     assert result.status == "cancelled"
     assert result.target_username == "toroikin"
     assert repo.manual_cancel_calls[0]["target_username"] == "toroikin"
+
+
+def test_natural_gorshochek_phrase_stops_target_reminder():
+    repo = FakeReminderRepo()
+    service = GroupReminderService(repo)
+    now = datetime(2026, 9, 14, 21, 9, tzinfo=timezone.utc)
+    item = make_event(
+        text="Горшочек, не вари. Все, достаточно напоминать @toroikin про баню",
+        event_type=EventType.REPLY_TO_BOT,
+        actor="101",
+    )
+    result = service.maybe_schedule(item, now=now)
+    assert result.status == "cancelled"
+    assert result.target_username == "toroikin"
+    assert result.cancelled_count == 1
