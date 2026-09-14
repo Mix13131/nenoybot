@@ -13,6 +13,13 @@ _NAME_ADDRESS_RE = re.compile(
     r"^\s*(?:(?:эй|слушай)[\s,:;.!?—-]+)?неной(?:\s+бро)?(?=$|[\s,:;.!?—-])",
     flags=re.IGNORECASE,
 )
+_WORD_RE = re.compile(r"[0-9A-Za-zА-Яа-яЁё]+", flags=re.UNICODE)
+_INCOMPLETE_ENDINGS = {
+    "а", "и", "но", "если", "чтобы", "что", "как", "когда", "потому",
+    "про", "на", "в", "с", "по", "для", "ты", "можешь", "сможешь",
+    "будешь", "хочешь", "можно", "надо", "нужно", "слушай", "короче",
+    "кстати",
+}
 
 
 @dataclass(frozen=True)
@@ -86,6 +93,58 @@ def _is_direct_mention(
     return _is_name_address(text)
 
 
+def _address_body(
+    text: str,
+    *,
+    bot_username: str | None,
+    name_address: bool,
+    reply_to_bot: bool,
+) -> str:
+    """Return the conversational body after a leading bot address when possible."""
+
+    value = text.strip()
+    if reply_to_bot:
+        return value
+
+    username = (bot_username or "").strip().lstrip("@")
+    if username:
+        username_re = re.compile(
+            rf"^\s*@{re.escape(username)}(?=$|[\s,:;.!?—-])",
+            flags=re.IGNORECASE,
+        )
+        match = username_re.search(value)
+        if match:
+            return value[match.end():].lstrip(" \t,:;.!?—-")
+
+    if name_address:
+        match = _NAME_ADDRESS_RE.search(value)
+        if match:
+            return value[match.end():].lstrip(" \t,:;.!?—-")
+
+    return value
+
+
+def _looks_like_incomplete_turn(text: str) -> bool:
+    """Conservative heuristic for a message likely to be continued immediately.
+
+    It is intentionally narrow: the purpose is a tiny debounce for obvious
+    half-sentences, not semantic sentence completion.
+    """
+
+    value = " ".join(text.strip().split())
+    if not value or len(value) > 60:
+        return False
+    if value.endswith((".", "!", "?", "…")):
+        return False
+    if value.endswith((",", ":", ";", "—", "-")):
+        return True
+
+    words = [item.lower() for item in _WORD_RE.findall(value)]
+    if not words or len(words) > 7:
+        return False
+    return words[-1] in _INCOMPLETE_ENDINGS
+
+
 def _normalize_message(
     update_id: int,
     message: dict[str, Any],
@@ -124,6 +183,20 @@ def _normalize_message(
     else:
         event_type = EventType.GROUP_MESSAGE
 
+    incomplete_turn = False
+    if (
+        scope_type is ScopeType.GROUP
+        and text
+        and event_type in {EventType.DIRECT_MENTION, EventType.REPLY_TO_BOT}
+    ):
+        body = _address_body(
+            text,
+            bot_username=bot_username,
+            name_address=name_address,
+            reply_to_bot=reply_to_bot,
+        )
+        incomplete_turn = _looks_like_incomplete_turn(body)
+
     message_id = message.get("message_id")
     envelope = EventEnvelope(
         event_id=f"tg:{update_id}",
@@ -142,6 +215,7 @@ def _normalize_message(
             "reply_to_bot": reply_to_bot,
             "direct_mention": direct_mention,
             "name_address": name_address,
+            "incomplete_turn": incomplete_turn,
             "mentions": _mention_metadata(message),
             "edited": edited,
         },
