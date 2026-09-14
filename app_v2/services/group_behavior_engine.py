@@ -4,7 +4,7 @@ from dataclasses import dataclass
 from datetime import datetime
 from typing import Any
 
-from app_v2.domain.enums import ScopeType
+from app_v2.domain.enums import EventType, ScopeType
 from app_v2.domain.events import EventEnvelope, SceneAnalysis
 from app_v2.repositories.group_context_repo import GroupContext
 from app_v2.services.dispatcher import DispatcherPolicyState
@@ -40,9 +40,6 @@ def _is_grounded_callback_card(item: Any) -> bool:
     card = item.card
     if card.memory_type not in _CALLBACK_TYPES:
         return False
-    # Commitments/decisions/quotes are grounded by an exact Telegram message.
-    # Let a slightly lower confidence through to StatementWatcher, which then
-    # performs a second strict comparison before any unsolicited intervention.
     if card.memory_type in _STATEMENT_TYPES and card.evidence:
         return card.confidence >= 0.68
     return card.confidence >= 0.75
@@ -107,9 +104,6 @@ class GroupBehaviorEngine:
                     now=now,
                 )
             except Exception:
-                # If history/feedback state cannot be loaded we cannot safely
-                # decide to interrupt a group. Explicit mentions still bypass
-                # unsolicited cooldown later in Dispatcher.
                 policy_degraded = True
                 initiative_unavailable = True
 
@@ -162,11 +156,15 @@ class GroupBehaviorEngine:
         if (
             self.statement_watcher is not None
             and statement_cards
+            and event.event_type is EventType.GROUP_MESSAGE
+            and unsolicited_enabled
             and not policy_degraded
             and not silence_requested
+            and safe_scene
         ):
             statement_watch_result = self.statement_watcher.evaluate(
                 event=event,
+                scene=effective_scene,
                 candidates=statement_cards,
             )
             if statement_watch_result.relation != "none":
@@ -189,26 +187,24 @@ class GroupBehaviorEngine:
 
         if allow_callbacks:
             changes: dict[str, float] = {}
-            # A stored joke may be casually reusable. Statement memories are
-            # stricter: they only raise callback score when the watcher proves a
-            # real relation to the current message.
             if running_joke_fit:
                 changes["callback_opportunity"] = max(effective_scene.callback_opportunity, 0.82)
                 if allow_roast:
                     changes["roast_opportunity"] = max(effective_scene.roast_opportunity, 0.80)
 
-            if statement_watch_result is not None:
+            if statement_watch_result is not None and statement_watch_result.should_intervene:
                 relation = statement_watch_result.relation
-                confidence = statement_watch_result.confidence
-                if relation == "callback" and confidence >= 0.82:
-                    changes["callback_opportunity"] = max(effective_scene.callback_opportunity, 0.84)
-                elif relation in {"contradiction", "broken_commitment"} and confidence >= 0.80:
-                    changes["callback_opportunity"] = max(effective_scene.callback_opportunity, 0.94)
-                    changes["contradiction_score"] = max(effective_scene.contradiction_score, 0.90)
-                    if allow_roast and statement_watch_result.roast_fit >= 0.60:
-                        changes["roast_opportunity"] = max(effective_scene.roast_opportunity, 0.86)
-                    if relation == "broken_commitment":
-                        broken_commitment = True
+                changes["callback_opportunity"] = max(effective_scene.callback_opportunity, 0.94)
+                if relation == "contradiction":
+                    changes["contradiction_score"] = max(effective_scene.contradiction_score, 0.94)
+                elif relation == "broken_commitment":
+                    changes["contradiction_score"] = max(effective_scene.contradiction_score, 0.88)
+                    broken_commitment = True
+                if allow_roast and statement_watch_result.roast_fit >= 0.60:
+                    changes["roast_opportunity"] = max(
+                        effective_scene.roast_opportunity,
+                        min(0.95, max(0.80, statement_watch_result.roast_fit)),
+                    )
 
             if changes:
                 effective_scene = effective_scene.model_copy(update=changes)
@@ -239,18 +235,14 @@ class GroupBehaviorEngine:
             ignored_recent = 0
             dynamic_metadata = {}
 
-        # A high-confidence caught contradiction is exactly the rare moment the
-        # product is meant to notice by itself. Bypass the ordinary unsolicited
-        # cooldown, but never mute/hard-limit/safety gates or feature opt-out.
         priority_statement = bool(
             statement_watch_result
             and statement_watch_result.strong_mismatch
             and unsolicited_enabled
             and not muted
             and safe_scene
+            and not policy_degraded
         )
-        if priority_statement and not policy_degraded:
-            cooldown_active = False
 
         if policy_degraded:
             cooldown_active = True
@@ -273,6 +265,7 @@ class GroupBehaviorEngine:
             ignored_unsolicited_recent=ignored_recent,
             running_joke_fit=running_joke_fit if not policy_degraded else False,
             broken_commitment_relevant=broken_commitment if not policy_degraded else False,
+            priority_statement=priority_statement,
             allow_roast=allow_roast,
             allow_callbacks=allow_callbacks,
             metadata={
@@ -299,3 +292,13 @@ class GroupBehaviorEngine:
             participant_adaptation=adaptation,
             statement_watch=statement_watch_state,
         )
+
+    def mark_callback_memories_used(self, scope_id: str, memory_ids: tuple[str, ...]) -> None:
+        repo = getattr(self.retrieval_engine, "repo", None)
+        if repo is None:
+            return
+        for memory_id in memory_ids:
+            try:
+                repo.mark_used(ScopeType.GROUP, scope_id, memory_id)
+            except Exception:
+                continue
