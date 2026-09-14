@@ -34,7 +34,15 @@ _SCHEMA: dict[str, Any] = {
                     "semantic_key": {"type": "string", "minLength": 1},
                     "summary": {"type": "string", "minLength": 1},
                     "subject_keys": {"type": "array", "items": {"type": "string"}},
-                    "payload": {"type": "object"},
+                    # Strict Structured Outputs does not accept an unconstrained
+                    # object here. Keep mapper metadata closed for MVP and derive
+                    # runtime metadata (semantic key/evidence counters) locally.
+                    "payload": {
+                        "type": "object",
+                        "properties": {},
+                        "required": [],
+                        "additionalProperties": False,
+                    },
                     "importance": {"type": "number", "minimum": 0, "maximum": 1},
                     "confidence": {"type": "number", "minimum": 0, "maximum": 1},
                     "evidence_count": {"type": "integer", "minimum": 1},
