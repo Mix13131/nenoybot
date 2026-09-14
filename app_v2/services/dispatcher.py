@@ -62,6 +62,8 @@ def _personal_mode(event: EventEnvelope, scene: SceneAnalysis) -> ResponseMode:
         return ResponseMode.CARE
     if scene.contradiction_score >= 0.80:
         return ResponseMode.MIRROR
+    if scene.commitment_signal >= 0.75:
+        return ResponseMode.COACH
     return ResponseMode.ASSISTANT
 
 
@@ -147,7 +149,6 @@ def decide(
 
     explicit, explicit_reasons = _is_explicit(event, scene)
     if explicit:
-        # Explicit user interaction is not subject to unsolicited cooldown/rate limits.
         return DispatcherDecision(
             primary_action=PrimaryAction.REPLY,
             mode=ResponseMode.GROUP_DIRECT_REPLY,
