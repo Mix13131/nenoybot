@@ -126,6 +126,14 @@ class GroupPipeline:
         group_context = access.context
         scene = self.scene_analyzer.analyze(event)
 
+        # Reminder stop commands are operational controls, not a request to mute
+        # НеНой. Phrases like "горшочек, не вари" or "достаточно напоминать"
+        # can look like a generic mute intent to the scene classifier. If the
+        # deterministic reminder action already recognized the command, preserve
+        # the conversational reply path and acknowledge the real cancellation.
+        if reminder_action_state and reminder_action_state.get("status") in {"cancelled", "not_cancelled"}:
+            scene = scene.model_copy(update={"command_intent": "cancel_reminder"})
+
         profile = dict(group_context.profile or {})
         participant_profile = dict(group_context.participant.profile or {})
         adaptation = participant_profile.get("personality_modifiers")
