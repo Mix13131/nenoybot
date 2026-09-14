@@ -12,7 +12,7 @@ from app_v2.domain.enums import (
 )
 from app_v2.domain.events import EventEnvelope, SceneAnalysis
 
-POLICY_VERSION = "dispatcher-deterministic-v1"
+POLICY_VERSION = "dispatcher-deterministic-v2"
 
 
 @dataclass(frozen=True)
@@ -143,6 +143,23 @@ def decide(
             metadata={
                 "policy_version": POLICY_VERSION,
                 "unsolicited": False,
+                **state.metadata,
+            },
+        )
+
+    # Explicit control beats ordinary direct-address behavior. A user saying
+    # "@nenoy заткнись" must create silence, not a witty acknowledgement.
+    mute_control = event.event_type is EventType.MUTE_REQUEST or scene.command_intent == "mute"
+    if mute_control:
+        return DispatcherDecision(
+            primary_action=PrimaryAction.IGNORE,
+            intervention_score=0,
+            reason_codes=[ReasonCode.SILENCE_REQUESTED],
+            target_user_id=event.actor_user_id,
+            metadata={
+                "policy_version": POLICY_VERSION,
+                "unsolicited": False,
+                "control_intent": "mute",
                 **state.metadata,
             },
         )
