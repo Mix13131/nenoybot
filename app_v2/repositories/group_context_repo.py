@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Any
@@ -149,7 +150,7 @@ class GroupContextRepository:
             WHERE telegram_chat_id = %s AND chat_type = 'group'
             RETURNING id
             """,
-            (profile, int(telegram_chat_id)),
+            (json.dumps(profile, ensure_ascii=False), int(telegram_chat_id)),
         ).fetchone()
         self.conn.commit()
         return row is not None
