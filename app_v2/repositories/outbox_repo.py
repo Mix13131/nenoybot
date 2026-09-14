@@ -100,15 +100,18 @@ class OutboxRepository:
             lease_until=row[6],
         )
 
-    def mark_sent(self, outbox_id: int) -> bool:
+    def mark_sent(self, outbox_id: int, *, telegram_message_id: int | None = None) -> bool:
         row = self.conn.execute(
             """
             UPDATE outbox
-            SET status = 'sent', sent_at = CURRENT_TIMESTAMP, last_error = NULL
+            SET status = 'sent',
+                sent_at = CURRENT_TIMESTAMP,
+                last_error = NULL,
+                telegram_message_id = COALESCE(%s, telegram_message_id)
             WHERE id = %s AND status = 'processing'
             RETURNING id
             """,
-            (outbox_id,),
+            (telegram_message_id, outbox_id),
         ).fetchone()
         if row is None:
             existing = self.conn.execute(
