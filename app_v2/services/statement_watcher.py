@@ -3,14 +3,12 @@ from __future__ import annotations
 import json
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Iterable
+from typing import Any
 
-from app_v2.domain.events import EventEnvelope
-from app_v2.domain.memory import MemoryCard
+from app_v2.domain.events import EventEnvelope, SceneAnalysis
 from app_v2.services.model_router import ModelRole
 
 
-_RELEVANT_TYPES = {"commitment", "decision", "quote", "contradiction", "observation"}
 _SCHEMA: dict[str, Any] = {
     "type": "object",
     "additionalProperties": False,
@@ -41,64 +39,109 @@ class StatementWatchResult:
     memory_id: str | None = None
     memory_summary: str | None = None
     evidence_excerpt: str | None = None
+    evidence_message_id: str | None = None
 
     @property
     def strong_mismatch(self) -> bool:
-        return self.relation in {"contradiction", "broken_commitment"} and self.confidence >= 0.80
+        return (
+            self.relation in {"contradiction", "broken_commitment"}
+            and self.confidence >= 0.82
+        )
+
+    @property
+    def should_intervene(self) -> bool:
+        if self.strong_mismatch:
+            return True
+        if self.relation == "callback":
+            return self.confidence >= 0.92 and self.roast_fit >= 0.78
+        if self.relation == "fulfilled_commitment":
+            return self.confidence >= 0.95 and self.roast_fit >= 0.85
+        return False
 
     def as_action_state(self) -> dict[str, Any]:
         return {
             "relation": self.relation,
-            "confidence": self.confidence,
-            "roast_fit": self.roast_fit,
+            "confidence": round(self.confidence, 4),
+            "roast_fit": round(self.roast_fit, 4),
             "memory_id": self.memory_id,
             "memory_summary": self.memory_summary,
             "evidence_excerpt": self.evidence_excerpt,
+            "evidence_message_id": self.evidence_message_id,
+            "grounded": bool(self.memory_id and self.evidence_excerpt),
         }
 
 
 class StatementWatcher:
-    """Compare a new group message with grounded statements from the same author.
+    """Compare a group message with grounded statements from the same author.
 
-    The watcher never invents history: it may only select from Memory Cards that
-    already exist in the same group scope and carry message evidence.
+    The watcher is intentionally fail-closed. It can only select an existing
+    Memory Card from the same group and the same actor, with source evidence.
+    It never generates the final joke; Dispatcher/Generator decide that later.
     """
 
     def __init__(
         self,
         adapter: Any,
         *,
+        memory_source: Any,
         prompt_path: Path | None = None,
-        min_confidence: float = 0.72,
     ) -> None:
         self.adapter = adapter
-        self.prompt_path = prompt_path or Path(__file__).resolve().parents[1] / "prompts" / "statement_watcher.md"
-        self.min_confidence = min(1.0, max(0.0, min_confidence))
+        self.memory_source = memory_source
+        self.prompt_path = (
+            prompt_path
+            or Path(__file__).resolve().parents[1] / "prompts" / "statement_watcher.md"
+        )
 
     def evaluate(
         self,
         *,
         event: EventEnvelope,
-        candidates: Iterable[MemoryCard],
+        scene: SceneAnalysis,
+        callback_fatigue_minutes: int = 180,
     ) -> StatementWatchResult:
         text = (event.text or "").strip()
-        if not text:
+        actor = (event.actor_user_id or "").strip()
+        if not text or not actor:
             return StatementWatchResult()
 
-        usable = [
-            card
-            for card in candidates
-            if card.memory_type in _RELEVANT_TYPES
-            and card.scope_id == event.scope_id
-            and card.evidence
-        ][:8]
+        # No proactive roast in a genuinely serious/sensitive scene.
+        if (
+            scene.seriousness_score >= 0.75
+            or scene.conflict_score >= 0.75
+            or scene.sensitivity_score >= 0.75
+        ):
+            return StatementWatchResult()
+
+        try:
+            candidates = self.memory_source.candidates_for_actor(
+                scope_id=event.scope_id,
+                actor_user_id=actor,
+                callback_fatigue_minutes=callback_fatigue_minutes,
+                limit=8,
+            )
+        except Exception:
+            return StatementWatchResult()
+
+        actor_key = f"user:{actor}"
+        usable = []
+        for card in candidates:
+            if card.scope_id != event.scope_id or actor_key not in card.subject_keys:
+                continue
+            own_evidence = [item for item in card.evidence if item.author_id == actor]
+            if not own_evidence:
+                continue
+            usable.append((card, own_evidence))
+            if len(usable) >= 8:
+                break
+
         if not usable:
             return StatementWatchResult()
 
         payload = {
             "current": {
                 "text": text,
-                "actor_user_id": event.actor_user_id,
+                "actor_user_id": actor,
                 "occurred_at": event.occurred_at.isoformat(),
             },
             "candidates": [
@@ -114,10 +157,10 @@ class StatementWatcher:
                             "timestamp": evidence.timestamp.isoformat(),
                             "author_id": evidence.author_id,
                         }
-                        for evidence in card.evidence[:2]
+                        for evidence in own_evidence[:2]
                     ],
                 }
-                for index, card in enumerate(usable)
+                for index, (card, own_evidence) in enumerate(usable)
             ],
         }
 
@@ -139,16 +182,23 @@ class StatementWatcher:
         confidence = float(parsed.get("confidence") or 0.0)
         roast_fit = float(parsed.get("roast_fit") or 0.0)
         index = int(parsed.get("candidate_index", -1))
-        if relation == "none" or confidence < self.min_confidence or not (0 <= index < len(usable)):
+        if relation == "none" or confidence < 0.72 or not (0 <= index < len(usable)):
             return StatementWatchResult()
 
-        card = usable[index]
-        evidence_excerpt = card.evidence[0].excerpt if card.evidence else None
+        card, own_evidence = usable[index]
+        evidence = own_evidence[0]
         return StatementWatchResult(
             relation=relation,
             confidence=confidence,
             roast_fit=roast_fit,
             memory_id=card.id,
             memory_summary=card.summary,
-            evidence_excerpt=evidence_excerpt,
+            evidence_excerpt=evidence.excerpt,
+            evidence_message_id=evidence.message_id,
         )
+
+    def mark_used(self, *, scope_id: str, memory_id: str) -> bool:
+        try:
+            return bool(self.memory_source.mark_used(scope_id=scope_id, memory_id=memory_id))
+        except Exception:
+            return False
