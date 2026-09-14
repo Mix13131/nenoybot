@@ -112,6 +112,51 @@ class ReminderRepository:
         self.conn.commit()
         return int(row[0]) if row else 0
 
+    def cancel_group_reminders(
+        self,
+        *,
+        scope_id: str,
+        creator_user_id: str | None,
+        target_username: str | None = None,
+    ) -> int:
+        """Cancel active reminders created by one participant in this group.
+
+        A target username narrows cancellation to that person's reminder chain;
+        without it, the creator cancels all of their active group reminders in
+        the current chat. This prevents one participant from killing another
+        participant's reminders by accident.
+        """
+        creator = (creator_user_id or "").strip()
+        if not creator:
+            return 0
+        target = (target_username or "").strip().lstrip("@").lower()
+
+        conditions = [
+            "scope_type='group'",
+            "scope_id=%s",
+            "status IN ('pending','retry')",
+            "COALESCE(payload ->> 'actor_user_id', '') = %s",
+        ]
+        params: list[object] = [scope_id, creator]
+        if target:
+            conditions.append("lower(COALESCE(payload ->> 'target_username', '')) = %s")
+            params.append(target)
+
+        row = self.conn.execute(
+            f"""
+            WITH cancelled AS (
+                UPDATE reminders
+                SET status='cancelled', updated_at=CURRENT_TIMESTAMP, last_error=NULL
+                WHERE {' AND '.join(conditions)}
+                RETURNING id
+            )
+            SELECT count(*) FROM cancelled
+            """,
+            tuple(params),
+        ).fetchone()
+        self.conn.commit()
+        return int(row[0]) if row else 0
+
     def reschedule(self, reminder_id: int, due_at: datetime) -> ReminderRecord | None:
         if due_at.tzinfo is None or due_at.utcoffset() is None:
             raise ValueError("due_at must be timezone-aware")
