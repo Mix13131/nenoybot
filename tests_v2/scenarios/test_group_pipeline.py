@@ -120,7 +120,20 @@ class FakeOutbox:
         return oid, True
 
 
-def pipeline(*, access=None, scene=None, context=None, generator=None, outbox=None):
+class FakeMemoryMapper:
+    def __init__(self, memory_ids=("mapped-1",)):
+        self.memory_ids=tuple(memory_ids)
+        self.calls=[]
+    def map_event(self, event, **kwargs):
+        self.calls.append((event, kwargs))
+        return SimpleNamespace(
+            written=tuple(SimpleNamespace(id=item) for item in self.memory_ids),
+            forgotten_ids=(),
+            failed=False,
+        )
+
+
+def pipeline(*, access=None, scene=None, context=None, generator=None, outbox=None, mapper=None):
     return GroupPipeline(
         access_service=access or FakeAccess(),
         scene_analyzer=FakeSceneAnalyzer(scene),
@@ -129,6 +142,7 @@ def pipeline(*, access=None, scene=None, context=None, generator=None, outbox=No
         response_generator=generator or FakeGenerator(),
         intervention_repo=FakeInterventions(),
         outbox_repo=outbox or FakeOutbox(),
+        memory_mapper=mapper,
         unsolicited_enabled=False,
     )
 
@@ -218,3 +232,27 @@ def test_generation_failure_never_enqueues_message() -> None:
     assert result.generation_failed is True
     assert result.outbox_id is None
     assert outbox.calls == []
+
+
+def test_meaningful_group_message_maps_memory_even_when_bot_stays_silent() -> None:
+    mapper=FakeMemoryMapper(("group-memory-1",))
+    p=pipeline(scene=SceneAnalysis(memory_value=.8), mapper=mapper)
+
+    result=p.process(event(text="мы решили ехать в субботу"))
+
+    assert result.primary_action is PrimaryAction.IGNORE
+    assert result.mapped_memory_ids == ("group-memory-1",)
+    assert len(mapper.calls) == 1
+    assert p.response_generator.calls == []
+    assert p.intervention_repo.rows[-1]["extra_metadata"]["mapped_memory_ids"] == ["group-memory-1"]
+
+
+def test_low_value_group_chatter_does_not_call_memory_mapper() -> None:
+    mapper=FakeMemoryMapper()
+    p=pipeline(scene=SceneAnalysis(memory_value=.1, banter_score=.2), mapper=mapper)
+
+    result=p.process(event(text="ага"))
+
+    assert result.primary_action is PrimaryAction.IGNORE
+    assert result.mapped_memory_ids == ()
+    assert mapper.calls == []
