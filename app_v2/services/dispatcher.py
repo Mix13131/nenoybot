@@ -28,6 +28,7 @@ class DispatcherPolicyState:
     running_joke_fit: bool = False
     broken_commitment_relevant: bool = False
     conversation_about_bot: bool = False
+    priority_statement: bool = False
     allow_roast: bool = True
     allow_callbacks: bool = True
     metadata: dict[str, object] = field(default_factory=dict)
@@ -147,8 +148,6 @@ def decide(
             },
         )
 
-    # Explicit control beats ordinary direct-address behavior. A user saying
-    # "@nenoy заткнись" must create silence, not a witty acknowledgement.
     mute_control = event.event_type is EventType.MUTE_REQUEST or scene.command_intent == "mute"
     if mute_control:
         return DispatcherDecision(
@@ -187,9 +186,6 @@ def decide(
             metadata={"policy_version": POLICY_VERSION, "unsolicited": True, **state.metadata},
         )
 
-    # A reminder was explicitly scheduled by a group member earlier. It is an
-    # action execution, not spontaneous banter, so ordinary unsolicited cooldown
-    # and daily chatter limits must not swallow it. Group mute still wins above.
     if event.event_type is EventType.REMINDER_DUE:
         return DispatcherDecision(
             primary_action=PrimaryAction.REPLY,
@@ -211,6 +207,35 @@ def decide(
             intervention_score=0,
             reason_codes=[ReasonCode.HARD_DAILY_LIMIT],
             metadata={"policy_version": POLICY_VERSION, "unsolicited": True, **state.metadata},
+        )
+
+    # Rare high-confidence "caught you" moments are the product value of the
+    # watcher. They may bypass ordinary cooldown/recent-bot penalties, while
+    # mute, hard daily cap and safety gates above still win.
+    if (
+        state.priority_statement
+        and state.allow_callbacks
+        and scene.seriousness_score < 0.75
+        and scene.conflict_score < 0.75
+        and scene.sensitivity_score < 0.75
+    ):
+        reasons = [ReasonCode.STATEMENT_WATCH, ReasonCode.CALLBACK_OPPORTUNITY]
+        if scene.contradiction_score >= 0.75:
+            reasons.append(ReasonCode.CONTRADICTION)
+        if state.broken_commitment_relevant:
+            reasons.append(ReasonCode.BROKEN_COMMITMENT)
+        return DispatcherDecision(
+            primary_action=PrimaryAction.REPLY,
+            mode=ResponseMode.GROUP_CALLBACK,
+            intervention_score=95,
+            reason_codes=reasons,
+            target_user_id=event.actor_user_id,
+            metadata={
+                "policy_version": POLICY_VERSION,
+                "unsolicited": True,
+                "priority_statement": True,
+                **state.metadata,
+            },
         )
 
     if state.cooldown_active:
