@@ -140,11 +140,12 @@ class GroupPipeline:
         memory_usage = "assist"
         callback_fatigue_minutes = 60
         behavior_memory_ids: tuple[str, ...] = ()
+        statement_watch_state: dict[str, Any] | None = None
 
         # Behavior retrieval intentionally happens before mapping the current
         # message, so НеНой cannot manufacture a callback from the same line it
         # is reacting to. Mapping still happens even when the final decision is
-        # silence, which is essential for days 1–2 of Friends Test observation.
+        # silence, which is essential for observation and future callbacks.
         if self.group_behavior_engine is not None:
             plan = self.group_behavior_engine.plan(
                 event=event,
@@ -159,6 +160,7 @@ class GroupPipeline:
             memory_usage = plan.memory_usage
             callback_fatigue_minutes = plan.callback_fatigue_minutes
             behavior_memory_ids = tuple(plan.callback_memory_ids)
+            statement_watch_state = plan.statement_watch
         else:
             muted = bool(group_context.silent_until and group_context.silent_until > current)
             state = DispatcherPolicyState(
@@ -190,6 +192,7 @@ class GroupPipeline:
                     "group_behavior_probe_ids": list(behavior_memory_ids),
                     "mapped_memory_ids": list(mapped_memory_ids),
                     "reminder_action": reminder_action_state,
+                    "statement_watch": statement_watch_state,
                 },
             )
             return GroupPipelineResult(
@@ -218,6 +221,8 @@ class GroupPipeline:
         }
         if reminder_action_state is not None:
             action_state["group_reminder"] = reminder_action_state
+        if statement_watch_state is not None:
+            action_state["statement_watch"] = statement_watch_state
         if event.event_type is EventType.REMINDER_DUE:
             action_state["reminder_due"] = dict(event.metadata.get("reminder_payload") or {})
 
@@ -252,6 +257,7 @@ class GroupPipeline:
                     "group_behavior_probe_ids": list(behavior_memory_ids),
                     "mapped_memory_ids": list(mapped_memory_ids),
                     "reminder_action": reminder_action_state,
+                    "statement_watch": statement_watch_state,
                 },
             )
             return GroupPipelineResult(
@@ -277,6 +283,7 @@ class GroupPipeline:
                 "group_behavior_probe_ids": list(behavior_memory_ids),
                 "mapped_memory_ids": list(mapped_memory_ids),
                 "reminder_action": reminder_action_state,
+                "statement_watch": statement_watch_state,
             },
         )
         outbound = OutboundMessage(
