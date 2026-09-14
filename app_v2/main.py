@@ -62,9 +62,12 @@ def telegram_webhook(
     ),
 ) -> dict[str, str | None]:
     _verify_webhook_secret(x_telegram_bot_api_secret_token)
-    return ingest_telegram_update(
-        update,
-        database_url=config.database_url,
-        bot_username=config.telegram_bot_username,
-        bot_user_id=config.telegram_bot_user_id,
-    ).as_dict()
+    ingest_kwargs: dict[str, Any] = {
+        "bot_username": config.telegram_bot_username,
+        "bot_user_id": config.telegram_bot_user_id,
+    }
+    # Preserve the existing call contract in local/test mode; production has an
+    # explicit DB URL and passes it through rather than relying on ambient env.
+    if config.database_url:
+        ingest_kwargs["database_url"] = config.database_url
+    return ingest_telegram_update(update, **ingest_kwargs).as_dict()
