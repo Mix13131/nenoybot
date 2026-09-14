@@ -36,9 +36,6 @@ def _should_map_group_memory(event: EventEnvelope, scene: SceneAnalysis) -> bool
     lowered = text.lower()
     if lowered.startswith(("запомни", "remember")) or lowered in {"забудь", "забудь это", "forget it", "forget this"}:
         return True
-    # Group memory should observe meaningful banter/pattern material even while
-    # the bot stays silent. Keep the gate deterministic so not every message
-    # triggers the memory model.
     return any(
         (
             scene.memory_value >= 0.35,
@@ -100,7 +97,6 @@ class GroupPipeline:
 
         if self.feedback_collector is not None:
             self.feedback_collector.collect(event)
-            # Reactions are feedback transport, not conversational prompts.
             if event.event_type in {EventType.REACTION_ADDED, EventType.REACTION_REMOVED}:
                 return GroupPipelineResult(
                     event_id=event.event_id,
@@ -122,8 +118,6 @@ class GroupPipeline:
                         "cancelled_count": cancelled_count,
                     }
             except Exception as exc:
-                # Reminder actions are useful, but must never take down normal
-                # group conversation if scheduling infrastructure has a problem.
                 reminder_action_state = {
                     "status": "error",
                     "reason": type(exc).__name__,
@@ -142,10 +136,8 @@ class GroupPipeline:
         behavior_memory_ids: tuple[str, ...] = ()
         statement_watch_state: dict[str, Any] | None = None
 
-        # Behavior retrieval intentionally happens before mapping the current
-        # message, so НеНой cannot manufacture a callback from the same line it
-        # is reacting to. Mapping still happens even when the final decision is
-        # silence, which is essential for observation and future callbacks.
+        # Retrieve old memory before mapping the current message so a callback
+        # can never be manufactured from the line it is reacting to.
         if self.group_behavior_engine is not None:
             plan = self.group_behavior_engine.plan(
                 event=event,
@@ -239,7 +231,8 @@ class GroupPipeline:
         if context.scope_type is not ScopeType.GROUP or context.scope_id != event.scope_id:
             raise GroupPipelineError("Context Builder returned cross-scope Group context")
 
-        selected_memory_ids = tuple(memory.id for memory in context.memories)
+        context_memory_ids = tuple(memory.id for memory in context.memories)
+        selected_memory_ids = tuple(dict.fromkeys((*behavior_memory_ids, *context_memory_ids)))
         try:
             generated = self.response_generator.generate(context)
         except Exception as exc:
@@ -301,6 +294,11 @@ class GroupPipeline:
             },
         )
         outbox_id, created = self.outbox_repo.enqueue(outbound)
+        if created and self.group_behavior_engine is not None and behavior_memory_ids:
+            self.group_behavior_engine.mark_callback_memories_used(
+                event.scope_id,
+                behavior_memory_ids,
+            )
         return GroupPipelineResult(
             event_id=event.event_id,
             allowed=True,
