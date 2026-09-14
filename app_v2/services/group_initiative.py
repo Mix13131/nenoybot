@@ -10,7 +10,10 @@ from app_v2.repositories.group_context_repo import GroupContext
 
 
 _IGNORED_TYPES = ("ignored", "no_engagement")
-_NEGATIVE_TYPES = ("negative", "dislike", "mute", "shut_up", "report")
+_NEGATIVE_TYPES = (
+    "negative", "dislike", "mute", "shut_up", "report",
+    "reaction_negative", "explicit_negative",
+)
 _POSITIVE_TYPES = ("positive", "like", "reaction_positive", "helpful")
 _MUTE_PHRASES = (
     "заткнись",
@@ -123,9 +126,6 @@ class GroupInitiativeService:
             and last_unsolicited > now - timedelta(minutes=effective_cooldown)
         )
 
-        # Positive feedback is intentionally slow: even many positive signals
-        # can only add one point in a 24h policy window. Negative/ignored signals
-        # can remove several points immediately.
         positive_bonus = 1 if positive >= 3 else 0
         negative_penalty = min(4, negative * 2)
         ignore_penalty = 1 if ignored >= 2 else 0
