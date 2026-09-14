@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 import secrets
 from typing import Any
 
@@ -8,9 +9,51 @@ from fastapi import FastAPI, Header, HTTPException
 from .adapters.postgres import connect
 from .config import AppConfig, load_config
 from .services.event_ingestor import ingest_telegram_update
+from .telegram_webhook_setup import (
+    TelegramWebhookSetupError,
+    configure_webhook,
+    resolve_webhook_url,
+)
 
 
+logger = logging.getLogger(__name__)
 config: AppConfig = load_config()
+
+
+def _configure_telegram_webhook_on_boot() -> None:
+    """Idempotently bind the current Telegram token to this web service.
+
+    Token rotation invalidates the old Bot API credential and therefore the
+    webhook must be registered again with the new token. Doing it on web boot
+    keeps that invariant automatic instead of relying on a manual one-off CLI.
+    """
+    if config.environment != "production":
+        return
+    if not config.telegram_bot_token or not config.webhook_secret:
+        return
+
+    try:
+        webhook_url = resolve_webhook_url()
+        info = configure_webhook(
+            token=config.telegram_bot_token,
+            secret=config.webhook_secret,
+            webhook_url=webhook_url,
+        )
+    except TelegramWebhookSetupError as exc:
+        # The error class is intentionally sanitized: never include token or
+        # webhook secret in this log line.
+        logger.error("Telegram webhook boot configuration failed: %s", exc)
+        return
+
+    logger.info(
+        "Telegram webhook ready url=%s pending_update_count=%s last_error_present=%s",
+        info.url,
+        info.pending_update_count,
+        bool(info.last_error_message),
+    )
+
+
+_configure_telegram_webhook_on_boot()
 app = FastAPI(title=config.app_name)
 
 

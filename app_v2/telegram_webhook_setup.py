@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 import os
 from dataclasses import dataclass
 from typing import Any
@@ -16,6 +17,12 @@ class TelegramWebhookInfo:
     url: str
     pending_update_count: int
     last_error_message: str | None
+
+
+def _harden_transport_logging() -> None:
+    """Never let credential-bearing Telegram URLs leak into runtime logs."""
+    for name in ("httpx", "httpcore", "httpx2", "httpcore2"):
+        logging.getLogger(name).setLevel(logging.WARNING)
 
 
 def _required_env(name: str) -> str:
@@ -47,6 +54,7 @@ def configure_webhook(
     webhook_url: str,
     client: Any | None = None,
 ) -> TelegramWebhookInfo:
+    _harden_transport_logging()
     owns_client = client is None
     http_client = client or httpx.Client(timeout=15.0)
     api_base = f"https://api.telegram.org/bot{token}"
@@ -95,12 +103,12 @@ def main() -> None:
     webhook_url = resolve_webhook_url()
     info = configure_webhook(token=token, secret=secret, webhook_url=webhook_url)
 
-    # Never print token or secret. This output is safe for Railway deploy logs.
+    # Never print token or secret. Keep Telegram's raw error text out as well.
     print(
         "Telegram webhook configured:",
         f"url={info.url}",
         f"pending_update_count={info.pending_update_count}",
-        f"last_error_message={info.last_error_message or '-'}",
+        f"last_error_present={bool(info.last_error_message)}",
     )
 
 
