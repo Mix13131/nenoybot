@@ -1,11 +1,18 @@
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any
 
 from app_v2.domain.enums import EventType, ScopeType
 from app_v2.domain.events import EventEnvelope
+
+
+_NAME_ADDRESS_RE = re.compile(
+    r"^\s*(?:(?:эй|слушай)[\s,:;.!?—-]+)?неной(?:\s+бро)?(?=$|[\s,:;.!?—-])",
+    flags=re.IGNORECASE,
+)
 
 
 @dataclass(frozen=True)
@@ -46,6 +53,16 @@ def _mention_metadata(message: dict[str, Any]) -> list[dict[str, Any]]:
     return mentions
 
 
+def _is_name_address(text: str) -> bool:
+    """Treat a clear vocative use of the product name as a direct address.
+
+    We intentionally do not use `бро` alone as an alias because it is common
+    group-chat vocabulary and would cause false direct mentions.
+    """
+
+    return bool(_NAME_ADDRESS_RE.search(text))
+
+
 def _is_direct_mention(
     message: dict[str, Any],
     *,
@@ -65,7 +82,8 @@ def _is_direct_mention(
             user = entity.get("user") if isinstance(entity.get("user"), dict) else None
             if user and user.get("id") is not None and str(user["id"]) == target:
                 return True
-    return False
+
+    return _is_name_address(text)
 
 
 def _normalize_message(
@@ -86,6 +104,7 @@ def _normalize_message(
     reply = message.get("reply_to_message") if isinstance(message.get("reply_to_message"), dict) else None
     reply_from = reply.get("from") if reply and isinstance(reply.get("from"), dict) else None
     reply_to_bot = bool(reply_from and reply_from.get("is_bot"))
+    name_address = _is_name_address(text or "")
     direct_mention = _is_direct_mention(
         message,
         bot_username=bot_username,
@@ -122,6 +141,7 @@ def _normalize_message(
             "telegram_chat_type": chat.get("type"),
             "reply_to_bot": reply_to_bot,
             "direct_mention": direct_mention,
+            "name_address": name_address,
             "mentions": _mention_metadata(message),
             "edited": edited,
         },
