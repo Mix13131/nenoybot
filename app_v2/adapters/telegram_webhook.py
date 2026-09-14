@@ -46,7 +46,36 @@ def _mention_metadata(message: dict[str, Any]) -> list[dict[str, Any]]:
     return mentions
 
 
-def _normalize_message(update_id: int, message: dict[str, Any], *, edited: bool) -> NormalizedTelegramUpdate | None:
+def _is_direct_mention(
+    message: dict[str, Any],
+    *,
+    bot_username: str | None,
+    bot_user_id: str | None,
+) -> bool:
+    text = message.get("text") if isinstance(message.get("text"), str) else ""
+    username = (bot_username or "").strip().lstrip("@").lower()
+    if username and f"@{username}" in text.lower():
+        return True
+
+    if bot_user_id:
+        target = str(bot_user_id)
+        for entity in message.get("entities") or []:
+            if entity.get("type") != "text_mention":
+                continue
+            user = entity.get("user") if isinstance(entity.get("user"), dict) else None
+            if user and user.get("id") is not None and str(user["id"]) == target:
+                return True
+    return False
+
+
+def _normalize_message(
+    update_id: int,
+    message: dict[str, Any],
+    *,
+    edited: bool,
+    bot_username: str | None,
+    bot_user_id: str | None,
+) -> NormalizedTelegramUpdate | None:
     chat = message.get("chat")
     if not isinstance(chat, dict) or chat.get("id") is None:
         return None
@@ -57,6 +86,11 @@ def _normalize_message(update_id: int, message: dict[str, Any], *, edited: bool)
     reply = message.get("reply_to_message") if isinstance(message.get("reply_to_message"), dict) else None
     reply_from = reply.get("from") if reply and isinstance(reply.get("from"), dict) else None
     reply_to_bot = bool(reply_from and reply_from.get("is_bot"))
+    direct_mention = _is_direct_mention(
+        message,
+        bot_username=bot_username,
+        bot_user_id=bot_user_id,
+    )
 
     if edited:
         event_type = EventType.EDITED_MESSAGE
@@ -66,6 +100,8 @@ def _normalize_message(update_id: int, message: dict[str, Any], *, edited: bool)
         event_type = EventType.COMMAND
     elif scope_type is ScopeType.PERSONAL:
         event_type = EventType.PRIVATE_MESSAGE
+    elif direct_mention:
+        event_type = EventType.DIRECT_MENTION
     else:
         event_type = EventType.GROUP_MESSAGE
 
@@ -85,6 +121,7 @@ def _normalize_message(update_id: int, message: dict[str, Any], *, edited: bool)
         metadata={
             "telegram_chat_type": chat.get("type"),
             "reply_to_bot": reply_to_bot,
+            "direct_mention": direct_mention,
             "mentions": _mention_metadata(message),
             "edited": edited,
         },
@@ -129,15 +166,32 @@ def _normalize_reaction(update_id: int, reaction: dict[str, Any]) -> NormalizedT
     )
 
 
-def normalize_update(update: dict[str, Any]) -> NormalizedTelegramUpdate | None:
+def normalize_update(
+    update: dict[str, Any],
+    *,
+    bot_username: str | None = None,
+    bot_user_id: str | None = None,
+) -> NormalizedTelegramUpdate | None:
     update_id = update.get("update_id")
     if not isinstance(update_id, int):
         return None
 
     if isinstance(update.get("edited_message"), dict):
-        return _normalize_message(update_id, update["edited_message"], edited=True)
+        return _normalize_message(
+            update_id,
+            update["edited_message"],
+            edited=True,
+            bot_username=bot_username,
+            bot_user_id=bot_user_id,
+        )
     if isinstance(update.get("message"), dict):
-        return _normalize_message(update_id, update["message"], edited=False)
+        return _normalize_message(
+            update_id,
+            update["message"],
+            edited=False,
+            bot_username=bot_username,
+            bot_user_id=bot_user_id,
+        )
     if isinstance(update.get("message_reaction"), dict):
         return _normalize_reaction(update_id, update["message_reaction"])
     return None
