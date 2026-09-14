@@ -4,7 +4,7 @@ from datetime import datetime, timezone
 from types import SimpleNamespace
 
 from app_v2.domain.enums import EventType, MemoryOrigin, MemoryStatus, ScopeType
-from app_v2.domain.events import EventEnvelope
+from app_v2.domain.events import EventEnvelope, SceneAnalysis
 from app_v2.domain.memory import MemoryCard, MemoryEvidence, UsagePolicy
 from app_v2.services.statement_watcher import StatementWatcher
 
@@ -72,7 +72,11 @@ def test_watcher_selects_grounded_broken_commitment() -> None:
         "confidence": .94,
         "roast_fit": .90,
     })
-    result = StatementWatcher(adapter).evaluate(event=event(), candidates=[card()])
+    result = StatementWatcher(adapter).evaluate(
+        event=event(),
+        scene=SceneAnalysis(banter_score=.8),
+        candidates=[card()],
+    )
 
     assert result.relation == "broken_commitment"
     assert result.strong_mismatch is True
@@ -88,7 +92,11 @@ def test_watcher_rejects_low_confidence_relation() -> None:
         "confidence": .50,
         "roast_fit": .90,
     })
-    result = StatementWatcher(adapter).evaluate(event=event(), candidates=[card()])
+    result = StatementWatcher(adapter).evaluate(
+        event=event(),
+        scene=SceneAnalysis(),
+        candidates=[card()],
+    )
 
     assert result.relation == "none"
     assert result.memory_id is None
@@ -99,7 +107,11 @@ def test_watcher_ignores_candidate_without_evidence_or_wrong_scope() -> None:
     wrong_scope = card(memory_id="c2", scope_id="-999")
     adapter = FakeAdapter(error=AssertionError("model must not be called"))
 
-    result = StatementWatcher(adapter).evaluate(event=event(), candidates=[no_evidence, wrong_scope])
+    result = StatementWatcher(adapter).evaluate(
+        event=event(),
+        scene=SceneAnalysis(),
+        candidates=[no_evidence, wrong_scope],
+    )
 
     assert result.relation == "none"
     assert adapter.calls == []
@@ -107,7 +119,23 @@ def test_watcher_ignores_candidate_without_evidence_or_wrong_scope() -> None:
 
 def test_watcher_failure_is_safe_silence() -> None:
     adapter = FakeAdapter(error=RuntimeError("classifier down"))
-    result = StatementWatcher(adapter).evaluate(event=event(), candidates=[card()])
+    result = StatementWatcher(adapter).evaluate(
+        event=event(),
+        scene=SceneAnalysis(),
+        candidates=[card()],
+    )
 
     assert result.relation == "none"
     assert result.strong_mismatch is False
+
+
+def test_watcher_skips_sensitive_scene_without_model_call() -> None:
+    adapter = FakeAdapter(error=AssertionError("model must not be called"))
+    result = StatementWatcher(adapter).evaluate(
+        event=event(),
+        scene=SceneAnalysis(sensitivity_score=.90),
+        candidates=[card()],
+    )
+
+    assert result.relation == "none"
+    assert adapter.calls == []
