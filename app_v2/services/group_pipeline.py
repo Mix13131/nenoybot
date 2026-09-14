@@ -5,7 +5,7 @@ from datetime import datetime, timezone
 from typing import Any
 
 from app_v2.domain.enums import EventType, PrimaryAction, ResponseMode, ScopeType
-from app_v2.domain.events import EventEnvelope
+from app_v2.domain.events import EventEnvelope, SceneAnalysis
 from app_v2.domain.outbound import OutboundMessage
 from app_v2.services.dispatcher import DispatcherPolicyState, decide
 
@@ -25,7 +25,29 @@ class GroupPipelineResult:
     outbox_id: int | None = None
     outbox_created: bool = False
     selected_memory_ids: tuple[str, ...] = ()
+    mapped_memory_ids: tuple[str, ...] = ()
     generation_failed: bool = False
+
+
+def _should_map_group_memory(event: EventEnvelope, scene: SceneAnalysis) -> bool:
+    text = (event.text or "").strip()
+    if not text:
+        return False
+    lowered = text.lower()
+    if lowered.startswith(("запомни", "remember")) or lowered in {"забудь", "забудь это", "forget it", "forget this"}:
+        return True
+    # Group memory should observe meaningful banter/pattern material even while
+    # the bot stays silent. Keep the gate deterministic so not every message
+    # triggers the memory model.
+    return any(
+        (
+            scene.memory_value >= 0.35,
+            scene.banter_score >= 0.80,
+            scene.contradiction_score >= 0.65,
+            scene.commitment_signal >= 0.60,
+            scene.decision_signal >= 0.60,
+        )
+    )
 
 
 class GroupPipeline:
@@ -43,6 +65,7 @@ class GroupPipeline:
         outbox_repo: Any,
         group_behavior_engine: Any | None = None,
         feedback_collector: Any | None = None,
+        memory_mapper: Any | None = None,
         unsolicited_enabled: bool = False,
     ) -> None:
         self.access_service = access_service
@@ -54,6 +77,7 @@ class GroupPipeline:
         self.outbox_repo = outbox_repo
         self.group_behavior_engine = group_behavior_engine
         self.feedback_collector = feedback_collector
+        self.memory_mapper = memory_mapper
         self.unsolicited_enabled = unsolicited_enabled
 
     def process(self, event: EventEnvelope, *, now: datetime | None = None) -> GroupPipelineResult:
@@ -95,6 +119,10 @@ class GroupPipeline:
         callback_fatigue_minutes = 60
         behavior_memory_ids: tuple[str, ...] = ()
 
+        # Behavior retrieval intentionally happens before mapping the current
+        # message, so НеНой cannot manufacture a callback from the same line it
+        # is reacting to. Mapping still happens even when the final decision is
+        # silence, which is essential for days 1–2 of Friends Test observation.
         if self.group_behavior_engine is not None:
             plan = self.group_behavior_engine.plan(
                 event=event,
@@ -120,6 +148,11 @@ class GroupPipeline:
                 metadata={"group_profile": profile.get("profile", "friends")},
             )
 
+        mapped_memory_ids: tuple[str, ...] = ()
+        if self.memory_mapper is not None and _should_map_group_memory(event, scene):
+            mapper_result = self.memory_mapper.map_event(event)
+            mapped_memory_ids = tuple(card.id for card in mapper_result.written)
+
         decision = decide(event, scene, state)
 
         if decision.primary_action is not PrimaryAction.REPLY:
@@ -133,6 +166,7 @@ class GroupPipeline:
                 extra_metadata={
                     "access_reason": access.reason,
                     "group_behavior_probe_ids": list(behavior_memory_ids),
+                    "mapped_memory_ids": list(mapped_memory_ids),
                 },
             )
             return GroupPipelineResult(
@@ -142,6 +176,7 @@ class GroupPipeline:
                 primary_action=decision.primary_action,
                 mode=decision.mode,
                 selected_memory_ids=behavior_memory_ids,
+                mapped_memory_ids=mapped_memory_ids,
             )
 
         personality = self.personality_engine.build(
@@ -164,6 +199,7 @@ class GroupPipeline:
                 "group_title": group_context.title,
                 "participant_role": group_context.participant.role,
                 "behavior_probe_ids": list(behavior_memory_ids),
+                "mapped_memory_ids": list(mapped_memory_ids),
             },
         )
         if context.scope_type is not ScopeType.GROUP or context.scope_id != event.scope_id:
@@ -185,6 +221,7 @@ class GroupPipeline:
                     "error_type": type(exc).__name__,
                     "access_reason": access.reason,
                     "group_behavior_probe_ids": list(behavior_memory_ids),
+                    "mapped_memory_ids": list(mapped_memory_ids),
                 },
             )
             return GroupPipelineResult(
@@ -194,6 +231,7 @@ class GroupPipeline:
                 primary_action=decision.primary_action,
                 mode=decision.mode,
                 selected_memory_ids=selected_memory_ids,
+                mapped_memory_ids=mapped_memory_ids,
                 generation_failed=True,
             )
 
@@ -207,6 +245,7 @@ class GroupPipeline:
             extra_metadata={
                 "access_reason": access.reason,
                 "group_behavior_probe_ids": list(behavior_memory_ids),
+                "mapped_memory_ids": list(mapped_memory_ids),
             },
         )
         outbound = OutboundMessage(
@@ -233,4 +272,5 @@ class GroupPipeline:
             outbox_id=outbox_id,
             outbox_created=created,
             selected_memory_ids=selected_memory_ids,
+            mapped_memory_ids=mapped_memory_ids,
         )
