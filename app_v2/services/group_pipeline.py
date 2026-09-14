@@ -29,11 +29,11 @@ class GroupPipelineResult:
 
 
 class GroupPipeline:
-    """Silence-first Group orchestration for approved test groups.
+    """Group orchestration for approved test groups.
 
-    Unsolicited participation is disabled by default in TASK 18. Explicit direct
-    mentions/replies still bypass the synthetic cooldown through Dispatcher hard
-    intent logic. No direct Telegram send happens here.
+    With no GroupBehaviorEngine attached, TASK 18 silence-first behavior remains
+    the default. TASK 19 can attach a behavior engine to enable evidence-backed
+    callbacks/roasts under group feature flags and participant gates.
     """
 
     def __init__(
@@ -46,6 +46,7 @@ class GroupPipeline:
         response_generator: Any,
         intervention_repo: Any,
         outbox_repo: Any,
+        group_behavior_engine: Any | None = None,
         unsolicited_enabled: bool = False,
     ) -> None:
         self.access_service = access_service
@@ -55,6 +56,7 @@ class GroupPipeline:
         self.response_generator = response_generator
         self.intervention_repo = intervention_repo
         self.outbox_repo = outbox_repo
+        self.group_behavior_engine = group_behavior_engine
         self.unsolicited_enabled = unsolicited_enabled
 
     def process(self, event: EventEnvelope, *, now: datetime | None = None) -> GroupPipelineResult:
@@ -81,18 +83,35 @@ class GroupPipeline:
         adaptation = participant_profile.get("personality_modifiers")
         if not isinstance(adaptation, dict):
             adaptation = {}
+        memory_usage = "assist"
+        callback_fatigue_minutes = 60
+        behavior_memory_ids: tuple[str, ...] = ()
 
-        muted = bool(group_context.silent_until and group_context.silent_until > current)
-        state = DispatcherPolicyState(
-            group_muted=muted,
-            # TASK 18 deliberately keeps unsolicited intervention disabled.
-            # Explicit mentions/replies bypass this in Dispatcher before cooldown.
-            cooldown_active=(not self.unsolicited_enabled),
-            initiative_level=int(profile.get("initiative", 6) or 6),
-            allow_roast=False,
-            allow_callbacks=False,
-            metadata={"group_profile": profile.get("profile", "friends")},
-        )
+        if self.group_behavior_engine is not None:
+            plan = self.group_behavior_engine.plan(
+                event=event,
+                group_context=group_context,
+                scene=scene,
+                now=current,
+            )
+            scene = plan.scene
+            state = plan.state
+            profile = dict(plan.context_profile)
+            adaptation = dict(plan.participant_adaptation)
+            memory_usage = plan.memory_usage
+            callback_fatigue_minutes = plan.callback_fatigue_minutes
+            behavior_memory_ids = tuple(plan.callback_memory_ids)
+        else:
+            muted = bool(group_context.silent_until and group_context.silent_until > current)
+            state = DispatcherPolicyState(
+                group_muted=muted,
+                cooldown_active=(not self.unsolicited_enabled),
+                initiative_level=int(profile.get("initiative", 6) or 6),
+                allow_roast=False,
+                allow_callbacks=False,
+                metadata={"group_profile": profile.get("profile", "friends")},
+            )
+
         decision = decide(event, scene, state)
 
         if decision.primary_action is not PrimaryAction.REPLY:
@@ -101,9 +120,12 @@ class GroupPipeline:
                 scope_type=event.scope_type,
                 scope_id=event.scope_id,
                 decision=decision,
-                selected_memory_ids=[],
+                selected_memory_ids=list(behavior_memory_ids),
                 generated_text=None,
-                extra_metadata={"access_reason": access.reason, "task18_silence_first": True},
+                extra_metadata={
+                    "access_reason": access.reason,
+                    "group_behavior_probe_ids": list(behavior_memory_ids),
+                },
             )
             return GroupPipelineResult(
                 event_id=event.event_id,
@@ -111,6 +133,7 @@ class GroupPipeline:
                 access_reason=access.reason,
                 primary_action=decision.primary_action,
                 mode=decision.mode,
+                selected_memory_ids=behavior_memory_ids,
             )
 
         personality = self.personality_engine.build(
@@ -127,10 +150,12 @@ class GroupPipeline:
             decision=decision,
             personality=personality,
             subject_keys=subject_keys,
-            memory_usage="assist",
+            memory_usage=memory_usage,
+            callback_fatigue_minutes=callback_fatigue_minutes,
             action_state={
                 "group_title": group_context.title,
                 "participant_role": group_context.participant.role,
+                "behavior_probe_ids": list(behavior_memory_ids),
             },
         )
         if context.scope_type is not ScopeType.GROUP or context.scope_id != event.scope_id:
@@ -151,6 +176,7 @@ class GroupPipeline:
                     "generation_failed": True,
                     "error_type": type(exc).__name__,
                     "access_reason": access.reason,
+                    "group_behavior_probe_ids": list(behavior_memory_ids),
                 },
             )
             return GroupPipelineResult(
@@ -170,7 +196,10 @@ class GroupPipeline:
             decision=decision,
             selected_memory_ids=list(selected_memory_ids),
             generated_text=generated.text,
-            extra_metadata={"access_reason": access.reason},
+            extra_metadata={
+                "access_reason": access.reason,
+                "group_behavior_probe_ids": list(behavior_memory_ids),
+            },
         )
         outbound = OutboundMessage(
             message_id=f"reply:{event.event_id}",
