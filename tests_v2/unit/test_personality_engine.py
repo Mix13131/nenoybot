@@ -13,34 +13,52 @@ def test_personal_default_profile():
     assert state.profanity_frequency == 3
 
 
-def test_group_default_profile():
+def test_group_default_profile_is_entertainment_first():
     state = PersonalityEngine().build(scope_type=ScopeType.GROUP, mode=ResponseMode.GROUP_BANTER)
     assert state.directness == 9
-    assert state.brevity == 7
-    assert state.warmth == 4
-    assert state.roast == 9
+    assert state.brevity == 8
+    assert state.warmth == 3
+    assert state.humor == 10
+    assert state.sarcasm == 10
+    assert state.roast == 10
+    assert state.playfulness == 10
     assert state.profanity_level == 8
     assert state.profanity_frequency == 5
 
 
-def test_group_direct_reply_is_less_terse_than_banter_default():
-    state = PersonalityEngine().build(scope_type=ScopeType.GROUP, mode=ResponseMode.GROUP_DIRECT_REPLY)
-    assert state.brevity == 6
-    assert state.warmth == 5
-
-
-def test_group_roast_stays_short_even_after_conversation_tuning():
-    state = PersonalityEngine().build(scope_type=ScopeType.GROUP, mode=ResponseMode.GROUP_ROAST)
+def test_group_direct_reply_stays_short_and_pushes_banter_axes():
+    state = PersonalityEngine().build(
+        scope_type=ScopeType.GROUP,
+        mode=ResponseMode.GROUP_DIRECT_REPLY,
+        context_profile={"humor": 8, "sarcasm": 8, "roast": 7},
+    )
     assert state.brevity == 9
+    assert state.warmth == 3
+    assert state.humor == 9
+    assert state.sarcasm == 9
+    assert state.roast == 8
+    assert state.playfulness == 10
+
+
+def test_group_roast_stays_short_and_maxed():
+    state = PersonalityEngine().build(scope_type=ScopeType.GROUP, mode=ResponseMode.GROUP_ROAST)
+    assert state.brevity == 10
     assert state.roast == 10
     assert state.sarcasm == 10
 
 
-def test_group_help_allows_more_substance():
-    state = PersonalityEngine().build(scope_type=ScopeType.GROUP, mode=ResponseMode.GROUP_HELP)
-    assert state.brevity == 5
-    assert state.warmth == 6
-    assert state.care == 5
+def test_group_help_remains_concise_instead_of_becoming_a_lecture():
+    state = PersonalityEngine().build(
+        scope_type=ScopeType.GROUP,
+        mode=ResponseMode.GROUP_HELP,
+        context_profile={"humor": 8, "sarcasm": 8, "roast": 7},
+    )
+    assert state.brevity == 9
+    assert state.warmth == 3
+    assert state.care == 3
+    assert state.humor == 9
+    assert state.sarcasm == 9
+    assert state.roast == 8
 
 
 def test_coach_mode_increases_pressure_and_challenge():
