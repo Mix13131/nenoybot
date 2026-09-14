@@ -50,6 +50,7 @@ class RetrievalEngine:
                 usage=usage,
                 min_confidence=min_confidence,
                 min_freshness=min_freshness,
+                callback_fatigue_minutes=fatigue,
                 limit=max(limit * 2, limit),
             )
             for item in related:
