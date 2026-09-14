@@ -78,6 +78,7 @@ class ContextBuilder:
         personality: PersonalityState,
         subject_keys: Iterable[str] = (),
         memory_usage: str = "assist",
+        callback_fatigue_minutes: int = 60,
         action_state: dict[str, Any] | None = None,
     ) -> GenerationContext:
         if not event.scope_id.strip():
@@ -95,6 +96,7 @@ class ContextBuilder:
             event.scope_id,
             usage=memory_usage,
             subject_keys=subject_keys,
+            callback_fatigue_minutes=callback_fatigue_minutes,
             limit=self.memory_max_cards,
         )
         memories, memory_tokens = self._fit_memories(ranked)
