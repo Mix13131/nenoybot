@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import logging
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
 
 from app_v2.domain.enums import EventType, ScopeType
@@ -118,6 +118,7 @@ def test_group_bootstrap_is_noop_without_env(monkeypatch):
     import app_v2.workers.main as worker_main
 
     monkeypatch.delenv("NENOY_V2_BOOTSTRAP_GROUP_TITLE", raising=False)
+    monkeypatch.delenv("NENOY_V2_BOOTSTRAP_RECENT_UNWHITELISTED", raising=False)
 
     class ShouldNotConstruct:
         def __init__(self, conn):
@@ -131,6 +132,7 @@ def test_group_bootstrap_activates_exact_unique_title(monkeypatch):
     import app_v2.workers.main as worker_main
 
     monkeypatch.setenv("NENOY_V2_BOOTSTRAP_GROUP_TITLE", "Лучшие здесь")
+    monkeypatch.delenv("NENOY_V2_BOOTSTRAP_RECENT_UNWHITELISTED", raising=False)
     calls=[]
 
     class FakeRepo:
@@ -159,6 +161,7 @@ def test_group_bootstrap_fails_closed_on_ambiguous_title(monkeypatch):
     import app_v2.workers.main as worker_main
 
     monkeypatch.setenv("NENOY_V2_BOOTSTRAP_GROUP_TITLE", "Лучшие здесь")
+    monkeypatch.delenv("NENOY_V2_BOOTSTRAP_RECENT_UNWHITELISTED", raising=False)
     calls=[]
 
     class FakeRepo:
@@ -175,4 +178,90 @@ def test_group_bootstrap_fails_closed_on_ambiguous_title(monkeypatch):
 
     monkeypatch.setattr(worker_main, "GroupContextRepository", FakeRepo)
     assert _bootstrap_group_from_env(object()) is None
+    assert calls == []
+
+
+def test_group_bootstrap_activates_single_recent_unwhitelisted_group(monkeypatch):
+    import app_v2.workers.main as worker_main
+
+    now = datetime(2026, 9, 14, 15, 0, tzinfo=timezone.utc)
+    monkeypatch.delenv("NENOY_V2_BOOTSTRAP_GROUP_TITLE", raising=False)
+    monkeypatch.setenv("NENOY_V2_BOOTSTRAP_RECENT_UNWHITELISTED", "1")
+    monkeypatch.setenv("NENOY_V2_BOOTSTRAP_RECENT_MINUTES", "60")
+    calls=[]
+
+    class FakeRepo:
+        def __init__(self, conn):
+            pass
+        def list_groups(self, limit=100):
+            return [
+                SimpleNamespace(
+                    title="Группа НеНой Тест",
+                    telegram_chat_id="-1",
+                    is_whitelisted=True,
+                    is_active=True,
+                    updated_at=now - timedelta(minutes=5),
+                ),
+                SimpleNamespace(
+                    title="Неизвестное реальное имя",
+                    telegram_chat_id="-2",
+                    is_whitelisted=False,
+                    is_active=True,
+                    updated_at=now - timedelta(minutes=8),
+                ),
+                SimpleNamespace(
+                    title="Старая группа",
+                    telegram_chat_id="-3",
+                    is_whitelisted=False,
+                    is_active=True,
+                    updated_at=now - timedelta(hours=3),
+                ),
+            ]
+        def configure_friends_test(self, telegram_chat_id, *, profile, enabled=True):
+            calls.append((telegram_chat_id, profile, enabled))
+            return True
+
+    monkeypatch.setattr(worker_main, "GroupContextRepository", FakeRepo)
+    result = _bootstrap_group_from_env(object(), now=now)
+
+    assert result == {"title": "Неизвестное реальное имя", "telegram_chat_id": "-2"}
+    assert len(calls) == 1
+    assert calls[0][0] == "-2"
+    assert calls[0][2] is True
+
+
+def test_group_bootstrap_recent_mode_fails_closed_when_ambiguous(monkeypatch):
+    import app_v2.workers.main as worker_main
+
+    now = datetime(2026, 9, 14, 15, 0, tzinfo=timezone.utc)
+    monkeypatch.delenv("NENOY_V2_BOOTSTRAP_GROUP_TITLE", raising=False)
+    monkeypatch.setenv("NENOY_V2_BOOTSTRAP_RECENT_UNWHITELISTED", "1")
+    calls=[]
+
+    class FakeRepo:
+        def __init__(self, conn):
+            pass
+        def list_groups(self, limit=100):
+            return [
+                SimpleNamespace(
+                    title="Новая 1",
+                    telegram_chat_id="-2",
+                    is_whitelisted=False,
+                    is_active=True,
+                    updated_at=now - timedelta(minutes=5),
+                ),
+                SimpleNamespace(
+                    title="Новая 2",
+                    telegram_chat_id="-3",
+                    is_whitelisted=False,
+                    is_active=True,
+                    updated_at=now - timedelta(minutes=7),
+                ),
+            ]
+        def configure_friends_test(self, telegram_chat_id, *, profile, enabled=True):
+            calls.append(telegram_chat_id)
+            return True
+
+    monkeypatch.setattr(worker_main, "GroupContextRepository", FakeRepo)
+    assert _bootstrap_group_from_env(object(), now=now) is None
     assert calls == []

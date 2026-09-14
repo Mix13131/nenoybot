@@ -4,6 +4,7 @@ import logging
 import os
 import time
 from dataclasses import dataclass
+from datetime import datetime, timedelta, timezone
 from typing import Any
 
 from app_v2.adapters.postgres import connect
@@ -44,37 +45,11 @@ def _configure_logging() -> None:
         logging.getLogger(name).setLevel(logging.WARNING)
 
 
-def _bootstrap_group_from_env(conn) -> dict[str, str] | None:
-    """Optionally activate exactly one previously ingested group by title.
+def _truthy_env(name: str) -> bool:
+    return (os.getenv(name) or "").strip().lower() in {"1", "true", "yes", "on"}
 
-    This is an ops escape hatch for controlled onboarding when Railway does not
-    expose one-off container exec. It is deliberately exact-match and fails
-    closed on zero or multiple matches. The env var should be cleared after the
-    successful deploy; repeated execution is idempotent while it remains set.
-    """
 
-    title = (os.getenv("NENOY_V2_BOOTSTRAP_GROUP_TITLE") or "").strip()
-    if not title:
-        return None
-
-    repo = GroupContextRepository(conn)
-    matches = [
-        row
-        for row in repo.list_groups(limit=100)
-        if (row.title or "").strip() == title
-    ]
-    if not matches:
-        logger.warning("group bootstrap skipped: title not found title=%r", title)
-        return None
-    if len(matches) != 1:
-        logger.error(
-            "group bootstrap skipped: ambiguous title=%r matches=%d",
-            title,
-            len(matches),
-        )
-        return None
-
-    match = matches[0]
+def _activate_group(repo: GroupContextRepository, match, *, reason: str) -> dict[str, str] | None:
     changed = repo.configure_friends_test(
         match.telegram_chat_id,
         profile=FRIENDS_DAY1_PROFILE,
@@ -82,18 +57,88 @@ def _bootstrap_group_from_env(conn) -> dict[str, str] | None:
     )
     if not changed:
         logger.error(
-            "group bootstrap failed: title=%r telegram_chat_id=%s",
-            title,
+            "group bootstrap failed reason=%s title=%r telegram_chat_id=%s",
+            reason,
+            match.title,
             match.telegram_chat_id,
         )
         return None
 
-    logger.info(
-        "group bootstrap activated title=%r telegram_chat_id=%s",
-        title,
+    logger.warning(
+        "group bootstrap activated reason=%s title=%r telegram_chat_id=%s",
+        reason,
+        match.title,
         match.telegram_chat_id,
     )
-    return {"title": title, "telegram_chat_id": str(match.telegram_chat_id)}
+    return {
+        "title": str(match.title or ""),
+        "telegram_chat_id": str(match.telegram_chat_id),
+    }
+
+
+def _bootstrap_group_from_env(conn, *, now: datetime | None = None) -> dict[str, str] | None:
+    """Optionally activate exactly one previously ingested group.
+
+    Preferred mode is an exact title match. For controlled onboarding after a
+    fresh Telegram update, ops can instead request the single recent active,
+    non-whitelisted group. Both modes fail closed on zero or multiple matches.
+    Bootstrap env vars are temporary and should be cleared after use.
+    """
+
+    title = (os.getenv("NENOY_V2_BOOTSTRAP_GROUP_TITLE") or "").strip()
+    recent = _truthy_env("NENOY_V2_BOOTSTRAP_RECENT_UNWHITELISTED")
+    if not title and not recent:
+        return None
+
+    repo = GroupContextRepository(conn)
+    rows = repo.list_groups(limit=100)
+
+    if title:
+        matches = [row for row in rows if (row.title or "").strip() == title]
+        if not matches:
+            logger.warning("group bootstrap skipped: title not found title=%r", title)
+            return None
+        if len(matches) != 1:
+            logger.error(
+                "group bootstrap skipped: ambiguous title=%r matches=%d",
+                title,
+                len(matches),
+            )
+            return None
+        return _activate_group(repo, matches[0], reason="exact_title")
+
+    minutes = _int_env("NENOY_V2_BOOTSTRAP_RECENT_MINUTES", 60)
+    minutes = max(1, min(minutes, 180))
+    current = now or datetime.now(timezone.utc)
+    cutoff = current - timedelta(minutes=minutes)
+
+    matches = []
+    for row in rows:
+        updated_at = row.updated_at
+        if updated_at.tzinfo is None:
+            updated_at = updated_at.replace(tzinfo=timezone.utc)
+        if (
+            not row.is_whitelisted
+            and row.is_active
+            and updated_at >= cutoff
+        ):
+            matches.append(row)
+
+    if not matches:
+        logger.warning(
+            "group bootstrap skipped: no recent unwhitelisted group within %d minutes",
+            minutes,
+        )
+        return None
+    if len(matches) != 1:
+        logger.error(
+            "group bootstrap skipped: recent unwhitelisted group is ambiguous matches=%d window_minutes=%d",
+            len(matches),
+            minutes,
+        )
+        return None
+
+    return _activate_group(repo, matches[0], reason="recent_unwhitelisted")
 
 
 @dataclass
