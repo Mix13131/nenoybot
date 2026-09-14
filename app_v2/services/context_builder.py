@@ -1,0 +1,174 @@
+from __future__ import annotations
+
+from dataclasses import asdict, dataclass
+from typing import Any, Iterable
+
+from app_v2.domain.decisions import DispatcherDecision
+from app_v2.domain.enums import ScopeType
+from app_v2.domain.events import EventEnvelope, SceneAnalysis
+from app_v2.domain.personality import PersonalityState
+from app_v2.repositories.message_repo import HotMessage
+from app_v2.repositories.memory_repo import RankedMemory
+
+
+def estimate_tokens(text: str) -> int:
+    """Cheap deterministic budget estimate; avoids adding tokenizer dependency in MVP."""
+    if not text:
+        return 0
+    return max(1, (len(text) + 3) // 4)
+
+
+@dataclass(frozen=True)
+class GenerationMemory:
+    id: str
+    memory_type: str
+    summary: str
+    confidence: float
+    importance: float
+    evidence: tuple[dict[str, Any], ...]
+
+
+@dataclass(frozen=True)
+class GenerationContext:
+    scope_type: ScopeType
+    scope_id: str
+    event: dict[str, Any]
+    scene: dict[str, Any]
+    decision: dict[str, Any]
+    personality: dict[str, Any]
+    hot_messages: tuple[dict[str, Any], ...]
+    memories: tuple[GenerationMemory, ...]
+    target_user_id: str | None
+    action_state: dict[str, Any]
+    estimated_hot_tokens: int
+    estimated_memory_tokens: int
+
+    def as_dict(self) -> dict[str, Any]:
+        data = asdict(self)
+        data["scope_type"] = self.scope_type.value
+        return data
+
+
+class ContextBuilder:
+    def __init__(
+        self,
+        *,
+        message_repo: Any,
+        retrieval_engine: Any,
+        hot_max_messages: int = 100,
+        hot_token_budget: int = 4000,
+        memory_min_cards: int = 3,
+        memory_max_cards: int = 8,
+        memory_token_budget: int = 1200,
+    ) -> None:
+        self.message_repo = message_repo
+        self.retrieval_engine = retrieval_engine
+        self.hot_max_messages = max(1, hot_max_messages)
+        self.hot_token_budget = max(100, hot_token_budget)
+        self.memory_min_cards = max(1, memory_min_cards)
+        self.memory_max_cards = max(self.memory_min_cards, memory_max_cards)
+        self.memory_token_budget = max(100, memory_token_budget)
+
+    def build(
+        self,
+        *,
+        event: EventEnvelope,
+        scene: SceneAnalysis,
+        decision: DispatcherDecision,
+        personality: PersonalityState,
+        subject_keys: Iterable[str] = (),
+        memory_usage: str = "assist",
+        action_state: dict[str, Any] | None = None,
+    ) -> GenerationContext:
+        if not event.scope_id.strip():
+            raise ValueError("event.scope_id must not be empty")
+
+        hot = self.message_repo.recent_for_scope(
+            event.scope_type,
+            event.scope_id,
+            limit=self.hot_max_messages,
+        )
+        hot_messages, hot_tokens = self._fit_hot(hot)
+
+        ranked = self.retrieval_engine.retrieve(
+            event.scope_type,
+            event.scope_id,
+            usage=memory_usage,
+            subject_keys=subject_keys,
+            limit=self.memory_max_cards,
+        )
+        memories, memory_tokens = self._fit_memories(ranked)
+
+        return GenerationContext(
+            scope_type=event.scope_type,
+            scope_id=event.scope_id,
+            event=event.model_dump(mode="json"),
+            scene=scene.model_dump(mode="json"),
+            decision=decision.model_dump(mode="json"),
+            personality=personality.model_dump(mode="json"),
+            hot_messages=tuple(hot_messages),
+            memories=tuple(memories),
+            target_user_id=decision.target_user_id,
+            action_state=dict(action_state or {}),
+            estimated_hot_tokens=hot_tokens,
+            estimated_memory_tokens=memory_tokens,
+        )
+
+    def _fit_hot(self, messages: list[HotMessage]) -> tuple[list[dict[str, Any]], int]:
+        selected: list[dict[str, Any]] = []
+        used = 0
+        for item in reversed(messages):
+            text = item.text.strip()
+            cost = estimate_tokens(text) + 12
+            if selected and used + cost > self.hot_token_budget:
+                break
+            if cost > self.hot_token_budget:
+                text = text[-self.hot_token_budget * 4 :]
+                cost = estimate_tokens(text)
+            selected.append(
+                {
+                    "message_id": item.message_id,
+                    "author_user_id": item.author_user_id,
+                    "text": text,
+                    "created_at": item.created_at.isoformat(),
+                    "reply_to_message_id": item.reply_to_message_id,
+                }
+            )
+            used += cost
+            if len(selected) >= self.hot_max_messages:
+                break
+        selected.reverse()
+        return selected, used
+
+    def _fit_memories(self, ranked: list[RankedMemory]) -> tuple[list[GenerationMemory], int]:
+        selected: list[GenerationMemory] = []
+        used = 0
+        for ranked_item in ranked[: self.memory_max_cards]:
+            card = ranked_item.card
+            evidence = tuple(
+                {
+                    "message_id": item.message_id,
+                    "author_id": item.author_id,
+                    "timestamp": item.timestamp.isoformat(),
+                    "excerpt": item.excerpt,
+                }
+                for item in card.evidence[:3]
+            )
+            evidence_text = " ".join(str(item.get("excerpt", "")) for item in evidence)
+            cost = estimate_tokens(card.summary) + estimate_tokens(evidence_text) + 18
+            if selected and used + cost > self.memory_token_budget:
+                break
+            if cost > self.memory_token_budget:
+                continue
+            selected.append(
+                GenerationMemory(
+                    id=card.id,
+                    memory_type=card.memory_type,
+                    summary=card.summary,
+                    confidence=card.confidence,
+                    importance=card.importance,
+                    evidence=evidence,
+                )
+            )
+            used += cost
+        return selected, used
