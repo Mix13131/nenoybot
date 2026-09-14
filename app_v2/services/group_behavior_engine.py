@@ -10,7 +10,8 @@ from app_v2.repositories.group_context_repo import GroupContext
 from app_v2.services.dispatcher import DispatcherPolicyState
 
 
-_CALLBACK_TYPES = {"running_joke", "pattern", "contradiction", "commitment", "quote"}
+_CALLBACK_TYPES = {"running_joke", "pattern", "contradiction", "commitment", "decision", "quote"}
+_STATEMENT_TYPES = {"commitment", "decision", "quote", "contradiction", "observation"}
 
 
 def _int(value: Any, default: int, *, low: int = 0, high: int = 10) -> int:
@@ -35,6 +36,18 @@ def _bool(value: Any, default: bool = False) -> bool:
     return bool(value)
 
 
+def _is_grounded_callback_card(item: Any) -> bool:
+    card = item.card
+    if card.memory_type not in _CALLBACK_TYPES:
+        return False
+    # Commitments/decisions/quotes are grounded by an exact Telegram message.
+    # Let a slightly lower confidence through to StatementWatcher, which then
+    # performs a second strict comparison before any unsolicited intervention.
+    if card.memory_type in _STATEMENT_TYPES and card.evidence:
+        return card.confidence >= 0.68
+    return card.confidence >= 0.75
+
+
 @dataclass(frozen=True)
 class GroupBehaviorPlan:
     scene: SceneAnalysis
@@ -44,14 +57,21 @@ class GroupBehaviorPlan:
     callback_memory_ids: tuple[str, ...]
     context_profile: dict[str, Any]
     participant_adaptation: dict[str, int | float]
+    statement_watch: dict[str, Any] | None = None
 
 
 class GroupBehaviorEngine:
     """Build deterministic Group behavior state from profile, memory and history."""
 
-    def __init__(self, retrieval_engine: Any, initiative_service: Any | None = None) -> None:
+    def __init__(
+        self,
+        retrieval_engine: Any,
+        initiative_service: Any | None = None,
+        statement_watcher: Any | None = None,
+    ) -> None:
         self.retrieval_engine = retrieval_engine
         self.initiative_service = initiative_service
+        self.statement_watcher = statement_watcher
 
     def plan(
         self,
@@ -121,24 +141,36 @@ class GroupBehaviorEngine:
                     usage="callback",
                     subject_keys=subject_keys,
                     callback_fatigue_minutes=fatigue,
-                    limit=4,
+                    limit=6,
                 )
             except Exception:
                 probe = []
                 memory_unavailable = True
                 policy_degraded = True
 
-        callback_cards = [
-            item for item in probe
-            if item.card.memory_type in _CALLBACK_TYPES and item.card.confidence >= 0.75
-        ]
-        callback_ids = tuple(item.card.id for item in callback_cards)
+        callback_cards = [item for item in probe if _is_grounded_callback_card(item)]
         running_joke_fit = any(item.card.memory_type == "running_joke" for item in callback_cards)
         broken_commitment = any(
             item.card.memory_type == "commitment"
             and str(item.card.payload.get("status", "")).lower() in {"broken", "overdue", "missed"}
             for item in callback_cards
         )
+
+        statement_watch_result = None
+        statement_watch_state: dict[str, Any] | None = None
+        statement_cards = [item.card for item in callback_cards if item.card.memory_type in _STATEMENT_TYPES]
+        if (
+            self.statement_watcher is not None
+            and statement_cards
+            and not policy_degraded
+            and not silence_requested
+        ):
+            statement_watch_result = self.statement_watcher.evaluate(
+                event=event,
+                candidates=statement_cards,
+            )
+            if statement_watch_result.relation != "none":
+                statement_watch_state = statement_watch_result.as_action_state()
 
         allow_callbacks = (
             not policy_degraded
@@ -156,12 +188,30 @@ class GroupBehaviorEngine:
         )
 
         if allow_callbacks:
-            changes: dict[str, float] = {
-                "callback_opportunity": max(effective_scene.callback_opportunity, 0.82)
-            }
-            if running_joke_fit and allow_roast:
-                changes["roast_opportunity"] = max(effective_scene.roast_opportunity, 0.80)
-            effective_scene = effective_scene.model_copy(update=changes)
+            changes: dict[str, float] = {}
+            # A stored joke may be casually reusable. Statement memories are
+            # stricter: they only raise callback score when the watcher proves a
+            # real relation to the current message.
+            if running_joke_fit:
+                changes["callback_opportunity"] = max(effective_scene.callback_opportunity, 0.82)
+                if allow_roast:
+                    changes["roast_opportunity"] = max(effective_scene.roast_opportunity, 0.80)
+
+            if statement_watch_result is not None:
+                relation = statement_watch_result.relation
+                confidence = statement_watch_result.confidence
+                if relation == "callback" and confidence >= 0.82:
+                    changes["callback_opportunity"] = max(effective_scene.callback_opportunity, 0.84)
+                elif relation in {"contradiction", "broken_commitment"} and confidence >= 0.80:
+                    changes["callback_opportunity"] = max(effective_scene.callback_opportunity, 0.94)
+                    changes["contradiction_score"] = max(effective_scene.contradiction_score, 0.90)
+                    if allow_roast and statement_watch_result.roast_fit >= 0.60:
+                        changes["roast_opportunity"] = max(effective_scene.roast_opportunity, 0.86)
+                    if relation == "broken_commitment":
+                        broken_commitment = True
+
+            if changes:
+                effective_scene = effective_scene.model_copy(update=changes)
 
         if dynamic is not None:
             muted = dynamic.group_muted
@@ -189,8 +239,28 @@ class GroupBehaviorEngine:
             ignored_recent = 0
             dynamic_metadata = {}
 
+        # A high-confidence caught contradiction is exactly the rare moment the
+        # product is meant to notice by itself. Bypass the ordinary unsolicited
+        # cooldown, but never mute/hard-limit/safety gates or feature opt-out.
+        priority_statement = bool(
+            statement_watch_result
+            and statement_watch_result.strong_mismatch
+            and unsolicited_enabled
+            and not muted
+            and safe_scene
+        )
+        if priority_statement and not policy_degraded:
+            cooldown_active = False
+
         if policy_degraded:
             cooldown_active = True
+
+        callback_ids = tuple(item.card.id for item in callback_cards)
+        if statement_watch_result and statement_watch_result.memory_id:
+            callback_ids = (
+                statement_watch_result.memory_id,
+                *tuple(item for item in callback_ids if item != statement_watch_result.memory_id),
+            )
 
         state = DispatcherPolicyState(
             group_muted=muted,
@@ -210,6 +280,8 @@ class GroupBehaviorEngine:
                 "unsolicited_enabled": unsolicited_enabled,
                 "roast_tolerance": roast_tolerance,
                 "callback_probe_ids": list(callback_ids),
+                "statement_watch": statement_watch_state,
+                "priority_statement": priority_statement,
                 "policy_degraded": policy_degraded,
                 "memory_unavailable": memory_unavailable,
                 "initiative_unavailable": initiative_unavailable,
@@ -225,4 +297,5 @@ class GroupBehaviorEngine:
             callback_memory_ids=callback_ids if not policy_degraded else (),
             context_profile=profile,
             participant_adaptation=adaptation,
+            statement_watch=statement_watch_state,
         )
