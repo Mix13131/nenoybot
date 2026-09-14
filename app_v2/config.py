@@ -24,6 +24,8 @@ class AppConfig:
     openai_timeout_seconds: float = 30.0
     telegram_bot_username: str | None = None
     telegram_bot_user_id: str | None = None
+    telegram_bot_token: str | None = None
+    database_url: str | None = None
 
     @property
     def service_name(self) -> str:
@@ -46,10 +48,8 @@ def _positive_float(source: dict[str, str] | os._Environ[str], name: str, defaul
 def load_config(environ: dict[str, str] | None = None) -> AppConfig:
     """Load v2 runtime configuration from environment variables.
 
-    Test/development modes require no real credentials. Production requires the
-    Telegram webhook secret so a production web process cannot start in an
-    accidentally insecure state. OpenAI credentials remain optional until an AI
-    adapter is actually invoked.
+    Development/test can run with fakes and no real credentials. Production is
+    intentionally strict so Railway cannot start a half-connected v2 runtime.
     """
 
     source = os.environ if environ is None else environ
@@ -66,10 +66,29 @@ def load_config(environ: dict[str, str] | None = None) -> AppConfig:
         raise ConfigurationError("NENOY_V2_APP_NAME must not be empty.")
 
     webhook_secret = (source.get("NENOY_V2_WEBHOOK_SECRET") or "").strip() or None
-    if environment == "production" and not webhook_secret:
-        raise ConfigurationError(
-            "NENOY_V2_WEBHOOK_SECRET is required when NENOY_V2_ENV=production."
-        )
+    openai_api_key = (source.get("NENOY_V2_OPENAI_API_KEY") or "").strip() or None
+    telegram_bot_token = (source.get("NENOY_V2_TELEGRAM_BOT_TOKEN") or "").strip() or None
+    database_url = (source.get("NENOY_V2_DATABASE_URL") or "").strip() or None
+
+    bot_username = (source.get("NENOY_V2_TELEGRAM_BOT_USERNAME") or "").strip().lstrip("@") or None
+    bot_user_id = (source.get("NENOY_V2_TELEGRAM_BOT_USER_ID") or "").strip() or None
+
+    if environment == "production":
+        required = {
+            "NENOY_V2_WEBHOOK_SECRET": webhook_secret,
+            "NENOY_V2_DATABASE_URL": database_url,
+            "NENOY_V2_OPENAI_API_KEY": openai_api_key,
+            "NENOY_V2_TELEGRAM_BOT_TOKEN": telegram_bot_token,
+        }
+        missing = [name for name, value in required.items() if not value]
+        if missing:
+            raise ConfigurationError(
+                "Production requires: " + ", ".join(missing)
+            )
+        if not (bot_username or bot_user_id):
+            raise ConfigurationError(
+                "Production requires NENOY_V2_TELEGRAM_BOT_USERNAME or NENOY_V2_TELEGRAM_BOT_USER_ID"
+            )
 
     def model(name: str, default: str) -> str:
         value = (source.get(name) or default).strip()
@@ -77,14 +96,11 @@ def load_config(environ: dict[str, str] | None = None) -> AppConfig:
             raise ConfigurationError(f"{name} must not be empty")
         return value
 
-    bot_username = (source.get("NENOY_V2_TELEGRAM_BOT_USERNAME") or "").strip().lstrip("@") or None
-    bot_user_id = (source.get("NENOY_V2_TELEGRAM_BOT_USER_ID") or "").strip() or None
-
     return AppConfig(
         environment=environment,
         app_name=app_name,
         webhook_secret=webhook_secret,
-        openai_api_key=(source.get("NENOY_V2_OPENAI_API_KEY") or "").strip() or None,
+        openai_api_key=openai_api_key,
         model_classifier=model("NENOY_V2_MODEL_CLASSIFIER", "gpt-5.6-luna"),
         model_memory=model("NENOY_V2_MODEL_MEMORY", "gpt-5.6-luna"),
         model_generator=model("NENOY_V2_MODEL_GENERATOR", "gpt-5.6-terra"),
@@ -96,4 +112,6 @@ def load_config(environ: dict[str, str] | None = None) -> AppConfig:
         ),
         telegram_bot_username=bot_username,
         telegram_bot_user_id=bot_user_id,
+        telegram_bot_token=telegram_bot_token,
+        database_url=database_url,
     )

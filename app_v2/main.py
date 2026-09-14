@@ -5,6 +5,7 @@ from typing import Any
 
 from fastapi import FastAPI, Header, HTTPException
 
+from .adapters.postgres import connect
 from .config import AppConfig, load_config
 from .services.event_ingestor import ingest_telegram_update
 
@@ -23,10 +24,24 @@ def health() -> dict[str, str]:
 
 @app.get("/ready")
 def ready() -> dict[str, str]:
+    # Development/test can intentionally run without a real DB. Production
+    # config cannot, so Railway readiness becomes a real dependency check.
+    database_status = "not_configured"
+    if config.database_url:
+        try:
+            with connect(config.database_url, connect_timeout=3) as conn:
+                row = conn.execute("SELECT 1").fetchone()
+                if not row or int(row[0]) != 1:
+                    raise RuntimeError("unexpected PostgreSQL readiness result")
+            database_status = "ok"
+        except Exception as exc:
+            raise HTTPException(status_code=503, detail="PostgreSQL not ready") from exc
+
     return {
         "status": "ready",
         "service": config.service_name,
         "environment": config.environment,
+        "database": database_status,
     }
 
 
@@ -47,8 +62,12 @@ def telegram_webhook(
     ),
 ) -> dict[str, str | None]:
     _verify_webhook_secret(x_telegram_bot_api_secret_token)
-    return ingest_telegram_update(
-        update,
-        bot_username=config.telegram_bot_username,
-        bot_user_id=config.telegram_bot_user_id,
-    ).as_dict()
+    ingest_kwargs: dict[str, Any] = {
+        "bot_username": config.telegram_bot_username,
+        "bot_user_id": config.telegram_bot_user_id,
+    }
+    # Preserve the existing call contract in local/test mode; production has an
+    # explicit DB URL and passes it through rather than relying on ambient env.
+    if config.database_url:
+        ingest_kwargs["database_url"] = config.database_url
+    return ingest_telegram_update(update, **ingest_kwargs).as_dict()
