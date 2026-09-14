@@ -32,6 +32,16 @@ class FakeRetrieval:
         return [m for m in self.memories if m.card.scope_type is scope_type and m.card.scope_id == scope_id]
 
 
+class FailingMessageRepo:
+    def recent_for_scope(self, *args, **kwargs):
+        raise RuntimeError("messages unavailable")
+
+
+class FailingRetrieval:
+    def retrieve(self, *args, **kwargs):
+        raise RuntimeError("memory unavailable")
+
+
 def _event(scope_type=ScopeType.PERSONAL, scope_id="u1"):
     return EventEnvelope(
         event_id="evt1",
@@ -172,3 +182,31 @@ def test_context_contains_decision_personality_and_target():
     assert context.decision["primary_action"] == "reply"
     assert context.personality["directness"] == 8
     assert context.action_state == {"task": "demo"}
+
+
+def test_memory_failure_degrades_to_empty_memory_without_fabrication():
+    context = ContextBuilder(
+        message_repo=FakeMessageRepo([]),
+        retrieval_engine=FailingRetrieval(),
+    ).build(
+        event=_event(),
+        scene=SceneAnalysis(),
+        decision=_decision(),
+        personality=PersonalityEngine().build(scope_type=ScopeType.PERSONAL, mode=ResponseMode.ASSISTANT),
+    )
+    assert context.memories == ()
+    assert context.action_state["_degraded_context"]["memory_unavailable"] is True
+
+
+def test_hot_history_failure_does_not_block_direct_context_build():
+    context = ContextBuilder(
+        message_repo=FailingMessageRepo(),
+        retrieval_engine=FakeRetrieval([]),
+    ).build(
+        event=_event(),
+        scene=SceneAnalysis(),
+        decision=_decision(),
+        personality=PersonalityEngine().build(scope_type=ScopeType.PERSONAL, mode=ResponseMode.ASSISTANT),
+    )
+    assert context.hot_messages == ()
+    assert context.action_state["_degraded_context"]["hot_messages_unavailable"] is True
