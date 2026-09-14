@@ -12,8 +12,12 @@ from app_v2.domain.events import EventEnvelope
 _USERNAME_RE = re.compile(r"@([A-Za-z0-9_]{5,32})")
 _REMINDER_INTENT_RE = re.compile(r"\b(?:напоминай|напомни)\b", flags=re.IGNORECASE)
 _CANCEL_REMINDER_RE = re.compile(
-    r"(?:\b(?:отмени|отменяй|останови|остановить|хватит|перестань|прекрати|стоп)\b.*\bнапомин\w*|\bне\s+напоминай\b)",
-    flags=re.IGNORECASE,
+    r"(?:"
+    r"\b(?:отмени|отменяй|останови|остановить|хватит|перестань|прекрати|стоп|достаточно)\b.{0,120}\bнапомин\w*"
+    r"|\bне\s+напоминай\b"
+    r"|\bгоршочек[\s,]+не\s+вари\b.{0,160}\bнапомин\w*"
+    r")",
+    flags=re.IGNORECASE | re.DOTALL,
 )
 _EVERY_HALF_HOUR_RE = re.compile(r"\bкажд\w*\s+пол\s*час", flags=re.IGNORECASE)
 _EVERY_INTERVAL_RE = re.compile(
