@@ -33,6 +33,7 @@ from app_v2.services.personality_engine import PersonalityEngine
 from app_v2.services.response_generator import ResponseGenerator
 from app_v2.services.retrieval_engine import RetrievalEngine
 from app_v2.services.scene_analyzer import SceneAnalyzer
+from app_v2.services.statement_watcher import StatementWatcher
 
 
 @dataclass(frozen=True)
@@ -131,6 +132,7 @@ def build_runtime(conn: Any, config: AppConfig) -> RuntimeComponents:
         group_behavior_engine=GroupBehaviorEngine(
             retrieval_engine,
             initiative_service=GroupInitiativeService(group_initiative_repo),
+            statement_watcher=StatementWatcher(adapter),
         ),
         feedback_collector=feedback_collector,
         memory_mapper=memory_mapper,
