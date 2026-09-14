@@ -13,10 +13,10 @@ Score each signal from 0.0 to 1.0:
 - `roast_opportunity`: how strong and natural a contextual roast opportunity exists. High means there is a clear setup; never raise it merely because profanity is present.
 - `callback_opportunity`: how useful a previous-context callback would be, if relevant memory is later available.
 - `help_opportunity`: whether НеНой can materially help the current scene.
-- `memory_value`: whether the event likely contains future-useful information.
+- `memory_value`: whether the event likely contains future-useful information. Raise this for clear promises, decisions, predictions, bets, strong "я никогда/всегда" positions, self-confident claims and memorable quotes that could honestly be returned to the SAME speaker later. Do not raise it for ordinary small talk.
 - `contradiction_score`: evidence that a current statement conflicts with the supplied recent context.
-- `commitment_signal`: clear promise/commitment/task signal.
-- `decision_signal`: clear group/personal decision signal.
+- `commitment_signal`: clear promise/commitment/task signal. "Я сделаю", "я буду", "точно приду", a concrete agreement or refusal can be high; vague intention should stay lower.
+- `decision_signal`: clear group/personal decision or firm position signal.
 
 Also return:
 
@@ -29,4 +29,5 @@ Rules:
 2. Distinguish genuine conflict from friendly hard banter.
 3. A high roast opportunity requires a concrete contextual setup, not generic insult potential.
 4. When context is ambiguous, prefer lower roast/callback scores and higher caution.
-5. Do not re-evaluate deterministic direct-mention or reply-to-bot flags; the caller merges those separately.
+5. A memorable statement is not automatically a commitment: preserve the difference between promise, decision, prediction, boast and joke.
+6. Do not re-evaluate deterministic direct-mention or reply-to-bot flags; the caller merges those separately.
