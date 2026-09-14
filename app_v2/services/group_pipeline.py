@@ -4,7 +4,7 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any
 
-from app_v2.domain.enums import PrimaryAction, ResponseMode, ScopeType
+from app_v2.domain.enums import EventType, PrimaryAction, ResponseMode, ScopeType
 from app_v2.domain.events import EventEnvelope
 from app_v2.domain.outbound import OutboundMessage
 from app_v2.services.dispatcher import DispatcherPolicyState, decide
@@ -29,12 +29,7 @@ class GroupPipelineResult:
 
 
 class GroupPipeline:
-    """Group orchestration for approved test groups.
-
-    With no GroupBehaviorEngine attached, TASK 18 silence-first behavior remains
-    the default. TASK 19 can attach a behavior engine to enable evidence-backed
-    callbacks/roasts under group feature flags and participant gates.
-    """
+    """Group orchestration for approved test groups."""
 
     def __init__(
         self,
@@ -47,6 +42,7 @@ class GroupPipeline:
         intervention_repo: Any,
         outbox_repo: Any,
         group_behavior_engine: Any | None = None,
+        feedback_collector: Any | None = None,
         unsolicited_enabled: bool = False,
     ) -> None:
         self.access_service = access_service
@@ -57,6 +53,7 @@ class GroupPipeline:
         self.intervention_repo = intervention_repo
         self.outbox_repo = outbox_repo
         self.group_behavior_engine = group_behavior_engine
+        self.feedback_collector = feedback_collector
         self.unsolicited_enabled = unsolicited_enabled
 
     def process(self, event: EventEnvelope, *, now: datetime | None = None) -> GroupPipelineResult:
@@ -74,6 +71,17 @@ class GroupPipeline:
                 allowed=False,
                 access_reason=access.reason,
             )
+
+        if self.feedback_collector is not None:
+            self.feedback_collector.collect(event)
+            # Reactions are feedback transport, not conversational prompts.
+            if event.event_type in {EventType.REACTION_ADDED, EventType.REACTION_REMOVED}:
+                return GroupPipelineResult(
+                    event_id=event.event_id,
+                    allowed=True,
+                    access_reason="feedback_collected",
+                    primary_action=PrimaryAction.IGNORE,
+                )
 
         group_context = access.context
         scene = self.scene_analyzer.analyze(event)

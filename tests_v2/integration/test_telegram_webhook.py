@@ -48,12 +48,51 @@ def test_normalize_group_reply_to_bot_and_mentions() -> None:
             },
         },
     }
-    normalized = normalize_update(update)
+    normalized = normalize_update(update, bot_username="nenoy")
     assert normalized is not None
     assert normalized.envelope.event_type is EventType.REPLY_TO_BOT
     assert normalized.envelope.scope_type is ScopeType.GROUP
     assert normalized.envelope.metadata["reply_to_bot"] is True
+    assert normalized.envelope.metadata["direct_mention"] is True
     assert normalized.envelope.metadata["mentions"][0]["type"] == "mention"
+
+
+def test_normalize_configured_group_mention_as_direct_mention() -> None:
+    update = {
+        "update_id": 106,
+        "message": {
+            "message_id": 9,
+            "date": 1720000002,
+            "from": {"id": 22, "first_name": "Серёга", "is_bot": False},
+            "chat": {"id": -10055, "type": "supergroup", "title": "Друзья"},
+            "text": "@NeNoy а ты что думаешь?",
+            "entities": [{"type": "mention", "offset": 0, "length": 6}],
+        },
+    }
+    normalized = normalize_update(update, bot_username="nenoy")
+    assert normalized is not None
+    assert normalized.envelope.event_type is EventType.DIRECT_MENTION
+    assert normalized.envelope.metadata["direct_mention"] is True
+
+
+def test_normalize_text_mention_by_configured_bot_user_id() -> None:
+    update = {
+        "update_id": 107,
+        "message": {
+            "message_id": 10,
+            "date": 1720000003,
+            "from": {"id": 22, "first_name": "Серёга", "is_bot": False},
+            "chat": {"id": -10055, "type": "group", "title": "Друзья"},
+            "text": "НеНой, ответь",
+            "entities": [{
+                "type": "text_mention", "offset": 0, "length": 5,
+                "user": {"id": 999, "is_bot": True, "username": "nenoy"},
+            }],
+        },
+    }
+    normalized = normalize_update(update, bot_user_id="999")
+    assert normalized is not None
+    assert normalized.envelope.event_type is EventType.DIRECT_MENTION
 
 
 def test_normalize_edited_message() -> None:
@@ -112,12 +151,18 @@ def test_webhook_delegates_supported_update_without_llm(monkeypatch) -> None:
     monkeypatch.setattr(
         main_module,
         "config",
-        AppConfig(environment="test", app_name="НеНой 2.0", webhook_secret=None),
+        AppConfig(
+            environment="test",
+            app_name="НеНой 2.0",
+            webhook_secret=None,
+            telegram_bot_username="nenoy",
+            telegram_bot_user_id="999",
+        ),
     )
-    seen: list[dict] = []
+    seen: list[tuple[dict, dict]] = []
 
-    def fake_ingest(update: dict) -> IngestResult:
-        seen.append(update)
+    def fake_ingest(update: dict, **kwargs) -> IngestResult:
+        seen.append((update, kwargs))
         return IngestResult(status="accepted", event_id="tg:300")
 
     monkeypatch.setattr(main_module, "ingest_telegram_update", fake_ingest)
@@ -126,7 +171,8 @@ def test_webhook_delegates_supported_update_without_llm(monkeypatch) -> None:
 
     assert response.status_code == 200
     assert response.json() == {"status": "accepted", "event_id": "tg:300"}
-    assert seen[0]["update_id"] == 300
+    assert seen[0][0]["update_id"] == 300
+    assert seen[0][1] == {"bot_username": "nenoy", "bot_user_id": "999"}
 
 
 def test_ingestor_duplicate_is_idempotent(monkeypatch) -> None:

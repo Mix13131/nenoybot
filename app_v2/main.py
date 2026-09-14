@@ -47,4 +47,8 @@ def telegram_webhook(
     ),
 ) -> dict[str, str | None]:
     _verify_webhook_secret(x_telegram_bot_api_secret_token)
-    return ingest_telegram_update(update).as_dict()
+    return ingest_telegram_update(
+        update,
+        bot_username=config.telegram_bot_username,
+        bot_user_id=config.telegram_bot_user_id,
+    ).as_dict()

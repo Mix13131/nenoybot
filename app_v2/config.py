@@ -22,6 +22,8 @@ class AppConfig:
     model_generator: str = "gpt-5.6-terra"
     model_deep: str = "gpt-5.6-sol"
     openai_timeout_seconds: float = 30.0
+    telegram_bot_username: str | None = None
+    telegram_bot_user_id: str | None = None
 
     @property
     def service_name(self) -> str:
@@ -75,6 +77,9 @@ def load_config(environ: dict[str, str] | None = None) -> AppConfig:
             raise ConfigurationError(f"{name} must not be empty")
         return value
 
+    bot_username = (source.get("NENOY_V2_TELEGRAM_BOT_USERNAME") or "").strip().lstrip("@") or None
+    bot_user_id = (source.get("NENOY_V2_TELEGRAM_BOT_USER_ID") or "").strip() or None
+
     return AppConfig(
         environment=environment,
         app_name=app_name,
@@ -89,4 +94,6 @@ def load_config(environ: dict[str, str] | None = None) -> AppConfig:
             "NENOY_V2_OPENAI_TIMEOUT_SECONDS",
             30.0,
         ),
+        telegram_bot_username=bot_username,
+        telegram_bot_user_id=bot_user_id,
     )

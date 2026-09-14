@@ -115,7 +115,7 @@ def test_live_postgres_migrations_are_repeat_safe() -> None:
     second = run_migrations(database_url)
 
     assert second == []
-    assert first in ([1], [])
+    assert first in ([1, 2], [2], [])
 
 
 def test_live_postgres_schema_constraints_and_indexes() -> None:
@@ -135,6 +135,7 @@ def test_live_postgres_schema_constraints_and_indexes() -> None:
     expected_indexes = {
         "idx_events_pending", "idx_reminders_pending", "idx_outbox_pending",
         "idx_memory_cards_scope_status", "idx_memory_cards_scope_type",
+        "idx_outbox_telegram_message", "idx_feedback_events_feedback_id",
     }
 
     with psycopg.connect(database_url) as conn:

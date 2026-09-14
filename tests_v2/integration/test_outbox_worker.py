@@ -76,7 +76,7 @@ def test_sender_raises_on_telegram_api_error() -> None:
 class FakeRepo:
     def __init__(self, item: ClaimedOutbox | None = None) -> None:
         self.item = item
-        self.sent: list[int] = []
+        self.sent: list[tuple[int, int | None]] = []
         self.retried: list[tuple[int, str]] = []
         self.recover_calls = 0
 
@@ -88,8 +88,8 @@ class FakeRepo:
         item, self.item = self.item, None
         return item
 
-    def mark_sent(self, outbox_id: int) -> bool:
-        self.sent.append(outbox_id)
+    def mark_sent(self, outbox_id: int, *, telegram_message_id: int | None = None) -> bool:
+        self.sent.append((outbox_id, telegram_message_id))
         return True
 
     def retry(self, outbox_id: int, error: str, **kwargs):
@@ -106,16 +106,16 @@ class FakeSender:
         self.calls.append((destination_id, payload))
         if self.error:
             raise self.error
-        return {"message_id": 1}
+        return {"message_id": 88}
 
 
-def test_outbox_worker_marks_successful_send_sent() -> None:
+def test_outbox_worker_marks_successful_send_sent_and_persists_telegram_message_id() -> None:
     repo = FakeRepo(_claimed())
     sender = FakeSender()
     worker = OutboxWorker(repo, sender)
 
     assert worker.run_once() is True
-    assert repo.sent == [1]
+    assert repo.sent == [(1, 88)]
     assert repo.retried == []
     assert sender.calls[0][0] == "-100123"
 
