@@ -144,6 +144,9 @@ class GroupBehaviorEngine:
 
         callback_cards = [item for item in probe if _is_grounded_callback_card(item)]
         running_joke_fit = any(item.card.memory_type == "running_joke" for item in callback_cards)
+        grounded_contradiction_fit = any(
+            item.card.memory_type == "contradiction" for item in callback_cards
+        )
         broken_commitment = any(
             item.card.memory_type == "commitment"
             and str(item.card.payload.get("status", "")).lower() in {"broken", "overdue", "missed"}
@@ -189,6 +192,15 @@ class GroupBehaviorEngine:
             changes: dict[str, float] = {}
             if running_joke_fit:
                 changes["callback_opportunity"] = max(effective_scene.callback_opportunity, 0.82)
+                if allow_roast:
+                    changes["roast_opportunity"] = max(effective_scene.roast_opportunity, 0.80)
+
+            # Preserve the old grounded-contradiction path when Scene Analyzer
+            # independently sees a contradiction and LONG memory confirms that
+            # this group has real evidence for it. StatementWatcher remains the
+            # stricter path for ordinary commitments/quotes.
+            if grounded_contradiction_fit and effective_scene.contradiction_score >= 0.75:
+                changes["callback_opportunity"] = max(effective_scene.callback_opportunity, 0.84)
                 if allow_roast:
                     changes["roast_opportunity"] = max(effective_scene.roast_opportunity, 0.80)
 
