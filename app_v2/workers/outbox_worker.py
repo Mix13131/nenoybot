@@ -41,7 +41,7 @@ class OutboxWorker:
             return True
 
         try:
-            self.sender.send(item.destination_id, item.payload)
+            result = self.sender.send(item.destination_id, item.payload)
         except Exception as exc:
             self.repo.retry(
                 item.id,
@@ -52,5 +52,10 @@ class OutboxWorker:
             )
             return True
 
-        self.repo.mark_sent(item.id)
+        telegram_message_id = result.get("message_id") if isinstance(result, dict) else None
+        try:
+            telegram_message_id = int(telegram_message_id) if telegram_message_id is not None else None
+        except (TypeError, ValueError):
+            telegram_message_id = None
+        self.repo.mark_sent(item.id, telegram_message_id=telegram_message_id)
         return True
