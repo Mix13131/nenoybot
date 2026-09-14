@@ -66,6 +66,7 @@ class GroupPipeline:
         group_behavior_engine: Any | None = None,
         feedback_collector: Any | None = None,
         memory_mapper: Any | None = None,
+        group_reminder_service: Any | None = None,
         unsolicited_enabled: bool = False,
     ) -> None:
         self.access_service = access_service
@@ -78,6 +79,7 @@ class GroupPipeline:
         self.group_behavior_engine = group_behavior_engine
         self.feedback_collector = feedback_collector
         self.memory_mapper = memory_mapper
+        self.group_reminder_service = group_reminder_service
         self.unsolicited_enabled = unsolicited_enabled
 
     def process(self, event: EventEnvelope, *, now: datetime | None = None) -> GroupPipelineResult:
@@ -106,6 +108,26 @@ class GroupPipeline:
                     access_reason="feedback_collected",
                     primary_action=PrimaryAction.IGNORE,
                 )
+
+        reminder_action_state: dict[str, Any] | None = None
+        if self.group_reminder_service is not None:
+            try:
+                cancelled_count = self.group_reminder_service.cancel_on_response(event)
+                reminder_action = self.group_reminder_service.maybe_schedule(event, now=current)
+                if reminder_action is not None:
+                    reminder_action_state = reminder_action.as_action_state()
+                elif cancelled_count:
+                    reminder_action_state = {
+                        "status": "cancelled_on_response",
+                        "cancelled_count": cancelled_count,
+                    }
+            except Exception as exc:
+                # Reminder actions are useful, but must never take down normal
+                # group conversation if scheduling infrastructure has a problem.
+                reminder_action_state = {
+                    "status": "error",
+                    "reason": type(exc).__name__,
+                }
 
         group_context = access.context
         scene = self.scene_analyzer.analyze(event)
@@ -167,6 +189,7 @@ class GroupPipeline:
                     "access_reason": access.reason,
                     "group_behavior_probe_ids": list(behavior_memory_ids),
                     "mapped_memory_ids": list(mapped_memory_ids),
+                    "reminder_action": reminder_action_state,
                 },
             )
             return GroupPipelineResult(
@@ -187,6 +210,17 @@ class GroupPipeline:
             participant_adaptation=adaptation,
         )
         subject_keys = [f"user:{event.actor_user_id}"] if event.actor_user_id else []
+        action_state: dict[str, Any] = {
+            "group_title": group_context.title,
+            "participant_role": group_context.participant.role,
+            "behavior_probe_ids": list(behavior_memory_ids),
+            "mapped_memory_ids": list(mapped_memory_ids),
+        }
+        if reminder_action_state is not None:
+            action_state["group_reminder"] = reminder_action_state
+        if event.event_type is EventType.REMINDER_DUE:
+            action_state["reminder_due"] = dict(event.metadata.get("reminder_payload") or {})
+
         context = self.context_builder.build(
             event=event,
             scene=scene,
@@ -195,12 +229,7 @@ class GroupPipeline:
             subject_keys=subject_keys,
             memory_usage=memory_usage,
             callback_fatigue_minutes=callback_fatigue_minutes,
-            action_state={
-                "group_title": group_context.title,
-                "participant_role": group_context.participant.role,
-                "behavior_probe_ids": list(behavior_memory_ids),
-                "mapped_memory_ids": list(mapped_memory_ids),
-            },
+            action_state=action_state,
         )
         if context.scope_type is not ScopeType.GROUP or context.scope_id != event.scope_id:
             raise GroupPipelineError("Context Builder returned cross-scope Group context")
@@ -222,6 +251,7 @@ class GroupPipeline:
                     "access_reason": access.reason,
                     "group_behavior_probe_ids": list(behavior_memory_ids),
                     "mapped_memory_ids": list(mapped_memory_ids),
+                    "reminder_action": reminder_action_state,
                 },
             )
             return GroupPipelineResult(
@@ -246,6 +276,7 @@ class GroupPipeline:
                 "access_reason": access.reason,
                 "group_behavior_probe_ids": list(behavior_memory_ids),
                 "mapped_memory_ids": list(mapped_memory_ids),
+                "reminder_action": reminder_action_state,
             },
         )
         outbound = OutboundMessage(
@@ -259,6 +290,7 @@ class GroupPipeline:
                 "event_id": event.event_id,
                 "intervention_id": str(intervention.id),
                 "mode": decision.mode.value if decision.mode else None,
+                "message_thread_id": event.metadata.get("message_thread_id"),
             },
         )
         outbox_id, created = self.outbox_repo.enqueue(outbound)

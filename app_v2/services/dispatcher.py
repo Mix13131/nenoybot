@@ -187,6 +187,24 @@ def decide(
             metadata={"policy_version": POLICY_VERSION, "unsolicited": True, **state.metadata},
         )
 
+    # A reminder was explicitly scheduled by a group member earlier. It is an
+    # action execution, not spontaneous banter, so ordinary unsolicited cooldown
+    # and daily chatter limits must not swallow it. Group mute still wins above.
+    if event.event_type is EventType.REMINDER_DUE:
+        return DispatcherDecision(
+            primary_action=PrimaryAction.REPLY,
+            mode=ResponseMode.GROUP_BANTER,
+            intervention_score=100,
+            reason_codes=[ReasonCode.SCHEDULED_REMINDER],
+            target_user_id=event.actor_user_id,
+            metadata={
+                "policy_version": POLICY_VERSION,
+                "unsolicited": False,
+                "scheduled_action": True,
+                **state.metadata,
+            },
+        )
+
     if state.unsolicited_today >= state.hard_daily_limit:
         return DispatcherDecision(
             primary_action=PrimaryAction.IGNORE,

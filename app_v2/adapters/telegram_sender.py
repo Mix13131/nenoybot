@@ -41,6 +41,14 @@ class TelegramSender:
             "chat_id": destination_id,
             "text": text,
         }
+        metadata = payload.get("metadata") if isinstance(payload.get("metadata"), dict) else {}
+        thread_id = payload.get("message_thread_id") or metadata.get("message_thread_id")
+        if thread_id is not None:
+            try:
+                request_payload["message_thread_id"] = int(thread_id)
+            except (TypeError, ValueError):
+                pass
+
         reply_to = payload.get("reply_to_message_id")
         if reply_to is not None:
             try:

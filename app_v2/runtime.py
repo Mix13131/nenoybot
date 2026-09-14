@@ -26,6 +26,7 @@ from app_v2.services.group_access import GroupAccessService
 from app_v2.services.group_behavior_engine import GroupBehaviorEngine
 from app_v2.services.group_initiative import GroupInitiativeService
 from app_v2.services.group_pipeline import GroupPipeline
+from app_v2.services.group_reminders import GroupReminderService
 from app_v2.services.memory_mapper import MemoryMapper, MemoryMapperStore
 from app_v2.services.personal_pipeline import PersonalPipeline, envelope_from_claimed_event
 from app_v2.services.personality_engine import PersonalityEngine
@@ -133,6 +134,7 @@ def build_runtime(conn: Any, config: AppConfig) -> RuntimeComponents:
         ),
         feedback_collector=feedback_collector,
         memory_mapper=memory_mapper,
+        group_reminder_service=GroupReminderService(reminder_repo),
     )
 
     action_engine = ActionEngine(task_repo=task_repo, reminder_repo=reminder_repo)

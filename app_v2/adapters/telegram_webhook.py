@@ -163,6 +163,7 @@ def _normalize_message(
     reply = message.get("reply_to_message") if isinstance(message.get("reply_to_message"), dict) else None
     reply_from = reply.get("from") if reply and isinstance(reply.get("from"), dict) else None
     reply_to_bot = bool(reply_from and reply_from.get("is_bot"))
+    reply_to_text = reply.get("text") if reply and isinstance(reply.get("text"), str) else None
     name_address = _is_name_address(text or "")
     direct_mention = _is_direct_mention(
         message,
@@ -212,11 +213,14 @@ def _normalize_message(
         text=text,
         metadata={
             "telegram_chat_type": chat.get("type"),
+            "actor_username": actor.get("username") if actor else None,
             "reply_to_bot": reply_to_bot,
+            "reply_to_text": reply_to_text,
             "direct_mention": direct_mention,
             "name_address": name_address,
             "incomplete_turn": incomplete_turn,
             "mentions": _mention_metadata(message),
+            "message_thread_id": message.get("message_thread_id"),
             "edited": edited,
         },
     )
@@ -247,6 +251,7 @@ def _normalize_reaction(update_id: int, reaction: dict[str, Any]) -> NormalizedT
         message_id=str(message_id) if message_id is not None else None,
         metadata={
             "telegram_chat_type": chat.get("type"),
+            "actor_username": actor.get("username") if actor else None,
             "old_reaction": reaction.get("old_reaction") or [],
             "new_reaction": new_reaction,
         },
