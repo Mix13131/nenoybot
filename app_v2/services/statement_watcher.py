@@ -3,12 +3,14 @@ from __future__ import annotations
 import json
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, Iterable
 
 from app_v2.domain.events import EventEnvelope, SceneAnalysis
+from app_v2.domain.memory import MemoryCard
 from app_v2.services.model_router import ModelRole
 
 
+_RELEVANT_TYPES = {"commitment", "decision", "quote", "contradiction", "observation"}
 _SCHEMA: dict[str, Any] = {
     "type": "object",
     "additionalProperties": False,
@@ -72,22 +74,20 @@ class StatementWatchResult:
 
 
 class StatementWatcher:
-    """Compare a group message with grounded statements from the same author.
+    """Compare a new group message with grounded statements from the same author.
 
-    The watcher is intentionally fail-closed. It can only select an existing
-    Memory Card from the same group and the same actor, with source evidence.
-    It never generates the final joke; Dispatcher/Generator decide that later.
+    It never invents history: it may only select an existing Memory Card from
+    the same group and actor, with source-message evidence. It does not generate
+    the final joke; Dispatcher/Generator decide that later.
     """
 
     def __init__(
         self,
         adapter: Any,
         *,
-        memory_source: Any,
         prompt_path: Path | None = None,
     ) -> None:
         self.adapter = adapter
-        self.memory_source = memory_source
         self.prompt_path = (
             prompt_path
             or Path(__file__).resolve().parents[1] / "prompts" / "statement_watcher.md"
@@ -98,14 +98,13 @@ class StatementWatcher:
         *,
         event: EventEnvelope,
         scene: SceneAnalysis,
-        callback_fatigue_minutes: int = 180,
+        candidates: Iterable[MemoryCard],
     ) -> StatementWatchResult:
         text = (event.text or "").strip()
         actor = (event.actor_user_id or "").strip()
         if not text or not actor:
             return StatementWatchResult()
 
-        # No proactive roast in a genuinely serious/sensitive scene.
         if (
             scene.seriousness_score >= 0.75
             or scene.conflict_score >= 0.75
@@ -113,20 +112,12 @@ class StatementWatcher:
         ):
             return StatementWatchResult()
 
-        try:
-            candidates = self.memory_source.candidates_for_actor(
-                scope_id=event.scope_id,
-                actor_user_id=actor,
-                callback_fatigue_minutes=callback_fatigue_minutes,
-                limit=8,
-            )
-        except Exception:
-            return StatementWatchResult()
-
         actor_key = f"user:{actor}"
-        usable = []
+        usable: list[tuple[MemoryCard, list[Any]]] = []
         for card in candidates:
-            if card.scope_id != event.scope_id or actor_key not in card.subject_keys:
+            if card.memory_type not in _RELEVANT_TYPES or card.scope_id != event.scope_id:
+                continue
+            if actor_key not in card.subject_keys:
                 continue
             own_evidence = [item for item in card.evidence if item.author_id == actor]
             if not own_evidence:
@@ -196,9 +187,3 @@ class StatementWatcher:
             evidence_excerpt=evidence.excerpt,
             evidence_message_id=evidence.message_id,
         )
-
-    def mark_used(self, *, scope_id: str, memory_id: str) -> bool:
-        try:
-            return bool(self.memory_source.mark_used(scope_id=scope_id, memory_id=memory_id))
-        except Exception:
-            return False
