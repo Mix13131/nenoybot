@@ -154,3 +154,33 @@ class GroupContextRepository:
         ).fetchone()
         self.conn.commit()
         return row is not None
+
+    def configure_friends_test(
+        self,
+        telegram_chat_id: str,
+        *,
+        profile: dict[str, Any],
+        enabled: bool = True,
+    ) -> bool:
+        """Atomically set the controlled Friends profile and whitelist state."""
+        if not isinstance(profile, dict):
+            raise TypeError("profile must be a dict")
+        row = self.conn.execute(
+            """
+            UPDATE chats
+            SET group_profile = %s::jsonb,
+                is_whitelisted = %s,
+                is_active = TRUE,
+                silent_until = NULL,
+                updated_at = CURRENT_TIMESTAMP
+            WHERE telegram_chat_id = %s AND chat_type = 'group'
+            RETURNING id
+            """,
+            (
+                json.dumps(profile, ensure_ascii=False),
+                enabled,
+                int(telegram_chat_id),
+            ),
+        ).fetchone()
+        self.conn.commit()
+        return row is not None
