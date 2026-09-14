@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 from datetime import datetime, timezone
-from types import SimpleNamespace
 
 import pytest
 
@@ -12,12 +11,13 @@ from app_v2.group_admin import (
     deactivate_group,
     list_groups,
 )
+from app_v2.repositories.group_context_repo import GroupAdminRecord
 
 
 class FakeRepo:
     def __init__(self) -> None:
         self.groups = [
-            SimpleNamespace(
+            GroupAdminRecord(
                 telegram_chat_id="-100777",
                 title="Friends",
                 is_whitelisted=False,
