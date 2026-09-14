@@ -20,8 +20,15 @@ class IngestResult:
 def ingest_telegram_update(
     update: dict[str, Any],
     database_url: str | None = None,
+    *,
+    bot_username: str | None = None,
+    bot_user_id: str | None = None,
 ) -> IngestResult:
-    normalized = normalize_update(update)
+    normalized = normalize_update(
+        update,
+        bot_username=bot_username,
+        bot_user_id=bot_user_id,
+    )
     if normalized is None:
         return IngestResult(status="ignored")
 
