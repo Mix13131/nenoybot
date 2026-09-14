@@ -1,0 +1,1 @@
+"""Persistence repositories for НеНой 2.0 will live here."""
