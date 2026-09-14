@@ -158,3 +158,25 @@ class PersonalPipeline:
         if isinstance(value, list):
             return [str(item) for item in value if str(item).strip()]
         return []
+
+
+def envelope_from_claimed_event(claimed_event: Any) -> EventEnvelope:
+    """Restore the normalized EventEnvelope persisted by Telegram ingest."""
+    payload = dict(claimed_event.payload)
+    payload.setdefault("event_id", claimed_event.event_id)
+    payload.setdefault("event_type", claimed_event.event_type)
+    payload.setdefault("scope_type", claimed_event.scope_type)
+    payload.setdefault("scope_id", claimed_event.scope_id)
+    payload.setdefault("actor_user_id", claimed_event.actor_user_id)
+    payload.setdefault("occurred_at", claimed_event.created_at)
+    return EventEnvelope.model_validate(payload)
+
+
+def make_personal_event_handler(pipeline: PersonalPipeline):
+    """Return an EventWorker-compatible handler for Personal events."""
+    def handle(claimed_event: Any) -> None:
+        if str(claimed_event.scope_type) != ScopeType.PERSONAL.value:
+            return
+        pipeline.process(envelope_from_claimed_event(claimed_event))
+
+    return handle
