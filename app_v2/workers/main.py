@@ -8,6 +8,8 @@ from typing import Any
 
 from app_v2.adapters.postgres import connect
 from app_v2.config import load_config
+from app_v2.group_admin import FRIENDS_DAY1_PROFILE
+from app_v2.repositories.group_context_repo import GroupContextRepository
 from app_v2.runtime import RuntimeEventHandler, build_runtime
 from app_v2.services.maintenance import MaintenanceService
 from app_v2.workers.event_worker import EventWorker
@@ -40,6 +42,58 @@ def _configure_logging() -> None:
     # at INFO, so keep transport libraries at WARNING or above.
     for name in ("httpx", "httpx2", "httpcore", "httpcore2"):
         logging.getLogger(name).setLevel(logging.WARNING)
+
+
+def _bootstrap_group_from_env(conn) -> dict[str, str] | None:
+    """Optionally activate exactly one previously ingested group by title.
+
+    This is an ops escape hatch for controlled onboarding when Railway does not
+    expose one-off container exec. It is deliberately exact-match and fails
+    closed on zero or multiple matches. The env var should be cleared after the
+    successful deploy; repeated execution is idempotent while it remains set.
+    """
+
+    title = (os.getenv("NENOY_V2_BOOTSTRAP_GROUP_TITLE") or "").strip()
+    if not title:
+        return None
+
+    repo = GroupContextRepository(conn)
+    matches = [
+        row
+        for row in repo.list_groups(limit=100)
+        if (row.title or "").strip() == title
+    ]
+    if not matches:
+        logger.warning("group bootstrap skipped: title not found title=%r", title)
+        return None
+    if len(matches) != 1:
+        logger.error(
+            "group bootstrap skipped: ambiguous title=%r matches=%d",
+            title,
+            len(matches),
+        )
+        return None
+
+    match = matches[0]
+    changed = repo.configure_friends_test(
+        match.telegram_chat_id,
+        profile=FRIENDS_DAY1_PROFILE,
+        enabled=True,
+    )
+    if not changed:
+        logger.error(
+            "group bootstrap failed: title=%r telegram_chat_id=%s",
+            title,
+            match.telegram_chat_id,
+        )
+        return None
+
+    logger.info(
+        "group bootstrap activated title=%r telegram_chat_id=%s",
+        title,
+        match.telegram_chat_id,
+    )
+    return {"title": title, "telegram_chat_id": str(match.telegram_chat_id)}
 
 
 @dataclass
@@ -114,6 +168,7 @@ def run_forever() -> None:
     poll_interval = _float_env("NENOY_V2_WORKER_IDLE_SLEEP", 0.5)
 
     with connect(config.database_url) as conn:
+        _bootstrap_group_from_env(conn)
         loop = build_worker_loop(conn, config)
         logger.info("nenoy-v2-worker started")
         while True:
