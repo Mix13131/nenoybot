@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 
+import httpx
 import pytest
 
 from app_v2.adapters.telegram_sender import (
@@ -31,6 +32,11 @@ class FakeClient:
     def post(self, url: str, json: dict):
         self.calls.append((url, json))
         return self.response
+
+
+class TimeoutClient:
+    def post(self, url: str, json: dict):
+        raise httpx.ReadTimeout("telegram timed out")
 
 
 def _claimed(channel: str = "telegram") -> ClaimedOutbox:
@@ -70,6 +76,14 @@ def test_sender_raises_on_telegram_api_error() -> None:
     sender = TelegramSender(token="123:test", client=client)
 
     with pytest.raises(TelegramSendError, match="Bad Request"):
+        sender.send("1", {"text": "hello"})
+
+
+def test_sender_raises_on_telegram_5xx() -> None:
+    client = FakeClient(FakeResponse(503, {}, text="upstream unavailable"))
+    sender = TelegramSender(token="123:test", client=client)
+
+    with pytest.raises(TelegramSendError, match="Telegram HTTP 503"):
         sender.send("1", {"text": "hello"})
 
 
@@ -128,6 +142,18 @@ def test_outbox_worker_retries_failed_send() -> None:
     assert worker.run_once() is True
     assert repo.sent == []
     assert repo.retried == [(1, "network down")]
+
+
+def test_outbox_worker_retries_real_timeout_without_marking_sent() -> None:
+    repo = FakeRepo(_claimed())
+    sender = TelegramSender(token="123:test", client=TimeoutClient())
+    worker = OutboxWorker(repo, sender)
+
+    assert worker.run_once() is True
+    assert repo.sent == []
+    assert len(repo.retried) == 1
+    assert repo.retried[0][0] == 1
+    assert "timed out" in repo.retried[0][1]
 
 
 def test_outbox_worker_retries_unsupported_channel() -> None:
