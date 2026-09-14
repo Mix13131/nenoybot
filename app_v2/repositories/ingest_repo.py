@@ -5,6 +5,10 @@ from datetime import datetime, timezone
 from typing import Any
 
 from app_v2.adapters.telegram_webhook import NormalizedTelegramUpdate
+from app_v2.domain.enums import EventType, ScopeType
+
+
+_GROUP_INCOMPLETE_DEBOUNCE_SECONDS = 3.0
 
 
 class TelegramIngestRepository:
@@ -119,13 +123,22 @@ class TelegramIngestRepository:
             "text": envelope.text,
             "metadata": envelope.metadata,
         }
+        should_debounce = (
+            envelope.scope_type is ScopeType.GROUP
+            and envelope.event_type in {EventType.DIRECT_MENTION, EventType.REPLY_TO_BOT}
+            and bool(envelope.metadata.get("incomplete_turn"))
+        )
+        delay_seconds = _GROUP_INCOMPLETE_DEBOUNCE_SECONDS if should_debounce else 0.0
         row = self.conn.execute(
             """
             INSERT INTO events(
                 event_id, telegram_update_id, event_type, scope_type, scope_id,
                 actor_user_id, payload, status, available_at
             )
-            VALUES (%s, %s, %s, %s, %s, %s, %s::jsonb, 'pending', CURRENT_TIMESTAMP)
+            VALUES (
+                %s, %s, %s, %s, %s, %s, %s::jsonb, 'pending',
+                CURRENT_TIMESTAMP + (%s * INTERVAL '1 second')
+            )
             ON CONFLICT (telegram_update_id) DO NOTHING
             RETURNING id
             """,
@@ -137,6 +150,7 @@ class TelegramIngestRepository:
                 envelope.scope_id,
                 envelope.actor_user_id,
                 json.dumps(payload, ensure_ascii=False),
+                delay_seconds,
             ),
         ).fetchone()
         return row is not None

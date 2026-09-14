@@ -16,9 +16,31 @@ def test_personal_default_profile():
 def test_group_default_profile():
     state = PersonalityEngine().build(scope_type=ScopeType.GROUP, mode=ResponseMode.GROUP_BANTER)
     assert state.directness == 9
+    assert state.brevity == 7
+    assert state.warmth == 4
     assert state.roast == 9
     assert state.profanity_level == 8
     assert state.profanity_frequency == 5
+
+
+def test_group_direct_reply_is_less_terse_than_banter_default():
+    state = PersonalityEngine().build(scope_type=ScopeType.GROUP, mode=ResponseMode.GROUP_DIRECT_REPLY)
+    assert state.brevity == 6
+    assert state.warmth == 5
+
+
+def test_group_roast_stays_short_even_after_conversation_tuning():
+    state = PersonalityEngine().build(scope_type=ScopeType.GROUP, mode=ResponseMode.GROUP_ROAST)
+    assert state.brevity == 9
+    assert state.roast == 10
+    assert state.sarcasm == 10
+
+
+def test_group_help_allows_more_substance():
+    state = PersonalityEngine().build(scope_type=ScopeType.GROUP, mode=ResponseMode.GROUP_HELP)
+    assert state.brevity == 5
+    assert state.warmth == 6
+    assert state.care == 5
 
 
 def test_coach_mode_increases_pressure_and_challenge():

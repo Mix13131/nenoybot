@@ -33,8 +33,8 @@ PERSONAL_DEFAULT: dict[str, int] = {
 
 FRIENDS_GROUP_DEFAULT: dict[str, int] = {
     "directness": 9,
-    "brevity": 10,
-    "warmth": 3,
+    "brevity": 7,
+    "warmth": 4,
     "pressure": 4,
     "humor": 9,
     "sarcasm": 9,
@@ -53,7 +53,13 @@ _MODE_MODIFIERS: dict[ResponseMode, dict[str, int]] = {
     ResponseMode.COACH: {"pressure": 2, "challenge": 2, "care": -1, "brevity": 1},
     ResponseMode.CARE: {"pressure": -5, "challenge": -4, "warmth": 3, "care": 3, "sarcasm": -2},
     ResponseMode.MIRROR: {"callback": 2, "challenge": 1, "directness": 1, "initiative": 1},
-    ResponseMode.GROUP_ROAST: {"roast": 2, "sarcasm": 1, "callback": 2, "playfulness": 1},
+    ResponseMode.GROUP_DIRECT_REPLY: {"brevity": -1, "warmth": 1},
+    ResponseMode.GROUP_BANTER: {"playfulness": 1},
+    ResponseMode.GROUP_ROAST: {"roast": 2, "sarcasm": 1, "callback": 2, "playfulness": 1, "brevity": 2},
+    ResponseMode.GROUP_CALLBACK: {"callback": 2, "brevity": 2},
+    ResponseMode.GROUP_HELP: {"brevity": -2, "warmth": 2, "care": 2},
+    ResponseMode.GROUP_ORGANIZER: {"brevity": -1, "directness": 1},
+    ResponseMode.GROUP_ARBITER: {"brevity": -1, "warmth": 1, "sensitivity": 1},
 }
 
 
