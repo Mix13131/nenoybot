@@ -13,14 +13,38 @@ Prepare one approved Telegram group for a controlled НеНой 2.0 friends test
 ## Required checks
 1. Confirm target Telegram group id and explicitly whitelist only that group.
 2. Confirm bot can receive ordinary group messages, direct mentions, replies and reactions.
-3. Confirm bot has enough Telegram permissions to read intended message events.
-4. Start with low initiative for Days 1–2.
-5. Verify direct mention always works even if unsolicited behavior is muted/cooldown-blocked.
-6. Verify ordinary chat can be observed/mapped without automatic reply.
-7. Verify Group retrieval cannot read Personal Memory Cards.
-8. Verify serious/sensitive scenes suppress roast/callback.
-9. Verify `заткнись`/silence request creates temporary group silence.
-10. Confirm metrics are available for direct mentions, unsolicited interventions, reactions, negative feedback, mute events and organic participants.
+3. Disable Telegram **Group Privacy** for the v2 bot in BotFather (`/setprivacy` -> bot -> Disable), otherwise Telegram will not deliver ordinary group conversation and НеНой cannot observe/map the scene.
+4. Confirm bot has enough group permissions to receive intended events.
+5. Start with low initiative for Days 1–2.
+6. Verify direct mention always works even if unsolicited behavior is muted/cooldown-blocked.
+7. Verify ordinary chat can be observed/mapped without automatic reply.
+8. Verify Group retrieval cannot read Personal Memory Cards.
+9. Verify serious/sensitive scenes suppress roast/callback.
+10. Verify `заткнись`/silence request creates temporary group silence.
+11. Confirm metrics are available for direct mentions, unsolicited interventions, reactions, negative feedback, mute events and organic participants.
+
+## Controlled group administration
+The v2 runtime exposes a DB-backed admin CLI. It never auto-whitelists unknown groups.
+
+After the bot has seen at least one update from the target group:
+
+```bash
+python -m app_v2.group_admin list
+```
+
+Activate exactly one group with the Day-1 profile:
+
+```bash
+python -m app_v2.group_admin activate-friends <telegram_chat_id>
+```
+
+Emergency disable:
+
+```bash
+python -m app_v2.group_admin deactivate <telegram_chat_id>
+```
+
+Unknown group ids fail closed.
 
 ## Suggested initial group profile
 ```json
@@ -39,6 +63,8 @@ Prepare one approved Telegram group for a controlled НеНой 2.0 friends test
 }
 ```
 
+This exact profile is the default used by `activate-friends`.
+
 ## Day plan
 - Days 1–2: observe/map, low initiative, direct replies normal.
 - Days 3–4: medium initiative, cautious callbacks.
@@ -46,15 +72,17 @@ Prepare one approved Telegram group for a controlled НеНой 2.0 friends test
 
 ## Blockers before actual TASK 28 start
 - rotate Telegram token exposed in private runtime log during first Personal smoke
+- disable Group Privacy in BotFather
 - choose the exact Telegram friends group
 - whitelist only that group
 
 ## Exit criteria
 - target group explicitly selected
+- Group Privacy disabled
 - whitelist record created
 - initial group profile set
 - one direct mention smoke passes
-- one ordinary non-mention message produces no unsolicited reply unless score/initiative gate explicitly allows it
+- one ordinary non-mention message is delivered to v2 and produces no unsolicited reply unless score/initiative gate explicitly allows it
 - privacy regression remains green
 
 Do not begin broad unsolicited group behavior outside the selected test group.
