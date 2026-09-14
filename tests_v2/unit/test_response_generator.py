@@ -1,0 +1,153 @@
+from __future__ import annotations
+
+import json
+from datetime import datetime, timezone
+from types import SimpleNamespace
+
+import pytest
+
+from app_v2.domain.enums import PrimaryAction, ResponseMode, ScopeType
+from app_v2.services.context_builder import GenerationContext, GenerationMemory
+from app_v2.services.response_generator import ResponseGenerationError, ResponseGenerator
+
+
+class FakeAdapter:
+    def __init__(self, text="Готово.", error=None):
+        self.text = text
+        self.error = error
+        self.calls = []
+
+    def generate_text(self, role, input_text, **kwargs):
+        self.calls.append((role, input_text, kwargs))
+        if self.error:
+            raise self.error
+        usage = SimpleNamespace(model="fake-generator", usage_id="usage-1")
+        return SimpleNamespace(text=self.text, usage=usage)
+
+
+def _personality(mode):
+    return {
+        "mode": mode,
+        "directness": 8,
+        "brevity": 8,
+        "warmth": 7,
+        "pressure": 6,
+        "humor": 5,
+        "sarcasm": 4,
+        "roast": 3,
+        "profanity_level": 4,
+        "profanity_frequency": 3,
+        "initiative": 7,
+        "callback": 8,
+        "challenge": 8,
+        "care": 8,
+        "playfulness": 5,
+        "sensitivity": 8,
+        "ignored_internal_field": "must not be sent",
+    }
+
+
+def _context(scope_type=ScopeType.PERSONAL, mode=ResponseMode.ASSISTANT, memories=()):
+    return GenerationContext(
+        scope_type=scope_type,
+        scope_id="u1" if scope_type is ScopeType.PERSONAL else "g1",
+        event={"event_id": "evt1", "text": "Привет"},
+        scene={"seriousness_score": 0.1},
+        decision={
+            "primary_action": PrimaryAction.REPLY.value,
+            "mode": mode.value,
+            "reason_codes": ["direct_mention"],
+        },
+        personality=_personality(mode.value),
+        hot_messages=({"message_id": "1", "text": "Привет"},),
+        memories=tuple(memories),
+        target_user_id="u1",
+        action_state={},
+        estimated_hot_tokens=20,
+        estimated_memory_tokens=0,
+    )
+
+
+def test_personal_prompt_selected_and_compact_personality_sent():
+    adapter = FakeAdapter()
+    generator = ResponseGenerator(adapter=adapter)
+
+    result = generator.generate(_context())
+
+    assert result.text == "Готово."
+    _, input_text, kwargs = adapter.calls[0]
+    payload = json.loads(input_text)
+    assert "Personal Generator" in kwargs["instructions"]
+    assert payload["decision"]["mode"] == "assistant"
+    assert payload["personality"]["directness"] == 8
+    assert "ignored_internal_field" not in payload["personality"]
+
+
+def test_group_prompt_selected_for_group_context():
+    adapter = FakeAdapter()
+    generator = ResponseGenerator(adapter=adapter)
+
+    generator.generate(_context(ScopeType.GROUP, ResponseMode.GROUP_BANTER))
+
+    _, _, kwargs = adapter.calls[0]
+    assert "Group Generator" in kwargs["instructions"]
+    assert "не объясняй шутку" in kwargs["instructions"]
+
+
+def test_group_callback_without_memory_is_blocked_before_model_call():
+    adapter = FakeAdapter()
+    generator = ResponseGenerator(adapter=adapter)
+
+    with pytest.raises(ResponseGenerationError, match="requires at least one"):
+        generator.generate(_context(ScopeType.GROUP, ResponseMode.GROUP_CALLBACK, memories=()))
+
+    assert adapter.calls == []
+
+
+def test_group_callback_with_memory_passes_grounded_memory_to_model():
+    memory = GenerationMemory(
+        id="m1",
+        memory_type="running_joke",
+        summary="Серёга говорит «уже еду» до выезда.",
+        confidence=0.95,
+        importance=0.8,
+        evidence=({"message_id": "90", "excerpt": "Уже еду"},),
+    )
+    adapter = FakeAdapter(text="58 минут. Крепкий мужик.")
+    generator = ResponseGenerator(adapter=adapter)
+
+    result = generator.generate(_context(ScopeType.GROUP, ResponseMode.GROUP_CALLBACK, memories=(memory,)))
+
+    payload = json.loads(adapter.calls[0][1])
+    assert result.text == "58 минут. Крепкий мужик."
+    assert payload["memories"][0]["id"] == "m1"
+    assert payload["memories"][0]["evidence"][0]["excerpt"] == "Уже еду"
+
+
+def test_generator_rejects_non_reply_decision():
+    adapter = FakeAdapter()
+    generator = ResponseGenerator(adapter=adapter)
+    context = _context()
+    context = GenerationContext(
+        **{**context.__dict__, "decision": {"primary_action": "ignore", "mode": None, "reason_codes": []}}
+    )
+
+    with pytest.raises(ResponseGenerationError, match="primary_action=reply"):
+        generator.generate(context)
+    assert adapter.calls == []
+
+
+def test_adapter_failure_is_wrapped_and_no_send_side_effect_exists():
+    adapter = FakeAdapter(error=RuntimeError("boom"))
+    generator = ResponseGenerator(adapter=adapter)
+
+    with pytest.raises(ResponseGenerationError, match="generation failed"):
+        generator.generate(_context())
+
+    assert len(adapter.calls) == 1
+
+
+def test_empty_model_text_is_rejected():
+    generator = ResponseGenerator(adapter=FakeAdapter(text="   "))
+    with pytest.raises(ResponseGenerationError, match="empty text"):
+        generator.generate(_context())
