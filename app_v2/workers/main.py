@@ -32,6 +32,16 @@ def _int_env(name: str, default: int) -> int:
     return int(value) if value else default
 
 
+def _configure_logging() -> None:
+    """Configure runtime logging without leaking credential-bearing request URLs."""
+    logging.basicConfig(level=os.getenv("NENOY_V2_LOG_LEVEL", "INFO").upper())
+    # Telegram Bot API embeds the bot token in the request URL. Both the
+    # Telegram sender (httpx) and OpenAI SDK (httpx2) may log full request URLs
+    # at INFO, so keep transport libraries at WARNING or above.
+    for name in ("httpx", "httpx2", "httpcore", "httpcore2"):
+        logging.getLogger(name).setLevel(logging.WARNING)
+
+
 @dataclass
 class WorkerLoop:
     event_worker: Any
@@ -99,7 +109,7 @@ def build_worker_loop(conn, config=None) -> WorkerLoop:
 
 
 def run_forever() -> None:
-    logging.basicConfig(level=os.getenv("NENOY_V2_LOG_LEVEL", "INFO").upper())
+    _configure_logging()
     config = load_config()
     poll_interval = _float_env("NENOY_V2_WORKER_IDLE_SLEEP", 0.5)
 

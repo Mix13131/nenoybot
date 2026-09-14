@@ -1,12 +1,13 @@
 from __future__ import annotations
 
+import logging
 from datetime import datetime, timezone
 from types import SimpleNamespace
 
 from app_v2.domain.enums import EventType, ScopeType
 from app_v2.domain.events import EventEnvelope
 from app_v2.runtime import RuntimeEventHandler
-from app_v2.workers.main import WorkerLoop
+from app_v2.workers.main import WorkerLoop, _configure_logging
 
 
 def claimed(*, scope="personal", event_type="private_message", event_id="e1"):
@@ -100,3 +101,14 @@ def test_maintenance_failure_does_not_block_delivery_units():
     assert event.calls == 1
     assert reminder.calls == 1
     assert outbox.calls == 1
+
+
+def test_transport_loggers_are_warning_or_higher(monkeypatch):
+    monkeypatch.setenv("NENOY_V2_LOG_LEVEL", "INFO")
+    for name in ("httpx", "httpx2", "httpcore", "httpcore2"):
+        logging.getLogger(name).setLevel(logging.INFO)
+
+    _configure_logging()
+
+    for name in ("httpx", "httpx2", "httpcore", "httpcore2"):
+        assert logging.getLogger(name).level >= logging.WARNING
