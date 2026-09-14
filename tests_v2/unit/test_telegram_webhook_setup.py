@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import logging
+
 import pytest
 
 from app_v2.telegram_webhook_setup import (
@@ -71,6 +73,30 @@ def test_configure_webhook_uses_secret_without_printing_or_returning_it() -> Non
     post_payload = client.calls[0][2]
     assert post_payload["secret_token"] == "webhook-secret"
     assert post_payload["allowed_updates"] == ["message", "edited_message", "message_reaction"]
+
+
+def test_configure_webhook_forces_transport_loggers_to_warning() -> None:
+    for name in ("httpx", "httpcore", "httpx2", "httpcore2"):
+        logging.getLogger(name).setLevel(logging.INFO)
+
+    client = FakeClient(
+        [
+            FakeResponse(200, {"ok": True, "result": True}),
+            FakeResponse(
+                200,
+                {"ok": True, "result": {"url": "https://bot.example.com/webhooks/telegram"}},
+            ),
+        ]
+    )
+    configure_webhook(
+        token="123:secret-token",
+        secret="webhook-secret",
+        webhook_url="https://bot.example.com/webhooks/telegram",
+        client=client,
+    )
+
+    for name in ("httpx", "httpcore", "httpx2", "httpcore2"):
+        assert logging.getLogger(name).level >= logging.WARNING
 
 
 def test_rejected_set_webhook_raises_sanitized_error() -> None:
