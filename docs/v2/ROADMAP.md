@@ -54,123 +54,162 @@
 
 **Статус: DONE**
 
-Архитектура разбита на 28 маленьких последовательных задач Codex.
-
-Для каждой стадии определены:
-
-- scope;
-- разрешённые изменения;
-- запреты;
-- acceptance criteria;
-- обязательные tests;
-- build gates;
-- обязательная форма отчёта Codex.
-
-Артефакт: `MVP_BUILD_PLAN.md`.
+Архитектура разбита на 28 маленьких последовательных задач.
 
 Build order:
 
 ```text
 Stage A — Foundation
-01 Skeleton
-02 Contracts
-03 DB
-04 Webhook
-05 Event Queue
-06 Outbox
+01 Skeleton                  ✅
+02 Contracts                 ✅
+03 DB                        ✅
+04 Webhook                   ✅
+05 Event Queue               ✅
+06 Outbox                    ✅
 
 Stage B — Decision Brain
-07 Dispatcher deterministic
-08 Model Router
-09 Scene Analyzer
+07 Dispatcher deterministic  ✅
+08 Model Router              ✅
+09 Scene Analyzer            ✅
 
 Stage C — Memory + Character
-10 Memory Repository
-11 Memory Mapper
-12 Personality Engine
-13 Context Builder
+10 Memory Repository         ✅
+11 Memory Mapper             ✅
+12 Personality Engine        ✅
+13 Context Builder           ✅
 
 Stage D — Personal MVP
-14 Response Generator
-15 Personal E2E
-16 Actions / Reminders
+14 Response Generator        ✅
+15 Personal E2E              ✅
+16 Actions / Reminders       ✅
 
 Stage E — Group MVP
-17 Group Whitelist
-18 Group Silence First
-19 Roast / Callback
-20 Adaptive Initiative
+17 Group Whitelist           ✅
+18 Group Silence First       ✅
+19 Roast / Callback          ✅
+20 Adaptive Initiative       ✅
 
 Stage F — Feedback / Cost / Reliability
-21 Feedback
-22 Analytics / Cost
-23 Maintenance
-24 Reliability
+21 Feedback                  ✅
+22 Analytics / Cost          ✅
+23 Maintenance               ✅
+24 Reliability               ✅
 
 Stage G — Deployment / Real Test
-25 Railway v2
-26 Personal Smoke
-27 Friends Preflight
-28 Friends Test
+25 Railway v2                ✅ functional live runtime
+26 Personal Smoke            ✅ functional PASS
+27 Friends Preflight         🚧 code ready, live setup pending
+28 Friends Test              ⏳ next after preflight
 ```
+
+Артефакт: `MVP_BUILD_PLAN.md`.
 
 ---
 
 ## Phase 5 — Personal MVP 2.0
 
-**Статус: READY TO BUILD**
+**Статус: LIVE — FIRST E2E PASS**
 
-Реализация начинается с `TASK 01 — app_v2 Skeleton` и проходит через Gate A до Personal E2E.
+Рабочий production path уже существует:
 
-Personal MVP должен уметь помнить пользователя, цели, проекты, решения и обещания; использовать callbacks; выбирать Coach/Mirror/Care/Assistant/Observer; создавать задачи/напоминания и проявлять контролируемую инициативу.
+```text
+Telegram
+→ webhook
+→ PostgreSQL event
+→ worker
+→ Scene Analyzer
+→ Dispatcher
+→ Memory / Context / Personality
+→ OpenAI generator
+→ Outbox
+→ Telegram Sender
+```
 
-Тест: 7–14 дней реального использования владельцем после deployment.
+14 сентября 2026 прошёл первый настоящий Personal smoke: Telegram webhook вернул 200, worker обработал событие, OpenAI generation прошёл, Telegram sendMessage вернул 200, пользователь получил первый ответ НеНоя 2.0.
 
-Проверяем false memory, полезность callbacks, неуместные вмешательства, ощущение «он меня знает», раздражение и переключение режимов.
+Первый live-pass сразу обнаружил два production-нюанса:
+
+- transport INFO logs могли записать credential-bearing Telegram Bot API URL — logging hardened в PR #73; старый token требуется ротировать;
+- strict JSON schema Memory Mapper дала скрытый HTTP 400 — schema hardened в PR #74.
+
+Артефакты: `LIVE_TEST_STATUS.md`, `tasks/TASK_26_PERSONAL_SMOKE_TEST.md`.
 
 ---
 
 ## Phase 6 — Group MVP
 
-**Статус: PLANNED**
+**Статус: BUILT — CONTROLLED PREFLIGHT**
 
-Один реальный чат друзей через whitelist.
+Group runtime уже умеет:
 
-Первая версия должна различать участников, читать HOT context, создавать Group Memory Cards, отвечать при обращении, иногда вмешиваться сама, использовать callbacks/running jokes, делать roast, учитывать profanity profile и уметь молчать.
+- explicit whitelist;
+- participant context;
+- silence-first;
+- direct mention/reply;
+- Group Memory isolation;
+- roast/callback gates;
+- running jokes;
+- adaptive initiative;
+- feedback;
+- temporary silence;
+- analytics.
+
+Для Friends Test добавлен DB-backed admin CLI:
+
+```text
+python -m app_v2.group_admin list
+python -m app_v2.group_admin activate-friends <chat_id>
+python -m app_v2.group_admin deactivate <chat_id>
+```
+
+Неизвестные группы не активируются автоматически.
+
+Артефакт: `tasks/TASK_27_FRIENDS_PREFLIGHT.md`.
 
 ---
 
 ## Phase 7 — Roast Engine
 
-**Статус: PLANNED**
+**Статус: MVP BUILT**
 
-Логика:
+Логика MVP:
 
-`opportunity → target → context → callback → running joke → profanity → timing → reply/silence`
+`opportunity → target/context → grounded memory → callback/running joke → sensitivity gates → profanity ceiling → timing → reply/silence`
 
 Принцип:
 
 > Не придумывать шутку из воздуха. Замечать смешное в контексте и добивать.
 
+Live tuning будет происходить только по результатам Friends Test.
+
 ---
 
 ## Phase 8 — Feedback Loop
 
-**Статус: PLANNED**
+**Статус: MVP BUILT**
 
-Собирать позитивные/негативные/нейтральные сигналы после вмешательств и связывать их с intervention/reason codes для последующей адаптации.
+Собираются реакции, replies, organic re-mentions, explicit negative feedback и mute/silence signals. Feedback связывается с intervention и используется Adaptive Initiative.
 
 ---
 
 ## Phase 9 — Friends Test
 
-**Статус: PLANNED**
+**Статус: PREFLIGHT IN PROGRESS**
 
-7 дней живого теста.
+7 дней живого теста:
 
 - День 1–2: low initiative, наблюдение.
 - День 3–4: callbacks ON, medium initiative.
 - День 5–7: высокий roast, profanity по настройке группы, adaptive initiative.
+
+Перед стартом TASK 28 остаются только live-операции:
+
+1. ротировать Telegram token, который попал в private runtime log до logging fix;
+2. BotFather → `/setprivacy` → v2 bot → **Disable**, иначе Telegram не будет передавать обычную групповую болтовню;
+3. выбрать один конкретный чат друзей;
+4. добавить туда НеНой 2.0 и дать Telegram прислать хотя бы один group update;
+5. активировать именно этот `chat_id` через whitelist с Day-1 profile;
+6. провести direct mention + ordinary message smoke.
 
 Главная Group North Star:
 
@@ -182,13 +221,17 @@ Personal MVP должен уметь помнить пользователя, ц
 
 ## Phase 10 — Product Review v0.2
 
+**Статус: AFTER FRIENDS TEST**
+
 Не добавлять функции автоматически. Сначала разобрать данные живого теста: roast hit/miss, callbacks, ошибки памяти, навязчивость, organically used functions. После этого корректировать thresholds, personality, mapper, context builder и initiative.
 
 ---
 
 ## Phase 11 — Economics & Cost Tracking
 
-Для каждого AI-вызова считать model, tokens, latency, cost и task kind.
+**Статус: BASELINE BUILT**
+
+Для AI-вызовов уже пишутся model, tokens, latency, success и estimated cost; есть Personal/Group analytics reporting.
 
 Внутренние ориентиры:
 
@@ -196,11 +239,13 @@ Personal MVP должен уметь помнить пользователя, ц
 - Group normal: AI COGS < $3 / month;
 - Heavy usage: контролируемый верхний диапазон.
 
-Экономику считать на реальном usage.
+Реальную экономику считать после Friends Test на живом usage.
 
 ---
 
 ## Phase 12 — Settings UX
+
+**Статус: PLANNED AFTER PRODUCT REVIEW**
 
 Personal: жёсткость, юмор, подъёб, мат, инициативность, забота, память, напоминания.
 
@@ -210,17 +255,23 @@ Group: roast, sarcasm, profanity level/frequency, initiative, callbacks, max int
 
 ## Phase 13 — Closed Beta
 
+**Статус: PLANNED**
+
 5–10 групп разных типов: друзья, семья, неформальная команда, клуб/сообщество. Проверить Character Engine в разных социальных средах.
 
 ---
 
 ## Phase 14 — Monetization
 
+**Статус: PLANNED**
+
 После подтверждения retention и реальной себестоимости: Free / Personal / Personal Pro / Group / Personal + Group bundle.
 
 ---
 
 ## Phase 15 — Platform Expansion
+
+**Статус: PLANNED AFTER CORE VALIDATION**
 
 Только после подтверждения core-продукта: Voice, Telegram Mini App, Web UI, Calendar, Gmail, Drive, Web Search, agents, shared tasks, другие мессенджеры.
 
@@ -241,4 +292,4 @@ Group: roast, sarcasm, profanity level/frequency, initiative, callbacks, max int
 
 # Critical Path
 
-`Vision ✅ → Personality ✅ → Memory ✅ → Dispatcher ✅ → Architecture ✅ → MVP Build Plan ✅ → TASK 01 Skeleton ← NEXT → Gate A → Personal MVP → Group MVP → Friends Test → Analytics/Economics → v0.2 → Closed Beta → Monetization`
+`Vision ✅ → Personality ✅ → Memory ✅ → Dispatcher ✅ → Architecture ✅ → Build 01–24 ✅ → Railway ✅ → Personal Smoke ✅ → Friends Preflight 🚧 → Friends Test → Product Review v0.2 → Closed Beta → Monetization`
