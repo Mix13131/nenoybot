@@ -72,7 +72,12 @@ def candidate(**overrides):
         "semantic_key": "commitment:send-report",
         "summary": "Пользователь обещал отправить отчёт завтра.",
         "subject_keys": ["user:u1"],
-        "payload": {},
+        "payload": {
+            "statement_kind": "commitment",
+            "status": "open",
+            "due_at": None,
+            "verbatim": "Завтра отправлю отчёт",
+        },
         "importance": 0.8,
         "confidence": 0.95,
         "evidence_count": 1,
@@ -146,14 +151,42 @@ def test_repeated_commitment_updates_one_logical_card():
     card = second.written[0]
     assert card.source_count >= 2
     assert len(card.evidence) == 2
+    assert card.status is MemoryStatus.ACTIVE
+    assert card.confidence >= 0.88
 
 
-def test_inferred_confidence_is_capped_before_confirmation():
+def test_grounded_commitment_activates_immediately_for_future_callback():
     store = FakeStore()
-    adapter = FakeAdapter(responses=[{"candidates": [candidate(confidence=0.99)]}])
+    adapter = FakeAdapter(responses=[{"candidates": [candidate(confidence=0.90)]}])
     mapper = MemoryMapper(store=store, adapter=adapter)
 
     card = mapper.map_event(event("Завтра отправлю отчёт")).written[0]
+
+    assert card.status is MemoryStatus.ACTIVE
+    assert card.origin is MemoryOrigin.INFERRED
+    assert card.confidence == 0.88
+    assert card.usage_policy.callback is True
+    assert card.usage_policy.proactive is True
+    assert card.payload["statement_kind"] == "commitment"
+    assert card.payload["verbatim"] == "Завтра отправлю отчёт"
+
+
+def test_non_statement_inferred_confidence_remains_capped_and_candidate():
+    store = FakeStore()
+    adapter = FakeAdapter(responses=[{"candidates": [candidate(
+        memory_type="observation",
+        semantic_key="observation:late",
+        confidence=0.99,
+        payload={
+            "statement_kind": "none",
+            "status": "unknown",
+            "due_at": None,
+            "verbatim": None,
+        },
+    )]}])
+    mapper = MemoryMapper(store=store, adapter=adapter)
+
+    card = mapper.map_event(event("Сегодня опоздал")).written[0]
 
     assert card.confidence == 0.70
     assert card.status is MemoryStatus.CANDIDATE
@@ -167,6 +200,12 @@ def test_pattern_does_not_promote_before_threshold():
         semantic_key="pattern:late",
         evidence_count=1,
         episode_count=1,
+        payload={
+            "statement_kind": "none",
+            "status": "unknown",
+            "due_at": None,
+            "verbatim": None,
+        },
     )]}])
     mapper = MemoryMapper(store=store, adapter=adapter)
 
@@ -178,9 +217,15 @@ def test_pattern_does_not_promote_before_threshold():
 
 def test_pattern_promotes_only_after_three_evidence_two_episodes():
     store = FakeStore()
+    generic_payload = {
+        "statement_kind": "none",
+        "status": "unknown",
+        "due_at": None,
+        "verbatim": None,
+    }
     adapter = FakeAdapter(responses=[
-        {"candidates": [candidate(memory_type="pattern", semantic_key="pattern:late", evidence_count=1, episode_count=1)]},
-        {"candidates": [candidate(memory_type="pattern", semantic_key="pattern:late", evidence_count=3, episode_count=2)]},
+        {"candidates": [candidate(memory_type="pattern", semantic_key="pattern:late", evidence_count=1, episode_count=1, payload=generic_payload)]},
+        {"candidates": [candidate(memory_type="pattern", semantic_key="pattern:late", evidence_count=3, episode_count=2, payload=generic_payload)]},
     ])
     mapper = MemoryMapper(store=store, adapter=adapter)
 

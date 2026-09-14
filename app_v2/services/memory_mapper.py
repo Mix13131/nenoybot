@@ -19,6 +19,13 @@ _ALLOWED_TYPES = {
     "preference", "observation", "contradiction", "quote",
     "running_joke", "pattern",
 }
+_DIRECT_STATEMENT_TYPES = {"commitment", "decision", "quote"}
+_STATEMENT_KINDS = {
+    "none", "commitment", "decision", "prediction", "boast", "rule", "quote",
+}
+_STATEMENT_STATUSES = {
+    "unknown", "open", "active", "kept", "broken", "missed", "fulfilled",
+}
 
 _SCHEMA: dict[str, Any] = {
     "type": "object",
@@ -34,14 +41,16 @@ _SCHEMA: dict[str, Any] = {
                     "semantic_key": {"type": "string", "minLength": 1},
                     "summary": {"type": "string", "minLength": 1},
                     "subject_keys": {"type": "array", "items": {"type": "string"}},
-                    # Strict Structured Outputs does not accept an unconstrained
-                    # object here. Keep mapper metadata closed for MVP and derive
-                    # runtime metadata (semantic key/evidence counters) locally.
                     "payload": {
                         "type": "object",
-                        "properties": {},
-                        "required": [],
                         "additionalProperties": False,
+                        "properties": {
+                            "statement_kind": {"type": "string", "enum": sorted(_STATEMENT_KINDS)},
+                            "status": {"type": "string", "enum": sorted(_STATEMENT_STATUSES)},
+                            "due_at": {"type": ["string", "null"]},
+                            "verbatim": {"type": ["string", "null"]},
+                        },
+                        "required": ["statement_kind", "status", "due_at", "verbatim"],
                     },
                     "importance": {"type": "number", "minimum": 0, "maximum": 1},
                     "confidence": {"type": "number", "minimum": 0, "maximum": 1},
@@ -161,7 +170,12 @@ class MemoryMapper:
                 "semantic_key": self._semantic_key("explicit", explicit),
                 "summary": explicit,
                 "subject_keys": self._default_subject_keys(event),
-                "payload": {},
+                "payload": {
+                    "statement_kind": "none",
+                    "status": "active",
+                    "due_at": None,
+                    "verbatim": explicit,
+                },
                 "importance": 0.9,
                 "confidence": 0.98,
                 "evidence_count": 1,
@@ -247,11 +261,27 @@ class MemoryMapper:
         memory_type = str(candidate["memory_type"])
         evidence_count = int(candidate.get("evidence_count", 1))
         episode_count = int(candidate.get("episode_count", 1))
+        raw_confidence = float(candidate.get("confidence", 0.5))
+
+        usage_data = dict(candidate.get("usage_policy", {}))
+        if memory_type in _DIRECT_STATEMENT_TYPES:
+            # A direct statement is useful only if it can be surfaced later.
+            # Roast safety is still decided at scene time by StatementWatcher.
+            usage_data["callback"] = True
+            usage_data["proactive"] = True
+        usage_policy = UsagePolicy(**usage_data)
 
         if memory_type == "pattern" and (evidence_count < 3 or episode_count < 2):
             memory_type = "observation"
             status = MemoryStatus.CANDIDATE
         elif explicit:
+            status = MemoryStatus.ACTIVE
+        elif memory_type in {"commitment", "decision"} and raw_confidence >= 0.65:
+            # These are grounded in the current message evidence, not a hidden
+            # profile inference. Activate them immediately so the next message
+            # can be checked against what the person actually said.
+            status = MemoryStatus.ACTIVE
+        elif memory_type == "quote" and raw_confidence >= 0.78:
             status = MemoryStatus.ACTIVE
         else:
             status = MemoryStatus.CANDIDATE
@@ -259,8 +289,11 @@ class MemoryMapper:
         semantic_key = str(candidate["semantic_key"]).strip()
         existing = self.store.find_semantic_match(event.scope_type, event.scope_id, semantic_key)
         evidence = self._evidence(event)
-        usage_policy = UsagePolicy(**candidate.get("usage_policy", {}))
         payload = dict(candidate.get("payload", {}))
+        payload.setdefault("statement_kind", "none")
+        payload.setdefault("status", "unknown")
+        payload.setdefault("due_at", None)
+        payload.setdefault("verbatim", None)
         payload.update(
             {
                 "semantic_key": semantic_key,
@@ -269,9 +302,9 @@ class MemoryMapper:
             }
         )
 
-        confidence = float(candidate.get("confidence", 0.5))
+        confidence = raw_confidence
         if not explicit:
-            confidence = min(confidence, 0.70)
+            confidence = min(confidence, 0.88 if memory_type in _DIRECT_STATEMENT_TYPES else 0.70)
 
         if existing is None:
             card = MemoryCard(
@@ -303,10 +336,16 @@ class MemoryMapper:
             evidence_items.append(evidence)
 
         merged_status = existing.status
-        if explicit:
+        if explicit or status is MemoryStatus.ACTIVE:
             merged_status = MemoryStatus.ACTIVE
         elif memory_type == "pattern" and evidence_count >= 3 and episode_count >= 2:
             merged_status = MemoryStatus.ACTIVE
+
+        # Repeated grounded evidence is allowed to strengthen an inferred card,
+        # but never jumps straight to certainty.
+        merged_confidence = max(existing.confidence, confidence)
+        if not explicit and len(evidence_items) >= 2:
+            merged_confidence = min(0.92, merged_confidence + 0.04)
 
         updated = existing.model_copy(
             update={
@@ -314,7 +353,7 @@ class MemoryMapper:
                 "summary": str(candidate["summary"]).strip(),
                 "payload": {**existing.payload, **payload},
                 "importance": max(existing.importance, float(candidate.get("importance", 0.5))),
-                "confidence": max(existing.confidence, confidence),
+                "confidence": merged_confidence,
                 "freshness": 1.0,
                 "status": merged_status,
                 "origin": MemoryOrigin.EXPLICIT if explicit else existing.origin,
