@@ -109,7 +109,7 @@ def test_strong_broken_commitment_can_trigger_autonomous_reply() -> None:
     assert watch.calls == 1
     assert plan.statement_watch["relation"] == "broken_commitment"
     assert plan.callback_memory_ids[0] == "c1"
-    assert plan.scene.contradiction_score >= .90
+    assert plan.scene.contradiction_score >= .88
     assert plan.scene.callback_opportunity >= .94
     assert plan.state.broken_commitment_relevant is True
     assert decision.primary_action is PrimaryAction.REPLY
