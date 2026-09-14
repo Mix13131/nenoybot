@@ -1,11 +1,11 @@
 from __future__ import annotations
 
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timezone
 from types import SimpleNamespace
 
 from app_v2.domain.enums import EventType, MemoryOrigin, MemoryStatus, ScopeType
 from app_v2.domain.events import EventEnvelope
-from app_v2.services.memory_mapper import MemoryMapper
+from app_v2.services.memory_mapper import MemoryMapper, _SCHEMA
 
 
 class FakeStore:
@@ -72,7 +72,7 @@ def candidate(**overrides):
         "semantic_key": "commitment:send-report",
         "summary": "Пользователь обещал отправить отчёт завтра.",
         "subject_keys": ["user:u1"],
-        "payload": {"deadline_hint": "tomorrow"},
+        "payload": {},
         "importance": 0.8,
         "confidence": 0.95,
         "evidence_count": 1,
@@ -81,6 +81,25 @@ def candidate(**overrides):
     }
     data.update(overrides)
     return data
+
+
+def _walk_schema(node):
+    if isinstance(node, dict):
+        yield node
+        for value in node.values():
+            yield from _walk_schema(value)
+    elif isinstance(node, list):
+        for value in node:
+            yield from _walk_schema(value)
+
+
+def test_memory_mapper_strict_schema_closes_every_object_node():
+    object_nodes = [node for node in _walk_schema(_SCHEMA) if node.get("type") == "object"]
+    assert object_nodes
+    for node in object_nodes:
+        assert node.get("additionalProperties") is False
+        properties = node.get("properties", {})
+        assert set(node.get("required", [])) == set(properties)
 
 
 def test_explicit_remember_is_deterministic_and_high_confidence():
