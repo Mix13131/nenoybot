@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
 from datetime import datetime, timezone
 from types import SimpleNamespace
 
@@ -10,7 +9,12 @@ from app_v2.domain.enums import EventType, ResponseMode, ScopeType
 from app_v2.domain.events import EventEnvelope, SceneAnalysis
 from app_v2.services.context_builder import GenerationContext, GenerationMemory
 from app_v2.services.memory_mapper import MapperResult
-from app_v2.services.personal_pipeline import PersonalPipeline, PersonalPipelineError
+from app_v2.services.personal_pipeline import (
+    PersonalPipeline,
+    PersonalPipelineError,
+    envelope_from_claimed_event,
+    make_personal_event_handler,
+)
 from app_v2.services.personality_engine import PersonalityEngine
 
 
@@ -182,3 +186,36 @@ def test_same_event_retry_does_not_create_duplicate_outbox():
     assert first.outbox_created is True
     assert second.outbox_created is False
     assert len(outbox.by_key) == 1
+
+
+def test_claimed_event_payload_restores_normalized_envelope():
+    source = evt(event_id="evt-claimed")
+    claimed = SimpleNamespace(
+        event_id=source.event_id,
+        event_type=source.event_type.value,
+        scope_type=source.scope_type.value,
+        scope_id=source.scope_id,
+        actor_user_id=source.actor_user_id,
+        created_at=source.occurred_at,
+        payload=source.model_dump(mode="json"),
+    )
+    restored = envelope_from_claimed_event(claimed)
+    assert restored == source
+
+
+def test_event_worker_compatible_handler_processes_only_personal_scope():
+    p = pipeline()
+    personal = evt(event_id="p1")
+    group = evt(event_id="g1", scope=ScopeType.GROUP)
+    handler = make_personal_event_handler(p)
+    for source in (personal, group):
+        handler(SimpleNamespace(
+            event_id=source.event_id,
+            event_type=source.event_type.value,
+            scope_type=source.scope_type.value,
+            scope_id=source.scope_id,
+            actor_user_id=source.actor_user_id,
+            created_at=source.occurred_at,
+            payload=source.model_dump(mode="json"),
+        ))
+    assert len(p.response_generator.calls) == 1
