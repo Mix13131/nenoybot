@@ -12,10 +12,10 @@ from app_v2.services.group_behavior_engine import GroupBehaviorEngine
 from app_v2.services.personality_engine import PersonalityEngine
 
 
-def event(text="уже еду") -> EventEnvelope:
+def event(text="уже еду", *, event_type=EventType.GROUP_MESSAGE) -> EventEnvelope:
     return EventEnvelope(
         event_id="e1",
-        event_type=EventType.GROUP_MESSAGE,
+        event_type=event_type,
         occurred_at=datetime.now(timezone.utc),
         scope_type=ScopeType.GROUP,
         scope_id="-100777",
@@ -80,6 +80,16 @@ class FakeRetrieval:
     def retrieve(self, scope_type, scope_id, **kwargs):
         self.calls.append((scope_type, scope_id, kwargs))
         return [item for item in self.items if item.card.scope_type is scope_type and item.card.scope_id == scope_id]
+
+
+class FailingRetrieval:
+    def retrieve(self, *args, **kwargs):
+        raise RuntimeError("memory store unavailable")
+
+
+class FailingInitiative:
+    def evaluate(self, **kwargs):
+        raise RuntimeError("initiative state unavailable")
 
 
 def test_running_joke_strengthens_grounded_callback_and_selects_callback_mode() -> None:
@@ -190,3 +200,60 @@ def test_unsolicited_feature_flag_off_preserves_silence() -> None:
     decision=decide(event(), plan.scene, plan.state)
     assert plan.state.cooldown_active is True
     assert decision.primary_action is PrimaryAction.IGNORE
+
+
+def test_memory_failure_forces_unsolicited_silence_and_no_callback_claims() -> None:
+    scene=SceneAnalysis(callback_opportunity=.95, roast_opportunity=.95, contradiction_score=.9)
+    plan=GroupBehaviorEngine(FailingRetrieval()).plan(
+        event=event(), group_context=context(), scene=scene, now=datetime.now(timezone.utc)
+    )
+    decision=decide(event(), plan.scene, plan.state)
+
+    assert plan.callback_memory_ids == ()
+    assert plan.memory_usage == "assist"
+    assert plan.state.allow_callbacks is False
+    assert plan.state.allow_roast is False
+    assert plan.state.cooldown_active is True
+    assert plan.state.metadata["policy_degraded"] is True
+    assert plan.state.metadata["memory_unavailable"] is True
+    assert decision.primary_action is PrimaryAction.IGNORE
+
+
+def test_direct_mention_still_replies_when_group_memory_is_unavailable() -> None:
+    direct=event("@nenoy что думаешь?", event_type=EventType.DIRECT_MENTION)
+    plan=GroupBehaviorEngine(FailingRetrieval()).plan(
+        event=direct,
+        group_context=context(),
+        scene=SceneAnalysis(direct_mention=True, callback_opportunity=1.0, roast_opportunity=1.0),
+        now=datetime.now(timezone.utc),
+    )
+    decision=decide(direct, plan.scene, plan.state)
+
+    assert plan.callback_memory_ids == ()
+    assert decision.primary_action is PrimaryAction.REPLY
+    assert decision.mode is ResponseMode.GROUP_DIRECT_REPLY
+    assert decision.mode is not ResponseMode.GROUP_CALLBACK
+
+
+def test_initiative_failure_forces_unsolicited_silence_but_keeps_explicit_path() -> None:
+    engine=GroupBehaviorEngine(FakeRetrieval([]), initiative_service=FailingInitiative())
+    ordinary=event("ну и денек")
+    plan=engine.plan(
+        event=ordinary, group_context=context(), scene=SceneAnalysis(banter_score=.9), now=datetime.now(timezone.utc)
+    )
+    ordinary_decision=decide(ordinary, plan.scene, plan.state)
+
+    assert plan.state.cooldown_active is True
+    assert plan.state.metadata["initiative_unavailable"] is True
+    assert ordinary_decision.primary_action is PrimaryAction.IGNORE
+
+    direct=event("@nenoy?", event_type=EventType.DIRECT_MENTION)
+    direct_plan=engine.plan(
+        event=direct,
+        group_context=context(),
+        scene=SceneAnalysis(direct_mention=True),
+        now=datetime.now(timezone.utc),
+    )
+    direct_decision=decide(direct, direct_plan.scene, direct_plan.state)
+    assert direct_decision.primary_action is PrimaryAction.REPLY
+    assert direct_decision.mode is ResponseMode.GROUP_DIRECT_REPLY
