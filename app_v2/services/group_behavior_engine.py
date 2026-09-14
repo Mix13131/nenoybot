@@ -76,13 +76,22 @@ class GroupBehaviorEngine:
         roast_tolerance = _int(participant.get("roast_tolerance"), 7)
         fatigue = _int(profile.get("callback_fatigue_minutes"), 180, low=0, high=1440)
 
+        policy_degraded = False
+        initiative_unavailable = False
         dynamic = None
         if self.initiative_service is not None:
-            dynamic = self.initiative_service.evaluate(
-                event=event,
-                group_context=group_context,
-                now=now,
-            )
+            try:
+                dynamic = self.initiative_service.evaluate(
+                    event=event,
+                    group_context=group_context,
+                    now=now,
+                )
+            except Exception:
+                # If history/feedback state cannot be loaded we cannot safely
+                # decide to interrupt a group. Explicit mentions still bypass
+                # unsolicited cooldown later in Dispatcher.
+                policy_degraded = True
+                initiative_unavailable = True
 
         silence_requested = bool(dynamic and dynamic.silence_requested)
         effective_scene = scene
@@ -103,15 +112,21 @@ class GroupBehaviorEngine:
         subject_keys = [f"user:{event.actor_user_id}"] if event.actor_user_id else []
 
         probe = []
+        memory_unavailable = False
         if not silence_requested and callback_level > 0 and roast_tolerance >= 3:
-            probe = self.retrieval_engine.retrieve(
-                ScopeType.GROUP,
-                event.scope_id,
-                usage="callback",
-                subject_keys=subject_keys,
-                callback_fatigue_minutes=fatigue,
-                limit=4,
-            )
+            try:
+                probe = self.retrieval_engine.retrieve(
+                    ScopeType.GROUP,
+                    event.scope_id,
+                    usage="callback",
+                    subject_keys=subject_keys,
+                    callback_fatigue_minutes=fatigue,
+                    limit=4,
+                )
+            except Exception:
+                probe = []
+                memory_unavailable = True
+                policy_degraded = True
 
         callback_cards = [
             item for item in probe
@@ -126,13 +141,15 @@ class GroupBehaviorEngine:
         )
 
         allow_callbacks = (
-            not silence_requested
+            not policy_degraded
+            and not silence_requested
             and callback_level > 0
             and roast_tolerance >= 3
             and bool(callback_cards)
         )
         allow_roast = (
-            not silence_requested
+            not policy_degraded
+            and not silence_requested
             and roast_level > 0
             and roast_tolerance >= 5
             and safe_scene
@@ -164,13 +181,16 @@ class GroupBehaviorEngine:
             }
         else:
             muted = bool(group_context.silent_until and group_context.silent_until > now)
-            cooldown_active = not unsolicited_enabled
+            cooldown_active = True if policy_degraded else not unsolicited_enabled
             unsolicited_today = 0
             soft_daily_limit = 6
             hard_daily_limit = 10
             bot_spoke_recently = False
             ignored_recent = 0
             dynamic_metadata = {}
+
+        if policy_degraded:
+            cooldown_active = True
 
         state = DispatcherPolicyState(
             group_muted=muted,
@@ -181,8 +201,8 @@ class GroupBehaviorEngine:
             initiative_level=initiative,
             bot_spoke_recently=bot_spoke_recently,
             ignored_unsolicited_recent=ignored_recent,
-            running_joke_fit=running_joke_fit,
-            broken_commitment_relevant=broken_commitment,
+            running_joke_fit=running_joke_fit if not policy_degraded else False,
+            broken_commitment_relevant=broken_commitment if not policy_degraded else False,
             allow_roast=allow_roast,
             allow_callbacks=allow_callbacks,
             metadata={
@@ -190,6 +210,9 @@ class GroupBehaviorEngine:
                 "unsolicited_enabled": unsolicited_enabled,
                 "roast_tolerance": roast_tolerance,
                 "callback_probe_ids": list(callback_ids),
+                "policy_degraded": policy_degraded,
+                "memory_unavailable": memory_unavailable,
+                "initiative_unavailable": initiative_unavailable,
                 **dynamic_metadata,
             },
         )
@@ -199,7 +222,7 @@ class GroupBehaviorEngine:
             state=state,
             memory_usage="callback" if allow_callbacks else "assist",
             callback_fatigue_minutes=fatigue,
-            callback_memory_ids=callback_ids,
+            callback_memory_ids=callback_ids if not policy_degraded else (),
             context_profile=profile,
             participant_adaptation=adaptation,
         )
