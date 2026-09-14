@@ -10,6 +10,7 @@ class FakeReminderRepo:
     def __init__(self):
         self.created = []
         self.cancel_calls = []
+        self.manual_cancel_calls = []
 
     def create(self, **kwargs):
         self.created.append(kwargs)
@@ -18,6 +19,10 @@ class FakeReminderRepo:
     def cancel_waiting_for_response(self, **kwargs):
         self.cancel_calls.append(kwargs)
         return 2
+
+    def cancel_group_reminders(self, **kwargs):
+        self.manual_cancel_calls.append(kwargs)
+        return 1
 
 
 def make_event(*, text, metadata=None, event_type=EventType.REPLY_TO_BOT, actor="101"):
@@ -77,3 +82,37 @@ def test_one_shot_relative_reminder():
     assert result.status == "scheduled"
     assert result.recurring is False
     assert result.due_at == now + timedelta(minutes=15)
+
+
+def test_creator_can_manually_stop_their_group_reminders():
+    repo = FakeReminderRepo()
+    service = GroupReminderService(repo)
+    now = datetime(2026, 9, 14, 15, 10, tzinfo=timezone.utc)
+    item = make_event(
+        text="НеНой, останови напоминания",
+        event_type=EventType.DIRECT_MENTION,
+        actor="101",
+    )
+    result = service.maybe_schedule(item, now=now)
+    assert result.status == "cancelled"
+    assert result.cancelled_count == 1
+    assert repo.manual_cancel_calls == [{
+        "scope_id": "-1001",
+        "creator_user_id": "101",
+        "target_username": None,
+    }]
+
+
+def test_creator_can_stop_only_one_targets_reminders():
+    repo = FakeReminderRepo()
+    service = GroupReminderService(repo)
+    now = datetime(2026, 9, 14, 15, 10, tzinfo=timezone.utc)
+    item = make_event(
+        text="НеНой, хватит напоминать @toroikin",
+        event_type=EventType.DIRECT_MENTION,
+        actor="101",
+    )
+    result = service.maybe_schedule(item, now=now)
+    assert result.status == "cancelled"
+    assert result.target_username == "toroikin"
+    assert repo.manual_cancel_calls[0]["target_username"] == "toroikin"

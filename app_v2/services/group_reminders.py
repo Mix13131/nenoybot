@@ -11,6 +11,10 @@ from app_v2.domain.events import EventEnvelope
 
 _USERNAME_RE = re.compile(r"@([A-Za-z0-9_]{5,32})")
 _REMINDER_INTENT_RE = re.compile(r"\b(?:напоминай|напомни)\b", flags=re.IGNORECASE)
+_CANCEL_REMINDER_RE = re.compile(
+    r"(?:\b(?:отмени|отменяй|останови|остановить|хватит|перестань|прекрати|стоп)\b.*\bнапомин\w*|\bне\s+напоминай\b)",
+    flags=re.IGNORECASE,
+)
 _EVERY_HALF_HOUR_RE = re.compile(r"\bкажд\w*\s+пол\s*час", flags=re.IGNORECASE)
 _EVERY_INTERVAL_RE = re.compile(
     r"\bкажд\w*\s+(?:(\d{1,3})\s*)?(минут\w*|час\w*)",
@@ -88,8 +92,30 @@ class GroupReminderService:
             return None
         if event.event_type not in {EventType.DIRECT_MENTION, EventType.REPLY_TO_BOT}:
             return None
+
         text = (event.text or "").strip()
-        if not text or not _REMINDER_INTENT_RE.search(text):
+        if not text:
+            return None
+        reply_text = str(event.metadata.get("reply_to_text") or "").strip()
+
+        # Manual stop is a first-class action. It intentionally requires an
+        # explicit address/reply to НеНой, then cancels only reminders created by
+        # that participant in this same group. Mentioning @username narrows it.
+        if _CANCEL_REMINDER_RE.search(text):
+            target_username = self._target_username(text, reply_text)
+            cancelled = self.reminder_repo.cancel_group_reminders(
+                scope_id=event.scope_id,
+                creator_user_id=event.actor_user_id,
+                target_username=target_username,
+            )
+            return GroupReminderAction(
+                status="cancelled" if cancelled else "not_cancelled",
+                target_username=target_username,
+                cancelled_count=cancelled,
+                reason=None if cancelled else "no_active_reminders",
+            )
+
+        if not _REMINDER_INTENT_RE.search(text):
             return None
 
         interval_seconds = self._recurring_interval_seconds(text)
@@ -97,7 +123,6 @@ class GroupReminderService:
         if interval_seconds is None and one_shot_seconds is None:
             return GroupReminderAction(status="not_scheduled", reason="unsupported_time_expression")
 
-        reply_text = str(event.metadata.get("reply_to_text") or "").strip()
         target_username = self._target_username(text, reply_text)
         stop_on_reply = bool(
             re.search(r"\bпока\b.*\bне\s+ответ", text, flags=re.IGNORECASE)
