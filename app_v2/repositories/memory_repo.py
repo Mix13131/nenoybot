@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import json
 from dataclasses import dataclass
-from datetime import datetime
 from typing import Iterable, Literal
 
 from app_v2.domain.enums import MemoryStatus, ScopeType
@@ -31,6 +30,14 @@ _CARD_COLUMNS = """
     importance, confidence, freshness, status, origin, pinned, usage_policy,
     evidence, source_count, created_at, updated_at, last_confirmed_at,
     last_used_at, valid_from, valid_until, superseded_by
+"""
+
+_CARD_COLUMNS_MC = """
+    mc.id, mc.scope_type, mc.scope_id, mc.memory_type, mc.subject_keys,
+    mc.summary, mc.payload, mc.importance, mc.confidence, mc.freshness,
+    mc.status, mc.origin, mc.pinned, mc.usage_policy, mc.evidence,
+    mc.source_count, mc.created_at, mc.updated_at, mc.last_confirmed_at,
+    mc.last_used_at, mc.valid_from, mc.valid_until, mc.superseded_by
 """
 
 
@@ -66,10 +73,11 @@ def _row_to_card(row) -> MemoryCard:
     )
 
 
-def _usage_clause(usage: UsageKind) -> str:
+def _usage_clause(usage: UsageKind, *, alias: str = "") -> str:
     if usage not in _ALLOWED_USAGE:
         raise ValueError(f"Unsupported memory usage kind: {usage}")
-    return f"COALESCE((usage_policy ->> '{usage}')::boolean, FALSE) IS TRUE"
+    prefix = f"{alias}." if alias else ""
+    return f"COALESCE(({prefix}usage_policy ->> '{usage}')::boolean, FALSE) IS TRUE"
 
 
 class MemoryRepository:
@@ -328,15 +336,46 @@ class MemoryRepository:
         usage: UsageKind = "assist",
         min_confidence: float = 0.5,
         min_freshness: float = 0.1,
+        callback_fatigue_minutes: int | None = None,
         limit: int = 16,
     ) -> list[RankedMemory]:
         seeds = list(seed_ids)
         if not seeds:
             return []
-        usage_sql = _usage_clause(usage)
+
+        conditions = [
+            "mr.scope_type=%s",
+            "mr.scope_id=%s",
+            "mc.scope_type=%s",
+            "mc.scope_id=%s",
+            "(mr.from_memory_id = ANY(%s::text[]) OR mr.to_memory_id = ANY(%s::text[]))",
+            "mc.status='active'",
+            "mc.confidence >= %s",
+            "mc.freshness >= %s",
+            _usage_clause(usage, alias="mc"),
+            "(mc.valid_from IS NULL OR mc.valid_from <= CURRENT_TIMESTAMP)",
+            "(mc.valid_until IS NULL OR mc.valid_until >= CURRENT_TIMESTAMP)",
+        ]
+        params: list[object] = [
+            scope_type.value,
+            scope_id,
+            scope_type.value,
+            scope_id,
+            seeds,
+            seeds,
+            min_confidence,
+            min_freshness,
+        ]
+        if callback_fatigue_minutes is not None:
+            conditions.append(
+                "(mc.last_used_at IS NULL OR mc.last_used_at <= CURRENT_TIMESTAMP - (%s * INTERVAL '1 minute'))"
+            )
+            params.append(callback_fatigue_minutes)
+        params.append(max(1, limit))
+
         rows = self.conn.execute(
             f"""
-            SELECT {_CARD_COLUMNS},
+            SELECT {_CARD_COLUMNS_MC},
                    (mc.importance * mc.confidence * mc.freshness + mr.weight * 0.15) AS rank_score
             FROM memory_relations mr
             JOIN memory_cards mc
@@ -344,31 +383,10 @@ class MemoryRepository:
                     WHEN mr.from_memory_id = ANY(%s::text[]) THEN mr.to_memory_id
                     ELSE mr.from_memory_id
                  END
-            WHERE mr.scope_type=%s
-              AND mr.scope_id=%s
-              AND mc.scope_type=%s
-              AND mc.scope_id=%s
-              AND (mr.from_memory_id = ANY(%s::text[]) OR mr.to_memory_id = ANY(%s::text[]))
-              AND mc.status='active'
-              AND mc.confidence >= %s
-              AND mc.freshness >= %s
-              AND {usage_sql.replace('usage_policy', 'mc.usage_policy')}
-              AND (mc.valid_from IS NULL OR mc.valid_from <= CURRENT_TIMESTAMP)
-              AND (mc.valid_until IS NULL OR mc.valid_until >= CURRENT_TIMESTAMP)
+            WHERE {' AND '.join(conditions)}
             ORDER BY rank_score DESC, mc.updated_at DESC
             LIMIT %s
             """,
-            (
-                seeds,
-                scope_type.value,
-                scope_id,
-                scope_type.value,
-                scope_id,
-                seeds,
-                seeds,
-                min_confidence,
-                min_freshness,
-                max(1, limit),
-            ),
+            tuple([seeds, *params]),
         ).fetchall()
         return [RankedMemory(_row_to_card(row[:23]), float(row[23])) for row in rows]
