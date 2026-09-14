@@ -88,6 +88,7 @@ class ReasonCode(str, Enum):
     HELP_OPPORTUNITY = "help_opportunity"
     RUNNING_JOKE = "running_joke"
     BROKEN_COMMITMENT = "broken_commitment"
+    STATEMENT_WATCH = "statement_watch"
     SCHEDULED_REMINDER = "scheduled_reminder"
     COOLDOWN_ACTIVE = "cooldown_active"
     SILENCE_REQUESTED = "silence_requested"
