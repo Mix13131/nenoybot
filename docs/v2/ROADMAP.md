@@ -1,5 +1,17 @@
 # ROADMAP — НеНой 2.0
 
+## Актуальная контрольная точка — 2026-09-15
+
+Исправления ручной отмены напоминаний уже влиты в `v2`: PR #88, #89, #90. Последняя проверенная точка runtime-кода — `315304148fac4014e98d9e39b31ebfcb93984763` (merge PR #90).
+
+По предыдущей рабочей сессии групповой live-test уже шёл; полный 7-дневный Friends Test не объявляется завершённым. Текущее состояние Railway, БД, whitelist и результаты нового тестового запуска этой документационной фиксацией не подтверждаются.
+
+**Кнопку «🛑 Стоп» под напоминаниями не добавляем: пользователь отклонил предложение. Это не backlog и не следующий шаг.** Остаются текстовые команды и reply-stop.
+
+Источник текущего состояния и границ проверки: [LIVE_TEST_STATUS.md](LIVE_TEST_STATUS.md). Принятые решения: [DECISIONS.md](DECISIONS.md), D-046–D-048.
+
+---
+
 ## Phase 0 — Product Vision
 
 **Статус: DONE**
@@ -96,21 +108,21 @@ Stage F — Feedback / Cost / Reliability
 24 Reliability               ✅
 
 Stage G — Deployment / Real Test
-25 Railway v2                ✅ functional live runtime
-26 Personal Smoke            ✅ functional PASS
-27 Friends Preflight         🚧 code ready, live setup pending
-28 Friends Test              ⏳ next after preflight
+25 Railway v2                ✅ functional live runtime (historical check)
+26 Personal Smoke            ✅ functional PASS (2026-09-14)
+27 Friends Preflight         🟡 group test occurred; full checklist not re-audited
+28 Friends Test              🚧 live feedback / reminder fixes; not completed
 ```
 
-Артефакт: `MVP_BUILD_PLAN.md`.
+Артефакт: `MVP_BUILD_PLAN.md`. Текущие live-оговорки — в `LIVE_TEST_STATUS.md`; отметки реализации не заменяют новый production health-check.
 
 ---
 
 ## Phase 5 — Personal MVP 2.0
 
-**Статус: LIVE — FIRST E2E PASS**
+**Статус: LIVE — FIRST E2E PASS (историческая проверка)**
 
-Рабочий production path уже существует:
+Зафиксированный production path:
 
 ```text
 Telegram
@@ -129,8 +141,10 @@ Telegram
 
 Первый live-pass сразу обнаружил два production-нюанса:
 
-- transport INFO logs могли записать credential-bearing Telegram Bot API URL — logging hardened в PR #73; старый token требуется ротировать;
+- transport INFO logs могли записать credential-bearing Telegram Bot API URL — logging hardened в PR #73; на том этапе была необходима ротация старого токена;
 - strict JSON schema Memory Mapper дала скрытый HTTP 400 — schema hardened в PR #74.
+
+Позднее PR #84 описал восстановление webhook после смены токена. Завершённость ротации и актуальные настройки production при обновлении документации 2026-09-15 повторно не проверялись: не объявлять старую операционную задачу ни автоматически закрытой, ни необходимой к повторному выполнению без проверки.
 
 Артефакты: `LIVE_TEST_STATUS.md`, `tasks/TASK_26_PERSONAL_SMOKE_TEST.md`.
 
@@ -138,7 +152,7 @@ Telegram
 
 ## Phase 6 — Group MVP
 
-**Статус: BUILT — CONTROLLED PREFLIGHT**
+**Статус: BUILT — CONTROLLED LIVE TEST ПО ПРЕДЫДУЩЕЙ СЕССИИ**
 
 Group runtime уже умеет:
 
@@ -164,7 +178,17 @@ python -m app_v2.group_admin deactivate <chat_id>
 
 Неизвестные группы не активируются автоматически.
 
-Артефакт: `tasks/TASK_27_FRIENDS_PREFLIGHT.md`.
+После начала группового тестирования закрыт цикл исправлений ручной отмены напоминаний:
+
+- PR #88 — первая ручная отмена;
+- PR #89 — отмена цепочки не превращается в mute самого НеНоя, есть ответ о результате;
+- PR #90 — reply-stop конкретной цепочки, stop по адресату, stop всей текущей группы, подавление ожидающих событий/outbox, минимум 15 минут между повторениями и максимум 4 срабатывания по умолчанию.
+
+Правило PR #90 разрешает участникам текущей группы останавливать цепочки независимо от автора; раннее ограничение PR #88 «только создатель» больше не является текущим правилом этих команд. Границы между группами сохраняются.
+
+Код исправлений подтверждён в GitHub. Аварийная остановка одной старой цепочки и восстановление worker — исторический отчёт предыдущей сессии, не новая операция этой фиксации.
+
+Артефакты: `tasks/TASK_27_FRIENDS_PREFLIGHT.md`, `LIVE_TEST_STATUS.md`.
 
 ---
 
@@ -194,22 +218,28 @@ Live tuning будет происходить только по результа
 
 ## Phase 9 — Friends Test
 
-**Статус: PREFLIGHT IN PROGRESS**
+**Статус: LIVE FEEDBACK / REMINDER SAFETY CHECKPOINT; ПОЛНЫЙ ТЕСТ НЕ ЗАКРЫТ**
 
-7 дней живого теста:
+Групповой тест уже дал реальные обращения и инцидент с напоминаниями. Это не означает, что все дни плана пройдены или что текущий состав подключённых групп проверен заново.
+
+План 7 дней живого теста остаётся ориентиром, а не отчётом о выполненных днях:
 
 - День 1–2: low initiative, наблюдение.
 - День 3–4: callbacks ON, medium initiative.
 - День 5–7: высокий roast, profanity по настройке группы, adaptive initiative.
 
-Перед стартом TASK 28 остаются только live-операции:
+Для подключения новой группы сохраняется контролируемый preflight:
 
-1. ротировать Telegram token, который попал в private runtime log до logging fix;
-2. BotFather → `/setprivacy` → v2 bot → **Disable**, иначе Telegram не будет передавать обычную групповую болтовню;
-3. выбрать один конкретный чат друзей;
-4. добавить туда НеНой 2.0 и дать Telegram прислать хотя бы один group update;
-5. активировать именно этот `chat_id` через whitelist с Day-1 profile;
-6. провести direct mention + ordinary message smoke.
+1. проверить безопасность текущих credentials; не повторять ротацию вслепую;
+2. проверить настройку BotFather `/setprivacy` для передачи обычных групповых сообщений;
+3. получить явный выбор конкретной тестовой группы;
+4. добавить НеНоя 2.0 и получить хотя бы один group update;
+5. активировать именно выбранную группу через whitelist с согласованным профилем;
+6. провести direct mention + ordinary message smoke и проверить изоляцию её контекста.
+
+Этот checklist не является указанием заново подключать уже работающую группу. Статус второй группы и полнота preflight в текущей документационной задаче не проверялись.
+
+Следующий проверочный шаг по текущему инциденту: ограниченный live-smoke существующих способов отмены (reply / адресат / вся группа) с проверкой фактической остановки и нормального общения НеНоя после неё. Он не запускается автоматически этой фиксацией и пока не отмечен как PASS.
 
 Главная Group North Star:
 
@@ -251,6 +281,8 @@ Personal: жёсткость, юмор, подъёб, мат, инициатив
 
 Group: roast, sarcasm, profanity level/frequency, initiative, callbacks, max interventions, sensitivity.
 
+Исключение, уже решённое пользователем: inline-кнопку «🛑 Стоп» под напоминаниями не добавлять и не переносить в эту фазу как отложенную задачу (D-046).
+
 ---
 
 ## Phase 13 — Closed Beta
@@ -290,6 +322,10 @@ Group: roast, sarcasm, profanity level/frequency, initiative, callbacks, max int
 - огромную админку;
 - integrations-first архитектуру.
 
+Отдельно от отложенных функций: кнопка «🛑 Стоп» под напоминаниями **отклонена**, а не запланирована после MVP.
+
 # Critical Path
 
-`Vision ✅ → Personality ✅ → Memory ✅ → Dispatcher ✅ → Architecture ✅ → Build 01–24 ✅ → Railway ✅ → Personal Smoke ✅ → Friends Preflight 🚧 → Friends Test → Product Review v0.2 → Closed Beta → Monetization`
+`Vision ✅ → Personality ✅ → Memory ✅ → Dispatcher ✅ → Architecture ✅ → Build 01–24 ✅ → Railway / Personal Smoke ✅ (исторические проверки) → Controlled Friends Test 🚧 → Product Review v0.2 → Closed Beta → Monetization`
+
+Проверенная точка GitHub: PR #90. Следующее подтверждение — live-smoke существующей отмены без новых функций; подробности и границы в `LIVE_TEST_STATUS.md`.
