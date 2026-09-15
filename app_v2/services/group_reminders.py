@@ -19,6 +19,10 @@ _CANCEL_REMINDER_RE = re.compile(
     r")",
     flags=re.IGNORECASE | re.DOTALL,
 )
+_STOP_REPLY_RE = re.compile(
+    r"^\s*(?:стоп|хватит|достаточно|прекрати|отмени|останови|не\s+надо|не\s+напоминай)\s*[.!?…]*\s*$",
+    flags=re.IGNORECASE,
+)
 _EVERY_HALF_HOUR_RE = re.compile(r"\bкажд\w*\s+пол\s*час", flags=re.IGNORECASE)
 _EVERY_INTERVAL_RE = re.compile(
     r"\bкажд\w*\s+(?:(\d{1,3})\s*)?(минут\w*|час\w*)",
@@ -28,6 +32,9 @@ _AFTER_INTERVAL_RE = re.compile(
     r"\bчерез\s+(\d{1,3})\s*(минут\w*|час\w*)",
     flags=re.IGNORECASE,
 )
+
+_MIN_RECURRING_INTERVAL_SECONDS = 15 * 60
+_MAX_GROUP_REMINDER_OCCURRENCES = 4
 
 
 @dataclass(frozen=True)
@@ -57,12 +64,12 @@ class GroupReminderAction:
 
 
 class GroupReminderService:
-    """Small deterministic action layer for reminders requested inside a group.
+    """Deterministic action layer for reminders requested inside a group.
 
-    MVP intentionally handles simple relative timing only. It does not try to be
-    a natural-language calendar; the important product behavior is that НеНой
-    can actually schedule a nudge in the same chat/topic instead of merely
-    joking about it.
+    Chat stop controls are deliberately fail-safe: replying `стоп` to a bot
+    reminder cancels that exact chain, while an explicit reminder-stop command
+    cancels matching active reminders in the current group. Any participant can
+    stop a noisy chain; social safety is more important than reminder ownership.
     """
 
     def __init__(self, reminder_repo: Any) -> None:
@@ -102,14 +109,24 @@ class GroupReminderService:
             return None
         reply_text = str(event.metadata.get("reply_to_text") or "").strip()
 
-        # Manual stop is a first-class action. It intentionally requires an
-        # explicit address/reply to НеНой, then cancels only reminders created by
-        # that participant in this same group. Mentioning @username narrows it.
+        # Fastest and safest UX: reply `стоп` to the actual bot reminder.
+        if event.event_type is EventType.REPLY_TO_BOT and _STOP_REPLY_RE.search(text):
+            cancelled = self.reminder_repo.cancel_reminder_from_bot_reply(
+                scope_id=event.scope_id,
+                reply_to_message_id=event.reply_to_message_id,
+            )
+            return GroupReminderAction(
+                status="cancelled" if cancelled else "not_cancelled",
+                cancelled_count=cancelled,
+                reason="reply_to_reminder" if cancelled else "no_active_reminder_for_reply",
+            )
+
+        # Explicit stop commands work group-wide. A target narrows the kill
+        # switch; without a target all active group reminders are stopped.
         if _CANCEL_REMINDER_RE.search(text):
             target_username = self._target_username(text, reply_text)
-            cancelled = self.reminder_repo.cancel_group_reminders(
+            cancelled = self.reminder_repo.cancel_active_group_reminders(
                 scope_id=event.scope_id,
-                creator_user_id=event.actor_user_id,
                 target_username=target_username,
             )
             return GroupReminderAction(
@@ -156,6 +173,8 @@ class GroupReminderService:
             "source_event_id": event.event_id,
             "source_message_id": event.message_id,
             "reminder_context": subject,
+            "fire_count": 0,
+            "max_occurrences": _MAX_GROUP_REMINDER_OCCURRENCES if interval_seconds is not None else 1,
         }
         record = self.reminder_repo.create(
             scope_type=ScopeType.GROUP,
@@ -192,7 +211,7 @@ class GroupReminderService:
         amount = int(match.group(1) or 1)
         unit = match.group(2).lower()
         seconds = amount * (3600 if unit.startswith("час") else 60)
-        if 60 <= seconds <= 31 * 24 * 60 * 60:
+        if _MIN_RECURRING_INTERVAL_SECONDS <= seconds <= 31 * 24 * 60 * 60:
             return seconds
         return None
 
