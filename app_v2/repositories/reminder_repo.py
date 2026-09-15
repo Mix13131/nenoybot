@@ -39,6 +39,29 @@ class ReminderRepository:
             raise ValueError("Reminder interval must be between 60 seconds and 31 days")
         return seconds
 
+    def _cancel_queued_work(self, reminder_ids: list[int]) -> None:
+        """Suppress due events/outbox rows already queued for cancelled reminders."""
+        for reminder_id in reminder_ids:
+            self.conn.execute(
+                """
+                UPDATE events
+                SET status='completed', processed_at=CURRENT_TIMESTAMP,
+                    last_error='reminder cancelled before delivery'
+                WHERE event_id LIKE %s
+                  AND status IN ('pending','retry')
+                """,
+                (f"reminder:{reminder_id}:%",),
+            )
+            self.conn.execute(
+                """
+                UPDATE outbox
+                SET status='failed', last_error='reminder cancelled before delivery'
+                WHERE dedupe_key LIKE %s
+                  AND status IN ('pending','retry')
+                """,
+                (f"reply:reminder:{reminder_id}:%",),
+            )
+
     def create(
         self,
         *,
@@ -70,9 +93,16 @@ class ReminderRepository:
 
     def cancel(self, reminder_id: int) -> bool:
         row = self.conn.execute(
-            "UPDATE reminders SET status='cancelled', updated_at=CURRENT_TIMESTAMP WHERE id=%s AND status IN ('pending','retry') RETURNING id",
+            """
+            UPDATE reminders
+            SET status='cancelled', updated_at=CURRENT_TIMESTAMP, last_error=NULL
+            WHERE id=%s AND status IN ('pending','retry')
+            RETURNING id
+            """,
             (reminder_id,),
         ).fetchone()
+        if row is not None:
+            self._cancel_queued_work([int(row[0])])
         self.conn.commit()
         return row is not None
 
@@ -89,28 +119,114 @@ class ReminderRepository:
         if not user_id and not username:
             return 0
 
-        row = self.conn.execute(
+        rows = self.conn.execute(
             """
-            WITH cancelled AS (
-                UPDATE reminders
-                SET status='cancelled', updated_at=CURRENT_TIMESTAMP, last_error=NULL
-                WHERE scope_type='group'
-                  AND scope_id=%s
-                  AND status IN ('pending','retry')
-                  AND COALESCE(payload ->> 'stop_on_reply', 'false') = 'true'
-                  AND (
-                      (%s <> '' AND COALESCE(payload ->> 'target_user_id', '') = %s)
-                      OR
-                      (%s <> '' AND lower(COALESCE(payload ->> 'target_username', '')) = %s)
-                  )
-                RETURNING id
-            )
-            SELECT count(*) FROM cancelled
+            UPDATE reminders
+            SET status='cancelled', updated_at=CURRENT_TIMESTAMP, last_error=NULL
+            WHERE scope_type='group'
+              AND scope_id=%s
+              AND status IN ('pending','retry')
+              AND COALESCE(payload ->> 'stop_on_reply', 'false') = 'true'
+              AND (
+                  (%s <> '' AND COALESCE(payload ->> 'target_user_id', '') = %s)
+                  OR
+                  (%s <> '' AND lower(COALESCE(payload ->> 'target_username', '')) = %s)
+              )
+            RETURNING id
             """,
             (scope_id, user_id, user_id, username, username),
-        ).fetchone()
+        ).fetchall()
+        ids = [int(row[0]) for row in rows]
+        self._cancel_queued_work(ids)
         self.conn.commit()
-        return int(row[0]) if row else 0
+        return len(ids)
+
+    def cancel_reminder_from_bot_reply(
+        self,
+        *,
+        scope_id: str,
+        reply_to_message_id: str | None,
+    ) -> int:
+        """Cancel the exact active reminder chain whose Telegram ping was replied to."""
+        reply_id = (reply_to_message_id or "").strip()
+        if not reply_id.isdigit():
+            return 0
+
+        row = self.conn.execute(
+            """
+            SELECT r.id
+            FROM outbox AS o
+            JOIN reminders AS r
+              ON (o.payload #>> '{metadata,event_id}') LIKE ('reminder:' || r.id::text || ':%')
+            WHERE o.channel='telegram'
+              AND o.destination_id=%s
+              AND o.telegram_message_id=%s
+              AND r.scope_type='group'
+              AND r.scope_id=%s
+              AND r.status IN ('pending','retry')
+            ORDER BY o.id DESC
+            LIMIT 1
+            """,
+            (scope_id, int(reply_id), scope_id),
+        ).fetchone()
+        if row is None:
+            self.conn.commit()
+            return 0
+
+        reminder_id = int(row[0])
+        cancelled = self.conn.execute(
+            """
+            UPDATE reminders
+            SET status='cancelled', updated_at=CURRENT_TIMESTAMP, last_error=NULL
+            WHERE id=%s AND status IN ('pending','retry')
+            RETURNING id
+            """,
+            (reminder_id,),
+        ).fetchone()
+        if cancelled is None:
+            self.conn.commit()
+            return 0
+
+        self._cancel_queued_work([reminder_id])
+        self.conn.commit()
+        return 1
+
+    def cancel_active_group_reminders(
+        self,
+        *,
+        scope_id: str,
+        target_username: str | None = None,
+    ) -> int:
+        """Fail-safe group kill switch for active reminders.
+
+        Anyone in the same group may stop reminder spam. If target_username is
+        supplied, only chains aimed at that user are stopped; otherwise every
+        active reminder in the group is cancelled.
+        """
+        target = (target_username or "").strip().lstrip("@").lower()
+        conditions = [
+            "scope_type='group'",
+            "scope_id=%s",
+            "status IN ('pending','retry')",
+        ]
+        params: list[object] = [scope_id]
+        if target:
+            conditions.append("lower(COALESCE(payload ->> 'target_username', '')) = %s")
+            params.append(target)
+
+        rows = self.conn.execute(
+            f"""
+            UPDATE reminders
+            SET status='cancelled', updated_at=CURRENT_TIMESTAMP, last_error=NULL
+            WHERE {' AND '.join(conditions)}
+            RETURNING id
+            """,
+            tuple(params),
+        ).fetchall()
+        ids = [int(row[0]) for row in rows]
+        self._cancel_queued_work(ids)
+        self.conn.commit()
+        return len(ids)
 
     def cancel_group_reminders(
         self,
@@ -119,13 +235,7 @@ class ReminderRepository:
         creator_user_id: str | None,
         target_username: str | None = None,
     ) -> int:
-        """Cancel active reminders created by one participant in this group.
-
-        A target username narrows cancellation to that person's reminder chain;
-        without it, the creator cancels all of their active group reminders in
-        the current chat. This prevents one participant from killing another
-        participant's reminders by accident.
-        """
+        """Legacy creator-scoped cancellation retained for compatibility."""
         creator = (creator_user_id or "").strip()
         if not creator:
             return 0
@@ -142,20 +252,19 @@ class ReminderRepository:
             conditions.append("lower(COALESCE(payload ->> 'target_username', '')) = %s")
             params.append(target)
 
-        row = self.conn.execute(
+        rows = self.conn.execute(
             f"""
-            WITH cancelled AS (
-                UPDATE reminders
-                SET status='cancelled', updated_at=CURRENT_TIMESTAMP, last_error=NULL
-                WHERE {' AND '.join(conditions)}
-                RETURNING id
-            )
-            SELECT count(*) FROM cancelled
+            UPDATE reminders
+            SET status='cancelled', updated_at=CURRENT_TIMESTAMP, last_error=NULL
+            WHERE {' AND '.join(conditions)}
+            RETURNING id
             """,
             tuple(params),
-        ).fetchone()
+        ).fetchall()
+        ids = [int(row[0]) for row in rows]
+        self._cancel_queued_work(ids)
         self.conn.commit()
-        return int(row[0]) if row else 0
+        return len(ids)
 
     def reschedule(self, reminder_id: int, due_at: datetime) -> ReminderRecord | None:
         if due_at.tzinfo is None or due_at.utcoffset() is None:
@@ -189,8 +298,16 @@ class ReminderRepository:
             return None
 
         reminder = self._row(row)
-        actor_user_id = reminder.payload.get("actor_user_id")
-        text = reminder.payload.get("text") or reminder.payload.get("title") or "Напоминание"
+        interval_seconds = self._interval_seconds(reminder.recurrence_rule)
+        payload = dict(reminder.payload)
+        fire_count = int(payload.get("fire_count") or 0) + 1
+        max_occurrences = int(payload.get("max_occurrences") or (4 if interval_seconds is not None else 1))
+        max_occurrences = max(1, min(max_occurrences, 100))
+        payload["fire_count"] = fire_count
+        payload["max_occurrences"] = max_occurrences
+
+        actor_user_id = payload.get("actor_user_id")
+        text = payload.get("text") or payload.get("title") or "Напоминание"
         event_id = f"reminder:{reminder.id}:{reminder.due_at.isoformat()}"
         envelope_payload = {
             "event_id": event_id,
@@ -204,8 +321,8 @@ class ReminderRepository:
             "text": str(text),
             "metadata": {
                 "reminder_id": reminder.id,
-                "reminder_payload": reminder.payload,
-                "message_thread_id": reminder.payload.get("message_thread_id"),
+                "reminder_payload": payload,
+                "message_thread_id": payload.get("message_thread_id"),
             },
         }
         self.conn.execute(
@@ -223,17 +340,18 @@ class ReminderRepository:
             ),
         )
 
-        interval_seconds = self._interval_seconds(reminder.recurrence_rule)
-        if interval_seconds is None:
+        stop_after_this_fire = interval_seconds is None or fire_count >= max_occurrences
+        if stop_after_this_fire:
             next_status = "sent"
             self.conn.execute(
                 """
                 UPDATE reminders
                 SET status='sent', last_fired_at=CURRENT_TIMESTAMP,
+                    payload=%s::jsonb,
                     updated_at=CURRENT_TIMESTAMP, last_error=NULL
                 WHERE id=%s
                 """,
-                (reminder.id,),
+                (json.dumps(payload, ensure_ascii=False), reminder.id),
             )
             next_due = reminder.due_at
         else:
@@ -243,13 +361,14 @@ class ReminderRepository:
                 UPDATE reminders
                 SET status='pending',
                     due_at=GREATEST(due_at, CURRENT_TIMESTAMP) + (%s * INTERVAL '1 second'),
+                    payload=%s::jsonb,
                     last_fired_at=CURRENT_TIMESTAMP,
                     updated_at=CURRENT_TIMESTAMP,
                     last_error=NULL
                 WHERE id=%s
                 RETURNING due_at
                 """,
-                (interval_seconds, reminder.id),
+                (interval_seconds, json.dumps(payload, ensure_ascii=False), reminder.id),
             ).fetchone()
             next_due = next_row[0] if next_row else reminder.due_at
 
@@ -260,7 +379,7 @@ class ReminderRepository:
             reminder.scope_id,
             next_due,
             next_status,
-            reminder.payload,
+            payload,
             reminder.last_fired_at,
             reminder.recurrence_rule,
         )
