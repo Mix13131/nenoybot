@@ -70,7 +70,7 @@ class GroupInitiativeRepository:
                 WHERE f.scope_id=%s
                   AND f.intervention_id IS NOT NULL
                   AND f.user_id IS NOT NULL
-                  AND f.feedback_type LIKE 'reaction_%'
+                  AND f.feedback_type LIKE 'reaction_%%'
             )
             SELECT
                 (
@@ -79,7 +79,7 @@ class GroupInitiativeRepository:
                     WHERE f.scope_id=%s
                       AND f.created_at >= %s
                       AND f.feedback_type = ANY(%s::text[])
-                      AND f.feedback_type NOT LIKE 'reaction_%'
+                      AND f.feedback_type NOT LIKE 'reaction_%%'
                 )
                 +
                 (
