@@ -7,14 +7,13 @@ from app_v2.domain.enums import EventType
 from app_v2.domain.events import EventEnvelope
 from app_v2.domain.feedback import FeedbackEvent
 from app_v2.repositories.feedback_repo import FeedbackRecord
-from app_v2.services.group_initiative import GroupInitiativeService
+from app_v2.services.group_initiative import GroupInitiativeService, is_addressed_to_bot
 
 
 _POSITIVE_EMOJI = {"👍", "❤", "❤️", "🔥", "👏", "🎉", "😁", "😂", "🤝", "💯"}
 _NEGATIVE_EMOJI = {"👎", "💩", "🤡", "🤬", "😡", "🙄"}
 _NEGATIVE_PHRASES = (
     "не смешно",
-    "не надо",
     "не лезь",
     "достал",
     "хуйня",
@@ -59,13 +58,33 @@ def _reaction_type(event: EventEnvelope) -> tuple[str, float, dict[str, Any]]:
     return "reaction_neutral", 0.0, payload
 
 
-def _text_feedback_type(event: EventEnvelope) -> tuple[str | None, float | None]:
+def _text_feedback_type(
+    event: EventEnvelope,
+    *,
+    resolved_reply: bool,
+) -> tuple[str | None, float | None]:
     text = (event.text or "").strip().lower()
+    if not is_addressed_to_bot(event):
+        return None, None
+    if event.event_type is EventType.MUTE_REQUEST:
+        return "mute", -1.0
+    if event.event_type is EventType.NEGATIVE_FEEDBACK:
+        return "explicit_negative", -1.0
     if not text:
         return None, None
     if GroupInitiativeService.is_silence_request(text):
         return "mute", -1.0
-    if any(phrase in text for phrase in _NEGATIVE_PHRASES):
+
+    negative = any(phrase in text for phrase in _NEGATIVE_PHRASES)
+    if (
+        negative
+        and event.event_type in {EventType.REPLY_TO_BOT, EventType.REPLY_TO_BOT_MESSAGE}
+        and not resolved_reply
+    ):
+        # A normalized reply still proves engagement, but without resolving its
+        # target we cannot assert that its wording rates a particular answer.
+        return "reply_to_bot", 0.0
+    if negative:
         return "explicit_negative", -1.0
     if event.event_type in {EventType.REPLY_TO_BOT, EventType.REPLY_TO_BOT_MESSAGE}:
         return "reply_to_bot", 0.0
@@ -85,26 +104,30 @@ class FeedbackCollector:
         intervention_id: int | None = None
 
         if event.event_type in {EventType.REACTION_ADDED, EventType.REACTION_REMOVED}:
-            feedback_type, value, extra_payload = _reaction_type(event)
             if event.message_id is not None:
                 intervention_id = self.repo.find_intervention_by_bot_message(
                     event.scope_id,
                     event.message_id,
                 )
-        else:
-            feedback_type, value = _text_feedback_type(event)
-            if feedback_type is None:
+            if intervention_id is None:
                 return FeedbackCollectionResult(None, None)
-            if event.reply_to_message_id is not None:
+            feedback_type, value, extra_payload = _reaction_type(event)
+        else:
+            if (
+                event.event_type in {EventType.REPLY_TO_BOT, EventType.REPLY_TO_BOT_MESSAGE}
+                and event.reply_to_message_id is not None
+            ):
                 intervention_id = self.repo.find_intervention_by_bot_message(
                     event.scope_id,
                     event.reply_to_message_id,
                 )
-            if intervention_id is None:
-                intervention_id = self.repo.latest_intervention(
-                    event.scope_id,
-                    before=event.occurred_at,
-                )
+
+            feedback_type, value = _text_feedback_type(
+                event,
+                resolved_reply=intervention_id is not None,
+            )
+            if feedback_type is None:
+                return FeedbackCollectionResult(None, None)
 
         feedback_id = f"feedback:{event.event_id}:{feedback_type}"
         payload = {
