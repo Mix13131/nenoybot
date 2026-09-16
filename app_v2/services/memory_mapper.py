@@ -177,6 +177,9 @@ class MemoryMapperStore:
 
         first_evidence = card.evidence[0]
         semantic_key = str(card.payload.get("semantic_key") or "")
+        # Serialize retries of the same logical candidate even if two mapper
+        # calls choose different valid evidence excerpts from the same source.
+        # The excerpt remains audit evidence, not the concurrency identity.
         lock_material = "|".join(
             (
                 card.scope_type.value,
@@ -184,7 +187,7 @@ class MemoryMapperStore:
                 card.memory_type,
                 str(first_evidence.message_id or ""),
                 str(first_evidence.author_id or ""),
-                " ".join(first_evidence.excerpt.casefold().split()),
+                semantic_key or card.id,
             )
         )
         conn.execute(
@@ -213,8 +216,6 @@ class MemoryMapperStore:
                 return None
             return self.repo.create(card)
         finally:
-            # SELECTs or a failed INSERT may leave a transaction open/aborted.
-            # End it before issuing the unlock on the same session.
             try:
                 conn.rollback()
             except Exception:
@@ -265,7 +266,15 @@ class MemoryMapper:
         if lowered in {"забудь это", "забудь", "forget this", "forget it"}:
             forgotten: list[str] = []
             for memory_id in target_memory_ids:
-                if self.store.archive(event.scope_type, event.scope_id, memory_id):
+                try:
+                    archived = self.store.archive(event.scope_type, event.scope_id, memory_id)
+                except Exception as exc:
+                    return MapperResult(
+                        forgotten_ids=tuple(forgotten),
+                        failed=True,
+                        reason=f"mapper_failure:{type(exc).__name__}",
+                    )
+                if archived:
                     forgotten.append(memory_id)
             return MapperResult(forgotten_ids=tuple(forgotten), reason="explicit_forget")
 
@@ -295,7 +304,10 @@ class MemoryMapper:
                     "proactive": False,
                 },
             }
-            card = self._upsert_candidate(event, candidate, explicit=True, recent_context=())
+            try:
+                card = self._upsert_candidate(event, candidate, explicit=True, recent_context=())
+            except Exception as exc:
+                return MapperResult(failed=True, reason=f"mapper_failure:{type(exc).__name__}")
             return MapperResult(written=(card,) if card is not None else (), reason="explicit_remember")
 
         context_items = self._normalize_context(recent_context)
@@ -434,7 +446,6 @@ class MemoryMapper:
                 continue
             if timestamp > event.occurred_at:
                 continue
-            # Never let context overwrite the trusted current event record.
             if message_id == current_id:
                 continue
             sources[message_id] = _TrustedSource(
@@ -521,6 +532,7 @@ class MemoryMapper:
     def _memory_id(
         event: EventEnvelope,
         requested_memory_type: str,
+        semantic_key: str,
         evidence: MemoryEvidence,
     ) -> str:
         material = "|".join(
@@ -530,7 +542,7 @@ class MemoryMapper:
                 requested_memory_type,
                 str(evidence.message_id or event.event_id),
                 str(evidence.author_id or ""),
-                " ".join(evidence.excerpt.casefold().split()),
+                semantic_key,
             )
         )
         return f"mem_{hashlib.sha256(material.encode('utf-8')).hexdigest()[:32]}"
@@ -568,9 +580,6 @@ class MemoryMapper:
         if existing is not None and source_identity in {
             self._source_identity(item) for item in existing_evidence
         }:
-            # Retry/edit of the same persisted source is not independent
-            # corroboration and not a write. Keep MapperResult.written empty so
-            # operation_receipts.memory.changed remains false.
             return None
 
         evidence_items = existing_evidence + [evidence]
@@ -628,7 +637,7 @@ class MemoryMapper:
 
         if existing is None:
             card = MemoryCard(
-                id=self._memory_id(event, requested_memory_type, evidence),
+                id=self._memory_id(event, requested_memory_type, semantic_key, evidence),
                 scope_type=event.scope_type,
                 scope_id=event.scope_id,
                 memory_type=memory_type,
