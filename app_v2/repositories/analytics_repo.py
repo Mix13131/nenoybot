@@ -125,7 +125,7 @@ class AnalyticsRepository:
                                ORDER BY f.created_at DESC, f.id DESC
                            ) AS rn
                     FROM feedback_events f
-                    WHERE f.feedback_type LIKE 'reaction_%'
+                    WHERE f.feedback_type LIKE 'reaction_%%'
                       AND f.intervention_id IS NOT NULL
                       AND f.user_id IS NOT NULL
                       AND f.created_at < %s
@@ -158,7 +158,7 @@ class AnalyticsRepository:
                                ORDER BY f.created_at DESC, f.id DESC
                            ) AS rn
                     FROM feedback_events f
-                    WHERE f.feedback_type LIKE 'reaction_%'
+                    WHERE f.feedback_type LIKE 'reaction_%%'
                       AND f.intervention_id IS NOT NULL
                       AND f.user_id IS NOT NULL
                       AND f.created_at < %s
@@ -212,7 +212,7 @@ class AnalyticsRepository:
                                ORDER BY f.created_at DESC, f.id DESC
                            ) AS rn
                     FROM feedback_events f
-                    WHERE f.feedback_type LIKE 'reaction_%'
+                    WHERE f.feedback_type LIKE 'reaction_%%'
                       AND f.intervention_id IS NOT NULL
                       AND f.user_id IS NOT NULL
                       AND f.created_at < %s
@@ -304,7 +304,7 @@ class AnalyticsRepository:
                         ) AS rn
                     FROM feedback_events f
                     JOIN replies r ON r.id=f.intervention_id
-                    WHERE f.feedback_type LIKE 'reaction_%'
+                    WHERE f.feedback_type LIKE 'reaction_%%'
                       AND f.user_id IS NOT NULL
                       AND f.created_at < %s
                 ),
