@@ -8,6 +8,7 @@ from app_v2.domain.enums import EventType, PrimaryAction, ResponseMode, ScopeTyp
 from app_v2.domain.events import EventEnvelope, SceneAnalysis
 from app_v2.domain.outbound import OutboundMessage
 from app_v2.services.dispatcher import DispatcherPolicyState, decide
+from app_v2.services.operation_receipts import group_operation_receipts
 
 
 class GroupPipelineError(RuntimeError):
@@ -183,13 +184,21 @@ class GroupPipeline:
             )
 
         mapped_memory_ids: tuple[str, ...] = ()
+        mapper_result: Any | None = None
+        memory_attempted = False
         if self.memory_mapper is not None and _should_map_group_memory(event, scene):
+            memory_attempted = True
             mapper_result = self.memory_mapper.map_event(
                 event,
                 recent_context=self._mapper_context(event),
             )
             mapped_memory_ids = tuple(card.id for card in mapper_result.written)
 
+        operation_receipts = group_operation_receipts(
+            mapper_result,
+            memory_attempted=memory_attempted,
+            reminder_action_state=reminder_action_state,
+        )
         decision = decide(event, scene, state)
 
         if decision.primary_action is not PrimaryAction.REPLY:
@@ -206,6 +215,7 @@ class GroupPipeline:
                     "mapped_memory_ids": list(mapped_memory_ids),
                     "reminder_action": reminder_action_state,
                     "statement_watch": statement_watch_state,
+                    "operation_receipts": operation_receipts,
                 },
             )
             return GroupPipelineResult(
@@ -231,6 +241,7 @@ class GroupPipeline:
             "participant_role": group_context.participant.role,
             "behavior_probe_ids": list(behavior_memory_ids),
             "mapped_memory_ids": list(mapped_memory_ids),
+            "operation_receipts": operation_receipts,
         }
         if reminder_action_state is not None:
             action_state["group_reminder"] = reminder_action_state
@@ -272,6 +283,7 @@ class GroupPipeline:
                     "mapped_memory_ids": list(mapped_memory_ids),
                     "reminder_action": reminder_action_state,
                     "statement_watch": statement_watch_state,
+                    "operation_receipts": operation_receipts,
                 },
             )
             return GroupPipelineResult(
@@ -298,6 +310,7 @@ class GroupPipeline:
                 "mapped_memory_ids": list(mapped_memory_ids),
                 "reminder_action": reminder_action_state,
                 "statement_watch": statement_watch_state,
+                "operation_receipts": operation_receipts,
             },
         )
         outbound = OutboundMessage(
