@@ -79,6 +79,16 @@ class GroupPipeline:
         self.group_reminder_service = group_reminder_service
         self.unsolicited_enabled = unsolicited_enabled
 
+    def _mapper_context(self, event: EventEnvelope) -> tuple[dict[str, Any], ...]:
+        builder = getattr(self.context_builder, "mapper_context", None)
+        if builder is None:
+            return ()
+        try:
+            value = builder(event)
+        except Exception:
+            return ()
+        return tuple(item for item in value if isinstance(item, dict))
+
     def process(self, event: EventEnvelope, *, now: datetime | None = None) -> GroupPipelineResult:
         if event.scope_type is not ScopeType.GROUP:
             raise GroupPipelineError("GroupPipeline accepts only group scope events")
@@ -174,7 +184,10 @@ class GroupPipeline:
 
         mapped_memory_ids: tuple[str, ...] = ()
         if self.memory_mapper is not None and _should_map_group_memory(event, scene):
-            mapper_result = self.memory_mapper.map_event(event)
+            mapper_result = self.memory_mapper.map_event(
+                event,
+                recent_context=self._mapper_context(event),
+            )
             mapped_memory_ids = tuple(card.id for card in mapper_result.written)
 
         decision = decide(event, scene, state)
