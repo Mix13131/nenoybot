@@ -51,15 +51,46 @@ class GroupInitiativeRepository:
         types = [item for item in feedback_types if item]
         if not types:
             return 0
+
         row = self.conn.execute(
             """
-            SELECT COUNT(*)
-            FROM feedback_events
-            WHERE scope_id=%s
-              AND created_at >= %s
-              AND feedback_type = ANY(%s::text[])
+            WITH ranked_reactions AS (
+                SELECT
+                    f.id,
+                    f.scope_id,
+                    f.intervention_id,
+                    f.user_id,
+                    f.feedback_type,
+                    f.created_at,
+                    ROW_NUMBER() OVER (
+                        PARTITION BY f.scope_id, f.intervention_id, f.user_id
+                        ORDER BY f.created_at DESC, f.id DESC
+                    ) AS rn
+                FROM feedback_events f
+                WHERE f.scope_id=%s
+                  AND f.intervention_id IS NOT NULL
+                  AND f.user_id IS NOT NULL
+                  AND f.feedback_type LIKE 'reaction_%'
+            )
+            SELECT
+                (
+                    SELECT COUNT(*)
+                    FROM feedback_events f
+                    WHERE f.scope_id=%s
+                      AND f.created_at >= %s
+                      AND f.feedback_type = ANY(%s::text[])
+                      AND f.feedback_type NOT LIKE 'reaction_%'
+                )
+                +
+                (
+                    SELECT COUNT(*)
+                    FROM ranked_reactions r
+                    WHERE r.rn=1
+                      AND r.created_at >= %s
+                      AND r.feedback_type = ANY(%s::text[])
+                )
             """,
-            (scope_id, since, types),
+            (scope_id, scope_id, since, types, since, types),
         ).fetchone()
         return int(row[0] if row else 0)
 
