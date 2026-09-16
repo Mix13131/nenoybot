@@ -41,7 +41,9 @@ def test_feedback_count_uses_latest_reaction_state_per_voter() -> None:
     assert "ORDER BY f.created_at DESC, f.id DESC" in normalized
     assert "f.user_id IS NOT NULL" in normalized
     assert "f.intervention_id IS NOT NULL" in normalized
-    assert "f.feedback_type LIKE 'reaction_%'" in normalized
+    # Psycopg parameterized SQL must escape a literal percent as %% so the
+    # server receives the intended LIKE 'reaction_%' pattern.
+    assert "f.feedback_type LIKE 'reaction_%%'" in normalized
     assert "r.rn=1" in normalized
     assert params[0] == "-100777"
     assert params[1] == "-100777"
