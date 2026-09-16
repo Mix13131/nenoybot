@@ -14,6 +14,7 @@ from app_v2.repositories.analytics_repo import AnalyticsRepository
 from app_v2.repositories.group_initiative_repo import GroupInitiativeRepository
 from app_v2.repositories.memory_repo import MemoryRepository
 from app_v2.services.memory_mapper import MemoryMapper, MemoryMapperStore
+from app_v2.services.operation_receipts import personal_operation_receipts
 
 
 NOW = datetime(2026, 9, 16, 12, 0, tzinfo=timezone.utc)
@@ -75,8 +76,11 @@ def test_same_memory_source_concurrent_postgres_retry_creates_one_card() -> None
     assert errors == []
     assert len(results) == 2
     assert all(result.failed is False for result in results)
-    assert all(len(result.written) == 1 for result in results)
-    assert results[0].written[0].id == results[1].written[0].id
+    assert sorted(len(result.written) for result in results) == [0, 1]
+    changed_result = next(result for result in results if result.written)
+    noop_result = next(result for result in results if not result.written)
+    assert personal_operation_receipts(changed_result)["memory"]["changed"] is True
+    assert personal_operation_receipts(noop_result)["memory"]["changed"] is False
 
     with psycopg.connect(database_url) as conn:
         rows = conn.execute(
@@ -88,18 +92,23 @@ def test_same_memory_source_concurrent_postgres_retry_creates_one_card() -> None
             (scope_id,),
         ).fetchall()
         assert len(rows) == 1
+        assert rows[0][0] == changed_result.written[0].id
         assert rows[0][1] == pytest.approx(0.98)
         assert rows[0][2] == 1
         assert len(rows[0][3]) == 1
         original_updated_at = rows[0][4]
 
-    # A later retry through a fresh DB connection must be a persistence no-op.
+    # A later retry through a fresh DB connection must be a persistence and
+    # receipt no-op: the card exists, but this invocation did not write it.
     with psycopg.connect(database_url) as conn:
         mapper = MemoryMapper(store=MemoryMapperStore(MemoryRepository(conn)))
         retried = mapper.map_event(event)
         assert retried.failed is False
-        assert len(retried.written) == 1
-        assert retried.written[0].source_count == 1
+        assert retried.written == ()
+        retry_receipt = personal_operation_receipts(retried)["memory"]
+        assert retry_receipt["status"] == "succeeded"
+        assert retry_receipt["changed"] is False
+        assert retry_receipt["written_ids"] == []
 
     with psycopg.connect(database_url) as conn:
         row = conn.execute(
