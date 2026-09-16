@@ -22,34 +22,47 @@ class GeneratedResponse:
     usage_id: str
 
 
+_CLAIM_BOUNDARY = r"(?:^|[.!?;:,]\s+)"
 _MEMORY_SAVE_RE = re.compile(
-    r"(?<!не )\b(?:запомнил|зафиксировал\s+(?:это\s+)?в\s+памят\w*|сохранил\s+(?:это\s+)?в\s+памят\w*)\b",
+    _CLAIM_BOUNDARY
+    + r"(?:(?:я|мы)\s+)?(?:"
+    r"(?:запомнил|запомню)\b"
+    r"|(?:зафиксировал|зафиксирую|сохранил|сохраню)\s+(?:это\s+)?в\s+памят\w*"
+    r"|в\s+памят\w*\s+(?:зафиксировал|зафиксирую|сохранил|сохраню)\b"
+    r")",
     flags=re.IGNORECASE,
 )
 _TASK_CREATE_RE = re.compile(
-    r"(?:"
-    r"(?<!не )\b(?:создал|добавил|записал|вн[её]с|сохранил)\s+(?:тебе\s+)?(?:эту\s+)?задач\w*"
-    r"|\bзадач\w*\s+(?:я\s+)?(?:создал|добавил|записал|вн[её]с|сохранил)\b"
-    r"|\bзадач\w*\s+(?:создана|добавлена|сохранена)\b"
+    _CLAIM_BOUNDARY
+    + r"(?:(?:я|мы)\s+)?(?:"
+    r"(?:создал|создам|добавил|добавлю|записал|запишу|вн[её]с|внесу|сохранил|сохраню)"
+    r"\s+(?:тебе\s+)?(?:эту\s+)?задач\w*"
+    r"|задач\w*\s+(?:я\s+)?(?:создал|создам|добавил|добавлю|записал|запишу|вн[её]с|внесу|сохранил|сохраню)\b"
     r")",
     flags=re.IGNORECASE,
 )
 _REMINDER_CREATE_RE = re.compile(
-    r"(?:"
-    r"(?<!не )\b(?:поставил|создал|добавил|запланировал)\s+(?:тебе\s+)?напоминан\w*"
-    r"|(?<!не )\bбуду\s+(?:тебе\s+)?напоминать\b"
-    r"|\bнапомню\s+(?:тебе\s+)?(?:через|завтра|сегодня|в\s+\d|к\s+\d)"
-    r"|\bпну\b.{0,50}(?:через|завтра|сегодня|\d{1,2}[./-]\d{1,2}|\d+\s*(?:дн|час|минут))"
+    _CLAIM_BOUNDARY
+    + r"(?:(?:я|мы)\s+)?(?:"
+    r"(?:поставил|поставлю|создал|создам|добавил|добавлю|запланировал|запланирую|настроил|настрою)"
+    r"\s+(?:тебе\s+)?напоминан\w*"
+    r"|напоминан\w*\s+(?:я\s+)?(?:поставил|поставлю|создал|создам|добавил|добавлю|запланировал|запланирую|настроил|настрою)\b"
+    r"|(?:тебе\s+)?буду\s+(?:тебе\s+)?напоминать\b"
+    r"|(?:тебе\s+)?напомню\s+(?:тебе\s+)?(?:через|завтра|сегодня|в\s+\d|к\s+\d)"
+    r"|(?:тебе\s+)?пну\b.{0,50}(?:через|завтра|сегодня|\d{1,2}[./-]\d{1,2}|\d+\s*(?:дн|час|минут))"
     r")",
     flags=re.IGNORECASE | re.DOTALL,
 )
 _REMINDER_CANCEL_RE = re.compile(
-    r"(?:"
-    r"(?<!не )\b(?:отменил|остановил|выключил)\s+(?:это\s+)?напоминан\w*"
-    r"|\bбольше\s+не\s+буду\s+(?:тебе\s+)?напоминать\b"
+    _CLAIM_BOUNDARY
+    + r"(?:(?:я|мы)\s+)?(?:"
+    r"(?:отменил|отменю|остановил|остановлю|выключил|выключу)\s+(?:это\s+)?напоминан\w*"
+    r"|напоминан\w*\s+(?:я\s+)?(?:отменил|отменю|остановил|остановлю|выключил|выключу)\b"
+    r"|больше\s+не\s+буду\s+(?:тебе\s+)?напоминать\b"
     r")",
     flags=re.IGNORECASE,
 )
+_QUOTED_TEXT_RE = re.compile(r"«[^»]*»|“[^”]*”|\"[^\"]*\"", flags=re.DOTALL)
 
 
 class ResponseGenerator:
@@ -112,6 +125,13 @@ class ResponseGenerator:
         value = receipts.get(kind)
         return dict(value) if isinstance(value, dict) else {}
 
+    @staticmethod
+    def _claim_scan_text(text: str) -> str:
+        # Quotes often describe another participant's action. Excluding quoted
+        # spans plus anchoring verbs to sentence/clause starts avoids rewriting
+        # factual replies such as “Вася создал задачу вчера”.
+        return _QUOTED_TEXT_RE.sub(" ", text)
+
     @classmethod
     def _memory_save_confirmed(cls, action_state: dict[str, Any]) -> bool:
         receipt = cls._receipt(action_state, "memory")
@@ -145,14 +165,15 @@ class ResponseGenerator:
 
     @classmethod
     def _enforce_operation_receipts(cls, text: str, action_state: dict[str, Any]) -> str:
+        claim_text = cls._claim_scan_text(text)
         violations: list[str] = []
-        if _MEMORY_SAVE_RE.search(text) and not cls._memory_save_confirmed(action_state):
+        if _MEMORY_SAVE_RE.search(claim_text) and not cls._memory_save_confirmed(action_state):
             violations.append("memory")
-        if _TASK_CREATE_RE.search(text) and not cls._task_change_confirmed(action_state):
+        if _TASK_CREATE_RE.search(claim_text) and not cls._task_change_confirmed(action_state):
             violations.append("task")
-        if _REMINDER_CREATE_RE.search(text) and not cls._reminder_change_confirmed(action_state, "create"):
+        if _REMINDER_CREATE_RE.search(claim_text) and not cls._reminder_change_confirmed(action_state, "create"):
             violations.append("reminder_create")
-        if _REMINDER_CANCEL_RE.search(text) and not cls._reminder_change_confirmed(action_state, "cancel"):
+        if _REMINDER_CANCEL_RE.search(claim_text) and not cls._reminder_change_confirmed(action_state, "cancel"):
             violations.append("reminder_cancel")
         if not violations:
             return text
