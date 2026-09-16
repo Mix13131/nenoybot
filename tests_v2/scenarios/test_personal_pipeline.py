@@ -43,15 +43,18 @@ class FakeMapper:
     def __init__(self, result=None):
         self.result = result or MapperResult()
         self.calls = []
-    def map_event(self, event, *, target_memory_ids=()):
-        self.calls.append((event, tuple(target_memory_ids)))
+    def map_event(self, event, *, target_memory_ids=(), recent_context=()):
+        self.calls.append((event, tuple(target_memory_ids), tuple(recent_context)))
         return self.result
 
 
 class FakeContextBuilder:
-    def __init__(self, memories=()):
+    def __init__(self, memories=(), mapper_context=()):
         self.memories = tuple(memories)
+        self.mapper_context_data = tuple(mapper_context)
         self.calls = []
+    def mapper_context(self, event):
+        return self.mapper_context_data
     def build(self, **kwargs):
         self.calls.append(kwargs)
         event = kwargs["event"]
@@ -103,12 +106,12 @@ class FakeOutbox:
         return outbox_id, True
 
 
-def pipeline(*, scene=None, mapper=None, memories=(), generator=None, outbox=None):
+def pipeline(*, scene=None, mapper=None, memories=(), generator=None, outbox=None, mapper_context=()):
     return PersonalPipeline(
         scene_analyzer=FakeSceneAnalyzer(scene),
         memory_mapper=mapper or FakeMapper(),
         personality_engine=PersonalityEngine(),
-        context_builder=FakeContextBuilder(memories),
+        context_builder=FakeContextBuilder(memories, mapper_context),
         response_generator=generator or FakeGenerator(),
         intervention_repo=FakeInterventions(),
         outbox_repo=outbox or FakeOutbox(),
@@ -152,6 +155,13 @@ def test_explicit_forget_targets_flow_from_event_metadata():
     result=pipeline(mapper=mapper).process(evt("забудь это", metadata={"target_memory_ids":["mem1"]}))
     assert mapper.calls[0][1] == ("mem1",)
     assert result.memory_forgotten_ids == ("mem1",)
+
+
+def test_personal_pipeline_passes_pre_event_context_to_mapper():
+    mapper = FakeMapper()
+    context = ({"message_id": "99", "text": "предыдущее", "author_user_id": "u2"},)
+    pipeline(mapper=mapper, mapper_context=context).process(evt("Да, я тоже"))
+    assert mapper.calls[0][2] == context
 
 
 def test_relevant_callback_memory_reaches_generator():
