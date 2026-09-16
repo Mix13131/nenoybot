@@ -171,6 +171,40 @@ def test_false_task_and_future_reminder_claims_are_replaced_with_truthful_status
     assert "пну 21.10" not in result.text
 
 
+@pytest.mark.parametrize(
+    "text, expected",
+    [
+        ("Поставлю напоминание завтра.", "Напоминание не ставил"),
+        ("Я тебе напомню завтра.", "Напоминание не ставил"),
+        ("Задачу создам сейчас.", "Задачу не создавал"),
+        ("Запомню это.", "В память это не записано"),
+    ],
+)
+def test_future_bot_action_promises_are_blocked_without_receipt(text, expected):
+    adapter = FakeAdapter(text=text)
+    result = ResponseGenerator(adapter=adapter).generate(
+        _context(action_state=receipts(memory_changed=False))
+    )
+    assert expected in result.text
+    assert result.text != text
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "Вася создал задачу вчера.",
+        "Вася поставил напоминание себе на завтра.",
+        "Пользователь сказал: «Задачу создал, напоминание поставлю сам».",
+    ],
+)
+def test_third_party_or_quoted_action_statements_are_not_rewritten(text):
+    adapter = FakeAdapter(text=text)
+    result = ResponseGenerator(adapter=adapter).generate(
+        _context(action_state=receipts(memory_changed=False))
+    )
+    assert result.text == text
+
+
 def test_false_memory_claim_is_blocked_when_nothing_was_written():
     adapter = FakeAdapter(text="Запомнил. Дальше разберёмся.")
     result = ResponseGenerator(adapter=adapter).generate(
