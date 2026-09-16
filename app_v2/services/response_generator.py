@@ -169,15 +169,24 @@ class ResponseGenerator:
         task = cls._receipt(action_state, "task")
         reminder = cls._receipt(action_state, "reminder")
 
+        written_count = len(memory.get("written_ids") or [])
+        forgotten_count = len(memory.get("forgotten_ids") or [])
         if memory.get("status") == "succeeded" and memory.get("changed") is True:
-            written_count = len(memory.get("written_ids") or [])
-            forgotten_count = len(memory.get("forgotten_ids") or [])
             if written_count:
                 parts.append(
                     "В память зафиксировал." if written_count == 1 else f"В память зафиксировал {written_count} записи."
                 )
             elif forgotten_count:
                 parts.append("Запись из памяти убрал.")
+        elif memory.get("status") == "partial" and memory.get("changed") is True:
+            if written_count:
+                parts.append(
+                    f"Часть памяти записана: {written_count} из подтверждённых записей сохранились, но операция завершилась не полностью."
+                )
+            elif forgotten_count:
+                parts.append(
+                    f"Часть изменений памяти выполнена: {forgotten_count}, но операция завершилась не полностью."
+                )
         elif "memory" in violations:
             parts.append("В память это не записано.")
 
