@@ -55,6 +55,21 @@ def test_memory_failure_and_missing_context_are_not_successful_changes() -> None
     assert missing["status"] == "needs_clarification" and missing["changed"] is False
 
 
+def test_memory_failure_after_committed_write_is_partial_not_false_failure_noop() -> None:
+    receipt = memory_receipt(
+        mapper_result(
+            written=(card("m1"),),
+            failed=True,
+            reason="mapper_failure:RuntimeError",
+        ),
+        attempted=True,
+    )
+    assert receipt["status"] == "partial"
+    assert receipt["changed"] is True
+    assert receipt["written_ids"] == ["m1"]
+    assert receipt["active_count"] == 1
+
+
 def test_personal_task_and_reminder_are_explicitly_not_attempted() -> None:
     receipts = personal_operation_receipts(mapper_result(written=(card("m1"),)))
     assert receipts["memory"]["changed"] is True
