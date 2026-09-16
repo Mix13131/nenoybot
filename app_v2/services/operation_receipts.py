@@ -12,12 +12,6 @@ def _value(value: Any) -> str:
 
 
 def memory_receipt(mapper_result: Any | None, *, attempted: bool) -> dict[str, Any]:
-    """Describe only persistence that the mapper actually reports.
-
-    `succeeded` with `changed=false` means mapping completed but no Memory Card
-    was written/forgotten. A generator may claim a save only when changed=true
-    and the corresponding ids/counts are present.
-    """
     if not attempted or mapper_result is None:
         return {
             "status": "not_attempted",
@@ -40,7 +34,9 @@ def memory_receipt(mapper_result: Any | None, *, attempted: bool) -> dict[str, A
     forgotten_ids = [str(item) for item in forgotten if str(item).strip()]
     changed = bool(written_ids or forgotten_ids)
 
-    if failed:
+    if failed and changed:
+        status = "partial"
+    elif failed:
         status = "failed"
         changed = False
     elif changed:
@@ -50,7 +46,6 @@ def memory_receipt(mapper_result: Any | None, *, attempted: bool) -> dict[str, A
     elif reason in {"no_text", "no_mapper_adapter", "memory_mapping_not_selected"}:
         status = "not_attempted"
     else:
-        # The mapper ran successfully and simply found nothing worth persisting.
         status = "succeeded"
 
     return {
