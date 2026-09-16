@@ -10,6 +10,7 @@ import pytest
 from app_v2.db.migrations import run_migrations
 from app_v2.domain.enums import EventType, ScopeType
 from app_v2.domain.events import EventEnvelope
+from app_v2.repositories.analytics_repo import AnalyticsRepository
 from app_v2.repositories.group_initiative_repo import GroupInitiativeRepository
 from app_v2.repositories.memory_repo import MemoryRepository
 from app_v2.services.memory_mapper import MemoryMapper, MemoryMapperStore
@@ -125,6 +126,7 @@ def test_current_reaction_vote_postgres_uses_latest_state_and_keeps_text_feedbac
     psycopg, database_url = _psycopg_and_url()
     scope_id = f"it-feedback-{uuid.uuid4().hex}"
     since = NOW - timedelta(minutes=5)
+    until = NOW + timedelta(minutes=5)
 
     with psycopg.connect(database_url) as conn:
         user1 = conn.execute(
@@ -138,11 +140,12 @@ def test_current_reaction_vote_postgres_uses_latest_state_and_keeps_text_feedbac
         intervention_id = conn.execute(
             """
             INSERT INTO interventions(
-                scope_type, scope_id, primary_action, mode, reason_codes, policy_version
-            ) VALUES ('group', %s, 'reply', 'group_roast', '[]'::jsonb, 'test')
+                scope_type, scope_id, primary_action, mode,
+                reason_codes, policy_version, created_at
+            ) VALUES ('group', %s, 'reply', 'group_roast', '[]'::jsonb, 'test', %s)
             RETURNING id
             """,
-            (scope_id,),
+            (scope_id, NOW),
         ).fetchone()[0]
 
         def insert_feedback(feedback_id: str, user_id: int, feedback_type: str, at: datetime) -> None:
@@ -183,6 +186,15 @@ def test_current_reaction_vote_postgres_uses_latest_state_and_keeps_text_feedbac
             ["reaction_negative", "explicit_negative"],
             since,
         ) == 2
+
+        analytics = AnalyticsRepository(conn).reaction_quality_by_mode(since, until, scope_id)
+        assert len(analytics) == 1
+        assert analytics[0]["mode"] == "group_roast"
+        assert analytics[0]["interventions"] == 1
+        assert analytics[0]["reacting_states"] == 1
+        assert analytics[0]["positive_votes"] == 0
+        assert analytics[0]["negative_votes"] == 1
+        assert analytics[0]["positive_share"] == 0.0
 
         conn.execute("DELETE FROM feedback_events WHERE scope_id=%s", (scope_id,))
         conn.execute("DELETE FROM interventions WHERE id=%s", (intervention_id,))
