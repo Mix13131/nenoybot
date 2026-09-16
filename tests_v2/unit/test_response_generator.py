@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import json
-from datetime import datetime, timezone
 from types import SimpleNamespace
 
 import pytest
@@ -178,6 +177,32 @@ def test_false_memory_claim_is_blocked_when_nothing_was_written():
         _context(action_state=receipts(memory_changed=False))
     )
     assert "В память это не записано" in result.text
+    assert result.text != adapter.text
+
+
+def test_partial_memory_claim_reports_committed_part_without_full_success():
+    action_state = {
+        "operation_receipts": {
+            "memory": {
+                "status": "partial",
+                "changed": True,
+                "written_ids": ["m1"],
+                "forgotten_ids": [],
+            },
+            "task": {"status": "not_attempted", "changed": False, "entity_ids": []},
+            "reminder": {
+                "status": "not_attempted",
+                "changed": False,
+                "entity_ids": [],
+                "operation": None,
+            },
+        }
+    }
+    adapter = FakeAdapter(text="Запомнил всё.")
+    result = ResponseGenerator(adapter=adapter).generate(_context(action_state=action_state))
+    assert "Часть памяти записана" in result.text
+    assert "операция завершилась не полностью" in result.text
+    assert "В память это не записано" not in result.text
     assert result.text != adapter.text
 
 
