@@ -13,7 +13,12 @@ from app_v2.services.group_initiative import GroupInitiativeService
 NOW = datetime(2026, 9, 14, 10, 0, tzinfo=timezone.utc)
 
 
-def event(text="обычная болтовня", event_type=EventType.GROUP_MESSAGE):
+def event(
+    text="обычная болтовня",
+    event_type=EventType.GROUP_MESSAGE,
+    *,
+    reply_to=None,
+):
     return EventEnvelope(
         event_id="e20",
         event_type=event_type,
@@ -22,6 +27,7 @@ def event(text="обычная болтовня", event_type=EventType.GROUP_MES
         scope_id="-100777",
         actor_user_id="123",
         message_id="20",
+        reply_to_message_id=reply_to,
         text=text,
     )
 
@@ -52,18 +58,28 @@ def context(profile=None):
 
 
 class FakeRepo:
-    def __init__(self, *, ignored=0, negative=0, positive=0, daily=0, recent=0, messages=20, last=None):
-        self.ignored=ignored
-        self.negative=negative
-        self.positive=positive
-        self.daily=daily
-        self.recent=recent
-        self.messages=messages
-        self.last=last
-        self.silence_updates=[]
+    def __init__(
+        self,
+        *,
+        ignored=0,
+        negative=0,
+        positive=0,
+        daily=0,
+        recent=0,
+        messages=20,
+        last=None,
+    ):
+        self.ignored = ignored
+        self.negative = negative
+        self.positive = positive
+        self.daily = daily
+        self.recent = recent
+        self.messages = messages
+        self.last = last
+        self.silence_updates = []
 
     def count_feedback_since(self, scope_id, feedback_types, since):
-        types=set(feedback_types)
+        types = set(feedback_types)
         if "ignored" in types:
             return self.ignored
         if "negative" in types:
@@ -87,47 +103,59 @@ class FakeRepo:
 
 
 class EmptyRetrieval:
-    def __init__(self): self.calls=[]
+    def __init__(self):
+        self.calls = []
+
     def retrieve(self, *args, **kwargs):
-        self.calls.append((args,kwargs))
+        self.calls.append((args, kwargs))
         return []
 
 
 def test_two_ignored_interventions_expand_default_cooldown_to_18_minutes() -> None:
-    repo=FakeRepo(ignored=2, last=NOW-timedelta(minutes=10))
-    snapshot=GroupInitiativeService(repo).evaluate(event=event(), group_context=context(), now=NOW)
+    repo = FakeRepo(ignored=2, last=NOW - timedelta(minutes=10))
+    snapshot = GroupInitiativeService(repo).evaluate(
+        event=event(), group_context=context(), now=NOW
+    )
     assert snapshot.effective_cooldown_minutes == 18
     assert snapshot.cooldown_active is True
     assert snapshot.ignored_unsolicited_recent == 2
 
 
 def test_positive_feedback_can_raise_initiative_by_only_one() -> None:
-    repo=FakeRepo(positive=100)
-    snapshot=GroupInitiativeService(repo).evaluate(event=event(), group_context=context(), now=NOW)
+    repo = FakeRepo(positive=100)
+    snapshot = GroupInitiativeService(repo).evaluate(
+        event=event(), group_context=context(), now=NOW
+    )
     assert snapshot.initiative_level == 7
     assert snapshot.metadata["positive_bonus"] == 1
 
 
 def test_negative_feedback_reduces_initiative_faster_than_positive() -> None:
-    repo=FakeRepo(negative=1, positive=100)
-    snapshot=GroupInitiativeService(repo).evaluate(event=event(), group_context=context(), now=NOW)
+    repo = FakeRepo(negative=1, positive=100)
+    snapshot = GroupInitiativeService(repo).evaluate(
+        event=event(), group_context=context(), now=NOW
+    )
     assert snapshot.initiative_level == 5  # base 6 +1 positive -2 negative
     assert snapshot.metadata["negative_penalty"] == 2
 
 
 def test_bot_share_guardrail_blocks_unsolicited() -> None:
-    repo=FakeRepo(recent=2, messages=10)
-    snapshot=GroupInitiativeService(repo).evaluate(event=event(), group_context=context(), now=NOW)
-    assert snapshot.bot_share == .2
+    repo = FakeRepo(recent=2, messages=10)
+    snapshot = GroupInitiativeService(repo).evaluate(
+        event=event(), group_context=context(), now=NOW
+    )
+    assert snapshot.bot_share == 0.2
     assert snapshot.bot_share_blocked is True
     assert snapshot.cooldown_active is True
 
 
 def test_group_profile_overrides_cooldown_and_daily_limits() -> None:
-    repo=FakeRepo()
-    snapshot=GroupInitiativeService(repo).evaluate(
+    repo = FakeRepo()
+    snapshot = GroupInitiativeService(repo).evaluate(
         event=event(),
-        group_context=context({"cooldown_minutes":30,"soft_daily_limit":3,"hard_daily_limit":5}),
+        group_context=context(
+            {"cooldown_minutes": 30, "soft_daily_limit": 3, "hard_daily_limit": 5}
+        ),
         now=NOW,
     )
     assert snapshot.effective_cooldown_minutes == 30
@@ -136,13 +164,18 @@ def test_group_profile_overrides_cooldown_and_daily_limits() -> None:
 
 
 def test_shut_up_control_sets_silent_until_and_dispatcher_does_not_reply() -> None:
-    repo=FakeRepo()
-    service=GroupInitiativeService(repo)
-    retrieval=EmptyRetrieval()
-    behavior=GroupBehaviorEngine(retrieval, initiative_service=service)
-    evt=event("@nenoy заткнись", EventType.DIRECT_MENTION)
-    plan=behavior.plan(event=evt, group_context=context(), scene=SceneAnalysis(direct_mention=True), now=NOW)
-    decision=decide(evt, plan.scene, plan.state)
+    repo = FakeRepo()
+    service = GroupInitiativeService(repo)
+    retrieval = EmptyRetrieval()
+    behavior = GroupBehaviorEngine(retrieval, initiative_service=service)
+    evt = event("@nenoy заткнись", EventType.DIRECT_MENTION)
+    plan = behavior.plan(
+        event=evt,
+        group_context=context(),
+        scene=SceneAnalysis(direct_mention=True),
+        now=NOW,
+    )
+    decision = decide(evt, plan.scene, plan.state)
 
     assert repo.silence_updates
     assert repo.silence_updates[0][0] == "-100777"
@@ -153,13 +186,59 @@ def test_shut_up_control_sets_silent_until_and_dispatcher_does_not_reply() -> No
     assert retrieval.calls == []
 
 
+def test_human_shut_up_message_does_not_mute_group() -> None:
+    repo = FakeRepo()
+    snapshot = GroupInitiativeService(repo).evaluate(
+        event=event("замолчи", EventType.GROUP_MESSAGE),
+        group_context=context(),
+        now=NOW,
+    )
+    assert snapshot.silence_requested is False
+    assert snapshot.group_muted is False
+    assert repo.silence_updates == []
+
+
+def test_reply_to_human_shut_up_message_does_not_mute_group() -> None:
+    repo = FakeRepo()
+    snapshot = GroupInitiativeService(repo).evaluate(
+        event=event("не лезь", EventType.GROUP_MESSAGE, reply_to="77"),
+        group_context=context(),
+        now=NOW,
+    )
+    assert snapshot.silence_requested is False
+    assert snapshot.group_muted is False
+    assert repo.silence_updates == []
+
+
+def test_explicit_mute_request_event_is_trusted_control() -> None:
+    repo = FakeRepo()
+    snapshot = GroupInitiativeService(repo).evaluate(
+        event=event("пауза", EventType.MUTE_REQUEST),
+        group_context=context(),
+        now=NOW,
+    )
+    assert snapshot.silence_requested is True
+    assert snapshot.group_muted is True
+    assert repo.silence_updates == [("-100777", NOW + timedelta(minutes=120))]
+
+
 def test_direct_mention_bypasses_dynamic_hard_limit_and_share_block() -> None:
-    repo=FakeRepo(daily=99, recent=9, messages=10, last=NOW-timedelta(minutes=1))
-    service=GroupInitiativeService(repo)
-    behavior=GroupBehaviorEngine(EmptyRetrieval(), initiative_service=service)
-    evt=event("@nenoy ответь", EventType.DIRECT_MENTION)
-    plan=behavior.plan(event=evt, group_context=context(), scene=SceneAnalysis(direct_mention=True), now=NOW)
-    decision=decide(evt, plan.scene, plan.state)
+    repo = FakeRepo(
+        daily=99,
+        recent=9,
+        messages=10,
+        last=NOW - timedelta(minutes=1),
+    )
+    service = GroupInitiativeService(repo)
+    behavior = GroupBehaviorEngine(EmptyRetrieval(), initiative_service=service)
+    evt = event("@nenoy ответь", EventType.DIRECT_MENTION)
+    plan = behavior.plan(
+        event=evt,
+        group_context=context(),
+        scene=SceneAnalysis(direct_mention=True),
+        now=NOW,
+    )
+    decision = decide(evt, plan.scene, plan.state)
 
     assert plan.state.unsolicited_today == 99
     assert plan.state.cooldown_active is True
