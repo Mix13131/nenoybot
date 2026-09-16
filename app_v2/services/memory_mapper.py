@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import hashlib
 import json
-import uuid
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -133,8 +132,102 @@ class MemoryMapperStore:
             return None
         return self.repo.get(scope_type, scope_id, row[0])
 
+    def find_source_match(
+        self,
+        scope_type: ScopeType,
+        scope_id: str,
+        memory_type: str,
+        evidence: MemoryEvidence,
+    ) -> MemoryCard | None:
+        conn = getattr(self.repo, "conn", None)
+        if conn is None:
+            finder = getattr(self.repo, "find_source_match", None)
+            return finder(scope_type, scope_id, memory_type, evidence) if finder else None
+
+        probe = json.dumps(
+            [{
+                "message_id": evidence.message_id,
+                "author_id": evidence.author_id,
+                "excerpt": evidence.excerpt,
+            }],
+            ensure_ascii=False,
+        )
+        row = conn.execute(
+            """
+            SELECT id
+            FROM memory_cards
+            WHERE scope_type=%s
+              AND scope_id=%s
+              AND status IN ('candidate','active')
+              AND memory_type=%s
+              AND evidence @> %s::jsonb
+            ORDER BY updated_at DESC
+            LIMIT 1
+            """,
+            (scope_type.value, scope_id, memory_type, probe),
+        ).fetchone()
+        if not row:
+            return None
+        return self.repo.get(scope_type, scope_id, row[0])
+
     def create(self, card: MemoryCard) -> MemoryCard:
-        return self.repo.create(card)
+        conn = getattr(self.repo, "conn", None)
+        if conn is None or not card.evidence:
+            return self.repo.create(card)
+
+        first_evidence = card.evidence[0]
+        semantic_key = str(card.payload.get("semantic_key") or "")
+        lock_material = "|".join(
+            (
+                card.scope_type.value,
+                card.scope_id,
+                card.memory_type,
+                str(first_evidence.message_id or ""),
+                str(first_evidence.author_id or ""),
+                " ".join(first_evidence.excerpt.casefold().split()),
+            )
+        )
+        conn.execute(
+            "SELECT pg_advisory_lock(hashtextextended(%s, 0))",
+            (lock_material,),
+        ).fetchone()
+        # Session-level advisory locks survive commit; release the transaction
+        # used for acquisition so the actual read/create starts cleanly.
+        conn.commit()
+        try:
+            existing = self.find_source_match(
+                card.scope_type,
+                card.scope_id,
+                card.memory_type,
+                first_evidence,
+            )
+            if existing is None and semantic_key:
+                existing = self.find_semantic_match(
+                    card.scope_type,
+                    card.scope_id,
+                    semantic_key,
+                )
+            if existing is not None:
+                return existing
+            return self.repo.create(card)
+        finally:
+            # SELECTs or a failed INSERT may leave a transaction open/aborted.
+            # End it before issuing the unlock on the same session.
+            try:
+                conn.rollback()
+            except Exception:
+                pass
+            try:
+                conn.execute(
+                    "SELECT pg_advisory_unlock(hashtextextended(%s, 0))",
+                    (lock_material,),
+                ).fetchone()
+                conn.commit()
+            except Exception:
+                try:
+                    conn.rollback()
+                except Exception:
+                    pass
 
     def update(self, card: MemoryCard) -> MemoryCard:
         return self.repo.update(card)
@@ -411,6 +504,24 @@ class MemoryMapper:
                 episode_start = item.timestamp
         return episodes
 
+    @staticmethod
+    def _memory_id(
+        event: EventEnvelope,
+        requested_memory_type: str,
+        evidence: MemoryEvidence,
+    ) -> str:
+        material = "|".join(
+            (
+                event.scope_type.value,
+                event.scope_id,
+                requested_memory_type,
+                str(evidence.message_id or event.event_id),
+                str(evidence.author_id or ""),
+                " ".join(evidence.excerpt.casefold().split()),
+            )
+        )
+        return f"mem_{hashlib.sha256(material.encode('utf-8')).hexdigest()[:32]}"
+
     def _upsert_candidate(
         self,
         event: EventEnvelope,
@@ -428,6 +539,16 @@ class MemoryMapper:
         evidence = self._candidate_evidence(event, candidate, recent_context)
         if evidence is None:
             return None
+
+        if existing is None:
+            source_finder = getattr(self.store, "find_source_match", None)
+            if source_finder is not None:
+                existing = source_finder(
+                    event.scope_type,
+                    event.scope_id,
+                    requested_memory_type,
+                    evidence,
+                )
 
         existing_evidence = list(existing.evidence) if existing is not None else []
         source_identity = self._source_identity(evidence)
@@ -494,7 +615,7 @@ class MemoryMapper:
 
         if existing is None:
             card = MemoryCard(
-                id=f"mem_{uuid.uuid4().hex}",
+                id=self._memory_id(event, requested_memory_type, evidence),
                 scope_type=event.scope_type,
                 scope_id=event.scope_id,
                 memory_type=memory_type,
