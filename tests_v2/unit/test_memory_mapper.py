@@ -167,7 +167,14 @@ def test_explicit_forget_archives_only_target_in_same_scope():
 
 def test_repeated_commitment_updates_one_logical_card_from_real_sources():
     store = FakeStore()
-    adapter = FakeAdapter(responses=[{"candidates": [candidate()]}, {"candidates": [candidate(evidence_count=99)]}])
+    adapter = FakeAdapter(responses=[
+        {"candidates": [candidate()]},
+        {"candidates": [candidate(
+            evidence_count=99,
+            source_message_id="m2",
+            evidence_excerpt="отчёт завтра отправлю",
+        )]},
+    ])
     mapper = MemoryMapper(store=store, adapter=adapter)
 
     first = mapper.map_event(event("Завтра отправлю отчёт", message_id="m1"))
