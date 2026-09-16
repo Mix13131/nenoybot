@@ -4,7 +4,7 @@ import hashlib
 import json
 import uuid
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Iterable
 
@@ -26,6 +26,8 @@ _STATEMENT_KINDS = {
 _STATEMENT_STATUSES = {
     "unknown", "open", "active", "kept", "broken", "missed", "fulfilled",
 }
+_CLAIM_KINDS = {"fact", "plan", "estimate", "conditional", "unknown"}
+_EPISODE_GAP = timedelta(hours=6)
 
 _SCHEMA: dict[str, Any] = {
     "type": "object",
@@ -41,6 +43,8 @@ _SCHEMA: dict[str, Any] = {
                     "semantic_key": {"type": "string", "minLength": 1},
                     "summary": {"type": "string", "minLength": 1},
                     "subject_keys": {"type": "array", "items": {"type": "string"}},
+                    "source_message_id": {"type": "string", "minLength": 1},
+                    "evidence_excerpt": {"type": "string", "minLength": 1},
                     "payload": {
                         "type": "object",
                         "additionalProperties": False,
@@ -49,13 +53,12 @@ _SCHEMA: dict[str, Any] = {
                             "status": {"type": "string", "enum": sorted(_STATEMENT_STATUSES)},
                             "due_at": {"type": ["string", "null"]},
                             "verbatim": {"type": ["string", "null"]},
+                            "claim_kind": {"type": "string", "enum": sorted(_CLAIM_KINDS)},
                         },
-                        "required": ["statement_kind", "status", "due_at", "verbatim"],
+                        "required": ["statement_kind", "status", "due_at", "verbatim", "claim_kind"],
                     },
                     "importance": {"type": "number", "minimum": 0, "maximum": 1},
                     "confidence": {"type": "number", "minimum": 0, "maximum": 1},
-                    "evidence_count": {"type": "integer", "minimum": 1},
-                    "episode_count": {"type": "integer", "minimum": 1},
                     "usage_policy": {
                         "type": "object",
                         "additionalProperties": False,
@@ -70,8 +73,8 @@ _SCHEMA: dict[str, Any] = {
                 },
                 "required": [
                     "memory_type", "semantic_key", "summary", "subject_keys",
-                    "payload", "importance", "confidence", "evidence_count",
-                    "episode_count", "usage_policy",
+                    "source_message_id", "evidence_excerpt", "payload",
+                    "importance", "confidence", "usage_policy",
                 ],
             },
         }
@@ -86,6 +89,14 @@ class MapperResult:
     forgotten_ids: tuple[str, ...] = ()
     failed: bool = False
     reason: str | None = None
+
+
+@dataclass(frozen=True)
+class _TrustedSource:
+    message_id: str
+    author_id: str | None
+    timestamp: datetime
+    text: str
 
 
 class MemoryMapperStore:
@@ -149,7 +160,7 @@ class MemoryMapper:
         event: EventEnvelope,
         *,
         target_memory_ids: Iterable[str] = (),
-        recent_context: str = "",
+        recent_context: Iterable[dict[str, Any]] | str = (),
     ) -> MapperResult:
         text = (event.text or "").strip()
         if not text:
@@ -165,21 +176,23 @@ class MemoryMapper:
 
         explicit = self._extract_explicit_remember(text)
         if explicit is not None:
+            source_id = str(event.message_id or event.event_id)
             candidate = {
-                "memory_type": "fact",
+                "memory_type": "observation",
                 "semantic_key": self._semantic_key("explicit", explicit),
                 "summary": explicit,
                 "subject_keys": self._default_subject_keys(event),
+                "source_message_id": source_id,
+                "evidence_excerpt": explicit,
                 "payload": {
                     "statement_kind": "none",
                     "status": "active",
                     "due_at": None,
                     "verbatim": explicit,
+                    "claim_kind": "unknown",
                 },
                 "importance": 0.9,
                 "confidence": 0.98,
-                "evidence_count": 1,
-                "episode_count": 1,
                 "usage_policy": {
                     "assist": True,
                     "callback": True,
@@ -187,9 +200,12 @@ class MemoryMapper:
                     "proactive": False,
                 },
             }
-            card = self._upsert_candidate(event, candidate, explicit=True)
-            return MapperResult(written=(card,), reason="explicit_remember")
+            card = self._upsert_candidate(event, candidate, explicit=True, recent_context=())
+            return MapperResult(written=(card,) if card is not None else (), reason="explicit_remember")
 
+        context_items = self._normalize_context(recent_context)
+        if self._needs_context(text) and not context_items:
+            return MapperResult(reason="insufficient_context")
         if self.adapter is None:
             return MapperResult(reason="no_mapper_adapter")
 
@@ -198,7 +214,7 @@ class MemoryMapper:
             input_text = json.dumps(
                 {
                     "event": event.model_dump(mode="json"),
-                    "recent_context": recent_context[-4000:],
+                    "recent_context": context_items,
                 },
                 ensure_ascii=False,
             )
@@ -209,15 +225,22 @@ class MemoryMapper:
                 schema=_SCHEMA,
                 instructions=prompt,
                 event_id=event.event_id,
-                max_output_tokens=1200,
+                max_output_tokens=1400,
             )
             parsed = result.parsed or {"candidates": []}
-            written = tuple(
-                self._upsert_candidate(event, candidate, explicit=False)
-                for candidate in parsed.get("candidates", [])
-                if candidate.get("memory_type") in _ALLOWED_TYPES
-            )
-            return MapperResult(written=written)
+            written: list[MemoryCard] = []
+            for candidate in parsed.get("candidates", []):
+                if candidate.get("memory_type") not in _ALLOWED_TYPES:
+                    continue
+                card = self._upsert_candidate(
+                    event,
+                    candidate,
+                    explicit=False,
+                    recent_context=context_items,
+                )
+                if card is not None:
+                    written.append(card)
+            return MapperResult(written=tuple(written))
         except Exception as exc:
             return MapperResult(failed=True, reason=f"mapper_failure:{type(exc).__name__}")
 
@@ -231,6 +254,11 @@ class MemoryMapper:
         return None
 
     @staticmethod
+    def _needs_context(text: str) -> bool:
+        normalized = " ".join(text.lower().replace("ё", "е").split()).strip(" .,!?:;")
+        return normalized in {"я тоже", "да я тоже", "да, я тоже", "тоже", "у меня тоже", "мне тоже"}
+
+    @staticmethod
     def _semantic_key(kind: str, text: str) -> str:
         normalized = " ".join(text.lower().split())
         digest = hashlib.sha256(normalized.encode("utf-8")).hexdigest()[:24]
@@ -242,13 +270,146 @@ class MemoryMapper:
             return [f"user:{event.actor_user_id}"]
         return []
 
-    def _evidence(self, event: EventEnvelope) -> MemoryEvidence:
+    @staticmethod
+    def _normalize_context(value: Iterable[dict[str, Any]] | str) -> list[dict[str, Any]]:
+        raw: Any = value
+        if isinstance(value, str):
+            try:
+                raw = json.loads(value)
+            except Exception:
+                return []
+        if not isinstance(raw, (list, tuple)):
+            return []
+        result: list[dict[str, Any]] = []
+        for item in raw[-12:]:
+            if not isinstance(item, dict):
+                continue
+            if not str(item.get("message_id") or "").strip() or not str(item.get("text") or "").strip():
+                continue
+            result.append(dict(item))
+        return result
+
+    @staticmethod
+    def _parse_timestamp(value: Any) -> datetime | None:
+        if isinstance(value, datetime):
+            parsed = value
+        elif isinstance(value, str):
+            try:
+                parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+            except ValueError:
+                return None
+        else:
+            return None
+        if parsed.tzinfo is None or parsed.utcoffset() is None:
+            return None
+        return parsed
+
+    def _trusted_sources(
+        self,
+        event: EventEnvelope,
+        recent_context: Iterable[dict[str, Any]],
+    ) -> dict[str, _TrustedSource]:
+        sources: dict[str, _TrustedSource] = {}
+        current_id = str(event.message_id or event.event_id)
+        current_text = (event.text or "").strip()
+        if current_text:
+            sources[current_id] = _TrustedSource(
+                message_id=current_id,
+                author_id=event.actor_user_id,
+                timestamp=event.occurred_at,
+                text=current_text,
+            )
+
+        for item in recent_context:
+            message_id = str(item.get("message_id") or "").strip()
+            text = str(item.get("text") or "").strip()
+            timestamp = self._parse_timestamp(item.get("created_at"))
+            if not message_id or not text or timestamp is None:
+                continue
+            if timestamp > event.occurred_at:
+                continue
+            # Never let context overwrite the trusted current event record.
+            if message_id == current_id:
+                continue
+            sources[message_id] = _TrustedSource(
+                message_id=message_id,
+                author_id=(str(item.get("author_user_id")) if item.get("author_user_id") is not None else None),
+                timestamp=timestamp,
+                text=text,
+            )
+        return sources
+
+    @staticmethod
+    def _validated_excerpt(source_text: str, requested: str) -> str | None:
+        excerpt = requested.strip()
+        if not excerpt:
+            return None
+        direct = source_text.find(excerpt)
+        if direct >= 0:
+            return source_text[direct : direct + len(excerpt)]
+        folded_source = source_text.casefold()
+        folded_excerpt = excerpt.casefold()
+        pos = folded_source.find(folded_excerpt)
+        if pos >= 0:
+            return source_text[pos : pos + len(excerpt)]
+        return None
+
+    def _candidate_evidence(
+        self,
+        event: EventEnvelope,
+        candidate: dict[str, Any],
+        recent_context: Iterable[dict[str, Any]],
+    ) -> MemoryEvidence | None:
+        sources = self._trusted_sources(event, recent_context)
+        source_id = str(candidate.get("source_message_id") or event.message_id or event.event_id)
+        source = sources.get(source_id)
+        if source is None:
+            return None
+
+        requested = str(candidate.get("evidence_excerpt") or "").strip()
+        if not requested:
+            payload = candidate.get("payload") or {}
+            requested = str(payload.get("verbatim") or "").strip()
+        if not requested and source_id == str(event.message_id or event.event_id) and len(source.text) <= 240:
+            requested = source.text
+        excerpt = self._validated_excerpt(source.text, requested)
+        if excerpt is None:
+            return None
         return MemoryEvidence(
-            message_id=event.message_id,
-            author_id=event.actor_user_id,
-            timestamp=event.occurred_at,
-            excerpt=(event.text or "")[:240].strip(),
+            message_id=source.message_id,
+            author_id=source.author_id,
+            timestamp=source.timestamp,
+            excerpt=excerpt,
         )
+
+    @staticmethod
+    def _source_identity(evidence: MemoryEvidence) -> tuple[str | None, str | None, datetime]:
+        return (evidence.message_id, evidence.author_id, evidence.timestamp)
+
+    @classmethod
+    def _unique_sources(cls, evidence_items: Iterable[MemoryEvidence]) -> list[MemoryEvidence]:
+        result: list[MemoryEvidence] = []
+        seen: set[tuple[str | None, str | None, datetime]] = set()
+        for item in evidence_items:
+            identity = cls._source_identity(item)
+            if identity in seen:
+                continue
+            seen.add(identity)
+            result.append(item)
+        return result
+
+    @classmethod
+    def _episode_count(cls, evidence_items: Iterable[MemoryEvidence]) -> int:
+        sources = sorted(cls._unique_sources(evidence_items), key=lambda item: item.timestamp)
+        if not sources:
+            return 0
+        episodes = 1
+        episode_start = sources[0].timestamp
+        for item in sources[1:]:
+            if item.timestamp - episode_start >= _EPISODE_GAP:
+                episodes += 1
+                episode_start = item.timestamp
+        return episodes
 
     def _upsert_candidate(
         self,
@@ -256,55 +417,80 @@ class MemoryMapper:
         candidate: dict[str, Any],
         *,
         explicit: bool,
-    ) -> MemoryCard:
+        recent_context: Iterable[dict[str, Any]],
+    ) -> MemoryCard | None:
         now = datetime.now(timezone.utc)
-        memory_type = str(candidate["memory_type"])
-        evidence_count = int(candidate.get("evidence_count", 1))
-        episode_count = int(candidate.get("episode_count", 1))
+        requested_memory_type = str(candidate["memory_type"])
         raw_confidence = float(candidate.get("confidence", 0.5))
+        semantic_key = str(candidate["semantic_key"]).strip()
+        existing = self.store.find_semantic_match(event.scope_type, event.scope_id, semantic_key)
+
+        evidence = self._candidate_evidence(event, candidate, recent_context)
+        if evidence is None:
+            return None
+
+        existing_evidence = list(existing.evidence) if existing is not None else []
+        source_identity = self._source_identity(evidence)
+        if existing is not None and source_identity in {
+            self._source_identity(item) for item in existing_evidence
+        }:
+            # Retry/edit of the same persisted source is not independent
+            # corroboration. Do not refresh timestamps, freshness, confidence,
+            # source_count or status merely because the mapper ran again.
+            return existing
+
+        evidence_items = existing_evidence + [evidence]
+        unique_sources = self._unique_sources(evidence_items)
+        source_count = len(unique_sources)
+        episode_count = self._episode_count(unique_sources)
+
+        memory_type = requested_memory_type
+        if requested_memory_type == "pattern" and (source_count < 3 or episode_count < 2):
+            memory_type = "observation"
 
         usage_data = dict(candidate.get("usage_policy", {}))
         if memory_type in _DIRECT_STATEMENT_TYPES:
-            # A direct statement is useful only if it can be surfaced later.
-            # Roast safety is still decided at scene time by StatementWatcher.
             usage_data["callback"] = True
             usage_data["proactive"] = True
         usage_policy = UsagePolicy(**usage_data)
 
-        if memory_type == "pattern" and (evidence_count < 3 or episode_count < 2):
-            memory_type = "observation"
-            status = MemoryStatus.CANDIDATE
-        elif explicit:
-            status = MemoryStatus.ACTIVE
-        elif memory_type in {"commitment", "decision"} and raw_confidence >= 0.65:
-            # These are grounded in the current message evidence, not a hidden
-            # profile inference. Activate them immediately so the next message
-            # can be checked against what the person actually said.
-            status = MemoryStatus.ACTIVE
-        elif memory_type == "quote" and raw_confidence >= 0.78:
-            status = MemoryStatus.ACTIVE
-        else:
-            status = MemoryStatus.CANDIDATE
+        confidence = raw_confidence
+        if not explicit:
+            confidence = min(confidence, 0.88 if memory_type in _DIRECT_STATEMENT_TYPES else 0.70)
 
-        semantic_key = str(candidate["semantic_key"]).strip()
-        existing = self.store.find_semantic_match(event.scope_type, event.scope_id, semantic_key)
-        evidence = self._evidence(event)
+        if explicit:
+            proposed_status = MemoryStatus.ACTIVE
+        elif requested_memory_type == "pattern":
+            proposed_status = (
+                MemoryStatus.ACTIVE
+                if source_count >= 3 and episode_count >= 2
+                else MemoryStatus.CANDIDATE
+            )
+        elif memory_type in {"commitment", "decision"} and raw_confidence >= 0.65:
+            proposed_status = MemoryStatus.ACTIVE
+        elif memory_type == "quote" and raw_confidence >= 0.78:
+            proposed_status = MemoryStatus.ACTIVE
+        else:
+            proposed_status = MemoryStatus.CANDIDATE
+
         payload = dict(candidate.get("payload", {}))
         payload.setdefault("statement_kind", "none")
         payload.setdefault("status", "unknown")
         payload.setdefault("due_at", None)
         payload.setdefault("verbatim", None)
+        payload.setdefault("claim_kind", "unknown")
+        if payload["claim_kind"] not in _CLAIM_KINDS:
+            payload["claim_kind"] = "unknown"
         payload.update(
             {
                 "semantic_key": semantic_key,
-                "evidence_count": evidence_count,
+                "source_message_id": evidence.message_id,
+                "source_author_id": evidence.author_id,
+                "evidence_count": source_count,
                 "episode_count": episode_count,
+                "episode_policy": "unique_source_messages_6h_window",
             }
         )
-
-        confidence = raw_confidence
-        if not explicit:
-            confidence = min(confidence, 0.88 if memory_type in _DIRECT_STATEMENT_TYPES else 0.70)
 
         if existing is None:
             card = MemoryCard(
@@ -318,33 +504,23 @@ class MemoryMapper:
                 importance=float(candidate.get("importance", 0.5)),
                 confidence=confidence,
                 freshness=1.0,
-                status=status,
+                status=proposed_status,
                 origin=MemoryOrigin.EXPLICIT if explicit else MemoryOrigin.INFERRED,
                 usage_policy=usage_policy,
                 evidence=[evidence],
-                source_count=1,
+                source_count=source_count,
                 created_at=now,
                 updated_at=now,
                 last_confirmed_at=now if explicit else None,
             )
             return self.store.create(card)
 
-        evidence_items = list(existing.evidence)
-        identity = (evidence.message_id, evidence.author_id, evidence.timestamp, evidence.excerpt)
-        seen = {(e.message_id, e.author_id, e.timestamp, e.excerpt) for e in evidence_items}
-        if identity not in seen:
-            evidence_items.append(evidence)
-
         merged_status = existing.status
-        if explicit or status is MemoryStatus.ACTIVE:
-            merged_status = MemoryStatus.ACTIVE
-        elif memory_type == "pattern" and evidence_count >= 3 and episode_count >= 2:
+        if explicit or proposed_status is MemoryStatus.ACTIVE:
             merged_status = MemoryStatus.ACTIVE
 
-        # Repeated grounded evidence is allowed to strengthen an inferred card,
-        # but never jumps straight to certainty.
         merged_confidence = max(existing.confidence, confidence)
-        if not explicit and len(evidence_items) >= 2:
+        if not explicit and source_count >= 2:
             merged_confidence = min(0.92, merged_confidence + 0.04)
 
         updated = existing.model_copy(
@@ -359,7 +535,7 @@ class MemoryMapper:
                 "origin": MemoryOrigin.EXPLICIT if explicit else existing.origin,
                 "usage_policy": usage_policy,
                 "evidence": evidence_items,
-                "source_count": max(existing.source_count, len(evidence_items), evidence_count),
+                "source_count": source_count,
                 "updated_at": now,
                 "last_confirmed_at": now if explicit else existing.last_confirmed_at,
             }
