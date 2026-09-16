@@ -170,7 +170,7 @@ class MemoryMapperStore:
             return None
         return self.repo.get(scope_type, scope_id, row[0])
 
-    def create(self, card: MemoryCard) -> MemoryCard:
+    def create(self, card: MemoryCard) -> MemoryCard | None:
         conn = getattr(self.repo, "conn", None)
         if conn is None or not card.evidence:
             return self.repo.create(card)
@@ -208,7 +208,9 @@ class MemoryMapperStore:
                     semantic_key,
                 )
             if existing is not None:
-                return existing
+                # Persistence succeeded in another worker/session, but this call
+                # itself did not write. Returning None keeps the receipt no-op.
+                return None
             return self.repo.create(card)
         finally:
             # SELECTs or a failed INSERT may leave a transaction open/aborted.
@@ -320,22 +322,33 @@ class MemoryMapper:
                 event_id=event.event_id,
                 max_output_tokens=1400,
             )
-            parsed = result.parsed or {"candidates": []}
-            written: list[MemoryCard] = []
-            for candidate in parsed.get("candidates", []):
-                if candidate.get("memory_type") not in _ALLOWED_TYPES:
-                    continue
+        except Exception as exc:
+            return MapperResult(failed=True, reason=f"mapper_failure:{type(exc).__name__}")
+
+        parsed = result.parsed or {"candidates": []}
+        written: list[MemoryCard] = []
+        for candidate in parsed.get("candidates", []):
+            if candidate.get("memory_type") not in _ALLOWED_TYPES:
+                continue
+            try:
                 card = self._upsert_candidate(
                     event,
                     candidate,
                     explicit=False,
                     recent_context=context_items,
                 )
-                if card is not None:
-                    written.append(card)
-            return MapperResult(written=tuple(written))
-        except Exception as exc:
-            return MapperResult(failed=True, reason=f"mapper_failure:{type(exc).__name__}")
+            except Exception as exc:
+                # MemoryRepository currently commits card writes individually.
+                # Preserve already-committed IDs so the receipt can say partial
+                # instead of falsely claiming that nothing changed.
+                return MapperResult(
+                    written=tuple(written),
+                    failed=True,
+                    reason=f"mapper_failure:{type(exc).__name__}",
+                )
+            if card is not None:
+                written.append(card)
+        return MapperResult(written=tuple(written))
 
     @staticmethod
     def _extract_explicit_remember(text: str) -> str | None:
@@ -556,9 +569,9 @@ class MemoryMapper:
             self._source_identity(item) for item in existing_evidence
         }:
             # Retry/edit of the same persisted source is not independent
-            # corroboration. Do not refresh timestamps, freshness, confidence,
-            # source_count or status merely because the mapper ran again.
-            return existing
+            # corroboration and not a write. Keep MapperResult.written empty so
+            # operation_receipts.memory.changed remains false.
+            return None
 
         evidence_items = existing_evidence + [evidence]
         unique_sources = self._unique_sources(evidence_items)
