@@ -7,6 +7,7 @@ from app_v2.domain.enums import PrimaryAction, ResponseMode, ScopeType
 from app_v2.domain.events import EventEnvelope
 from app_v2.domain.outbound import OutboundMessage
 from app_v2.services.dispatcher import decide
+from app_v2.services.operation_receipts import personal_operation_receipts
 
 
 class PersonalPipelineError(RuntimeError):
@@ -77,6 +78,7 @@ class PersonalPipeline:
             target_memory_ids=target_memory_ids,
             recent_context=mapper_context,
         )
+        operation_receipts = personal_operation_receipts(mapper_result)
 
         memory_usage = "callback" if decision.mode is ResponseMode.MIRROR else "assist"
         personality = self.personality_engine.build(
@@ -91,6 +93,7 @@ class PersonalPipeline:
             personality=personality,
             subject_keys=self._subject_keys(event),
             memory_usage=memory_usage,
+            action_state={"operation_receipts": operation_receipts},
         )
 
         selected_memory_ids = [memory.id for memory in context.memories]
@@ -104,7 +107,11 @@ class PersonalPipeline:
                 decision=decision,
                 selected_memory_ids=selected_memory_ids,
                 generated_text=None,
-                extra_metadata={"generation_failed": True, "error_type": type(exc).__name__},
+                extra_metadata={
+                    "generation_failed": True,
+                    "error_type": type(exc).__name__,
+                    "operation_receipts": operation_receipts,
+                },
             )
             return PersonalPipelineResult(
                 event_id=event.event_id,
@@ -124,6 +131,7 @@ class PersonalPipeline:
             decision=decision,
             selected_memory_ids=selected_memory_ids,
             generated_text=generated.text,
+            extra_metadata={"operation_receipts": operation_receipts},
         )
 
         outbound = OutboundMessage(
