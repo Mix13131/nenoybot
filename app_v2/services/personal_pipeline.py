@@ -71,9 +71,11 @@ class PersonalPipeline:
             )
 
         target_memory_ids = self._target_memory_ids(event)
+        mapper_context = self._mapper_context(event)
         mapper_result = self.memory_mapper.map_event(
             event,
             target_memory_ids=target_memory_ids,
+            recent_context=mapper_context,
         )
 
         memory_usage = "callback" if decision.mode is ResponseMode.MIRROR else "assist"
@@ -147,6 +149,16 @@ class PersonalPipeline:
             memory_written_ids=tuple(card.id for card in mapper_result.written),
             memory_forgotten_ids=tuple(mapper_result.forgotten_ids),
         )
+
+    def _mapper_context(self, event: EventEnvelope) -> tuple[dict[str, Any], ...]:
+        builder = getattr(self.context_builder, "mapper_context", None)
+        if builder is None:
+            return ()
+        try:
+            value = builder(event)
+        except Exception:
+            return ()
+        return tuple(item for item in value if isinstance(item, dict))
 
     @staticmethod
     def _subject_keys(event: EventEnvelope) -> list[str]:
