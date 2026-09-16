@@ -12,9 +12,11 @@ NOW = datetime(2026, 9, 16, 10, 0, tzinfo=timezone.utc)
 
 
 class FakeStore:
-    def __init__(self) -> None:
+    def __init__(self, *, fail_create_at: int | None = None) -> None:
         self.cards = {}
         self.update_calls = 0
+        self.create_calls = 0
+        self.fail_create_at = fail_create_at
 
     def find_semantic_match(self, scope_type, scope_id, semantic_key):
         for card in self.cards.values():
@@ -28,6 +30,9 @@ class FakeStore:
         return None
 
     def create(self, card):
+        self.create_calls += 1
+        if self.fail_create_at == self.create_calls:
+            raise RuntimeError("simulated create failure")
         self.cards[card.id] = card
         return card
 
@@ -190,19 +195,50 @@ def test_repeated_commitment_updates_one_logical_card_from_real_sources():
     assert card.confidence >= 0.88
 
 
-def test_same_source_retry_is_true_noop_without_refresh_or_strengthening():
+def test_same_source_retry_is_true_noop_without_refresh_or_write_receipt():
     store = FakeStore()
     adapter = FakeAdapter(responses=[{"candidates": [candidate()]}, {"candidates": [candidate(confidence=1.0, evidence_count=99)]}])
     mapper = MemoryMapper(store=store, adapter=adapter)
     source = event("Завтра отправлю отчёт", message_id="m1")
 
-    first = mapper.map_event(source).written[0]
-    second = mapper.map_event(source).written[0]
+    first_result = mapper.map_event(source)
+    first = first_result.written[0]
+    second_result = mapper.map_event(source)
 
-    assert second == first
-    assert second.source_count == 1
-    assert second.payload["episode_count"] == 1
+    assert second_result.written == ()
+    persisted = store.cards[first.id]
+    assert persisted == first
+    assert persisted.source_count == 1
+    assert persisted.payload["episode_count"] == 1
     assert store.update_calls == 0
+
+
+def test_partial_write_preserves_already_committed_cards_in_mapper_result():
+    store = FakeStore(fail_create_at=2)
+    second_candidate = candidate(
+        memory_type="plan",
+        semantic_key="plan:call-client",
+        summary="Пользователь планирует позвонить клиенту вечером.",
+        source_message_id="m1",
+        evidence_excerpt="Позвоню клиенту вечером",
+        payload={
+            "statement_kind": "none",
+            "status": "unknown",
+            "due_at": None,
+            "verbatim": None,
+            "claim_kind": "plan",
+        },
+    )
+    adapter = FakeAdapter(responses=[{"candidates": [candidate(), second_candidate]}])
+    mapper = MemoryMapper(store=store, adapter=adapter)
+
+    result = mapper.map_event(event("Завтра отправлю отчёт. Позвоню клиенту вечером."))
+
+    assert result.failed is True
+    assert result.reason == "mapper_failure:RuntimeError"
+    assert len(result.written) == 1
+    assert result.written[0].payload["semantic_key"] == "commitment:send-report"
+    assert len(store.cards) == 1
 
 
 def test_grounded_commitment_activates_immediately_for_future_callback():
