@@ -38,13 +38,20 @@ def memory_receipt(mapper_result: Any | None, *, attempted: bool) -> dict[str, A
     candidate_count = sum(1 for card in written if _value(getattr(card, "status", "")) == "candidate")
     written_ids = [str(getattr(card, "id")) for card in written if getattr(card, "id", None)]
     forgotten_ids = [str(item) for item in forgotten if str(item).strip()]
+    changed = bool(written_ids or forgotten_ids)
 
     if failed:
         status = "failed"
         changed = False
-    else:
+    elif changed:
         status = "succeeded"
-        changed = bool(written_ids or forgotten_ids)
+    elif reason == "insufficient_context":
+        status = "needs_clarification"
+    elif reason in {"no_text", "no_mapper_adapter", "memory_mapping_not_selected"}:
+        status = "not_attempted"
+    else:
+        # The mapper ran successfully and simply found nothing worth persisting.
+        status = "succeeded"
 
     return {
         "status": status,
