@@ -5,8 +5,10 @@ from datetime import datetime, timezone
 import pytest
 
 from app_v2.group_admin import (
+    DIAMOND_VOICE_SANDBOX_PROFILE,
     FRIENDS_DAY1_PROFILE,
     GroupAdminError,
+    activate_diamond_voice_group,
     activate_friends_group,
     deactivate_group,
     list_groups,
@@ -45,11 +47,24 @@ class FakeRepo:
 
 def test_day1_profile_is_deliberately_low_initiative() -> None:
     assert FRIENDS_DAY1_PROFILE["profile"] == "friends"
+    assert FRIENDS_DAY1_PROFILE["character_id"] == "nenoy"
     assert FRIENDS_DAY1_PROFILE["unsolicited_enabled"] is True
     assert FRIENDS_DAY1_PROFILE["initiative"] == 3
     assert FRIENDS_DAY1_PROFILE["roast"] <= 7
     assert FRIENDS_DAY1_PROFILE["profanity_frequency"] <= 3
     assert FRIENDS_DAY1_PROFILE["sensitivity"] >= 8
+
+
+def test_diamond_voice_profile_is_sandbox_safe() -> None:
+    assert DIAMOND_VOICE_SANDBOX_PROFILE["profile"] == "diamond_voice_sandbox"
+    assert DIAMOND_VOICE_SANDBOX_PROFILE["character_id"] == "diamond_voice"
+    assert DIAMOND_VOICE_SANDBOX_PROFILE["unsolicited_enabled"] is False
+    assert DIAMOND_VOICE_SANDBOX_PROFILE["initiative"] <= 2
+    assert DIAMOND_VOICE_SANDBOX_PROFILE["roast"] == 0
+    assert DIAMOND_VOICE_SANDBOX_PROFILE["sarcasm"] == 0
+    assert DIAMOND_VOICE_SANDBOX_PROFILE["profanity_level"] == 0
+    assert DIAMOND_VOICE_SANDBOX_PROFILE["warmth"] >= 8
+    assert DIAMOND_VOICE_SANDBOX_PROFILE["sensitivity"] == 10
 
 
 def test_activate_whitelists_exact_group_with_day1_profile() -> None:
@@ -61,12 +76,29 @@ def test_activate_whitelists_exact_group_with_day1_profile() -> None:
     assert repo.configure_calls == [("-100777", FRIENDS_DAY1_PROFILE, True)]
 
 
+def test_activate_diamond_voice_whitelists_exact_group_with_sandbox_profile() -> None:
+    repo = FakeRepo()
+    result = activate_diamond_voice_group(repo, "-100777")
+
+    assert result["whitelisted"] is True
+    assert result["telegram_chat_id"] == "-100777"
+    assert repo.configure_calls == [("-100777", DIAMOND_VOICE_SANDBOX_PROFILE, True)]
+
+
 def test_activate_unknown_group_fails_closed() -> None:
     repo = FakeRepo()
     repo.configure_result = False
 
     with pytest.raises(GroupAdminError, match="Group not found"):
         activate_friends_group(repo, "-100999")
+
+
+def test_activate_diamond_unknown_group_fails_closed() -> None:
+    repo = FakeRepo()
+    repo.configure_result = False
+
+    with pytest.raises(GroupAdminError, match="Group not found"):
+        activate_diamond_voice_group(repo, "-100999")
 
 
 def test_deactivate_removes_exact_group_from_whitelist() -> None:
