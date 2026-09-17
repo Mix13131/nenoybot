@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from contextlib import contextmanager
 from datetime import datetime, timezone
 
 from app_v2.domain.enums import EventType, MemoryStatus, ScopeType
@@ -26,6 +27,24 @@ class FakeStore:
                 return card
         return None
 
+    def find_source_identity_matches(self, scope_type, scope_id, evidence):
+        identity = (evidence.message_id, evidence.author_id, evidence.timestamp)
+        found = []
+        for card in self.cards.values():
+            if card.scope_type is not scope_type or card.scope_id != scope_id:
+                continue
+            if any((item.message_id, item.author_id, item.timestamp) == identity for item in card.evidence):
+                found.append(card)
+        return tuple(found)
+
+    @contextmanager
+    def source_lock(self, *args, **kwargs):
+        yield
+
+    @contextmanager
+    def semantic_locks(self, *args, **kwargs):
+        yield
+
     def create(self, card):
         self.cards[card.id] = card
         return card
@@ -39,10 +58,18 @@ class FakeStore:
         return False
 
 
-def _event(text, *, actor="u1", message_id="42", occurred_at=NOW, scope=ScopeType.PERSONAL):
+def _event(
+    text,
+    *,
+    actor="u1",
+    message_id="42",
+    occurred_at=NOW,
+    scope=ScopeType.PERSONAL,
+    event_type=None,
+):
     return EventEnvelope(
         event_id=f"evt:{message_id}:{text[:6]}",
-        event_type=EventType.PRIVATE_MESSAGE if scope is ScopeType.PERSONAL else EventType.GROUP_MESSAGE,
+        event_type=event_type or (EventType.PRIVATE_MESSAGE if scope is ScopeType.PERSONAL else EventType.GROUP_MESSAGE),
         occurred_at=occurred_at,
         scope_type=scope,
         scope_id="u-scope" if scope is ScopeType.PERSONAL else "-100777",
@@ -91,7 +118,7 @@ def test_edited_same_source_replaces_evidence_without_new_corroboration() -> Non
     )
     assert first is not None
 
-    edited_event = _event("Отправка отменена")
+    edited_event = _event("Отправка отменена", event_type=EventType.EDITED_MESSAGE)
     edited = mapper._upsert_candidate(
         edited_event,
         _candidate(edited_event.text, confidence=0.99),
@@ -116,6 +143,52 @@ def test_edited_same_source_replaces_evidence_without_new_corroboration() -> Non
     )
     assert retry is None
     assert store.update_calls == 1
+
+
+def test_edit_can_change_semantic_key_without_leaving_old_card() -> None:
+    store = FakeStore()
+    mapper = MemoryMapper(store=store)
+
+    first_event = _event("Запомни: встреча во вторник")
+    first_candidate = _candidate(
+        "встреча во вторник",
+        semantic_key="explicit:old-key",
+        subject_keys=["user:u1"],
+    )
+    first_candidate["memory_type"] = "observation"
+    first = mapper._upsert_candidate(
+        first_event,
+        first_candidate,
+        explicit=True,
+        recent_context=(),
+    )
+    assert first is not None
+
+    edited_event = _event(
+        "Запомни: встреча отменена",
+        event_type=EventType.EDITED_MESSAGE,
+    )
+    edited_candidate = _candidate(
+        "встреча отменена",
+        semantic_key="explicit:new-key",
+        confidence=0.99,
+        subject_keys=["user:u1"],
+    )
+    edited_candidate["memory_type"] = "observation"
+    edited = mapper._upsert_candidate(
+        edited_event,
+        edited_candidate,
+        explicit=True,
+        recent_context=(),
+    )
+
+    assert edited is not None
+    assert edited.id == first.id
+    assert len(store.cards) == 1
+    assert edited.payload["semantic_key"] == "explicit:new-key"
+    assert edited.summary == "встреча отменена"
+    assert edited.evidence[0].excerpt == "встреча отменена"
+    assert edited.source_count == 1
 
 
 def test_context_candidate_subject_comes_from_trusted_source_author() -> None:
