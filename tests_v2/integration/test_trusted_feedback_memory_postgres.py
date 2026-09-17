@@ -295,3 +295,105 @@ def test_current_reaction_vote_postgres_uses_latest_state_and_keeps_text_feedbac
         conn.execute("DELETE FROM interventions WHERE id=%s", (intervention_id,))
         conn.execute("DELETE FROM users WHERE id IN (%s,%s)", (user1, user2))
         conn.commit()
+
+
+# issue92-final-archive-postgres-regressions
+
+def test_edited_zero_candidates_archives_source_and_receipt_postgres() -> None:
+    psycopg, database_url = _psycopg_and_url()
+    scope_id = f"it-edit-clear-{uuid.uuid4().hex}"
+    adapter = _EditAdapter([
+        {"candidates": [_edit_candidate("alpha:planned", "Альфа запланирована.", "Альфа отправится 20-го")]},
+        {"candidates": []},
+        {"candidates": []},
+    ])
+    base = EventEnvelope(
+        event_id=f"it:{scope_id}:original",
+        event_type=EventType.PRIVATE_MESSAGE,
+        occurred_at=NOW,
+        scope_type=ScopeType.PERSONAL,
+        scope_id=scope_id,
+        actor_user_id="991000001",
+        message_id="880009999",
+        text="Альфа отправится 20-го.",
+    )
+    edited = base.model_copy(update={
+        "event_id": f"it:{scope_id}:edit",
+        "event_type": EventType.EDITED_MESSAGE,
+        "occurred_at": NOW + timedelta(minutes=5),
+        "text": "План отправки удалён из сообщения.",
+    })
+
+    with psycopg.connect(database_url) as conn:
+        mapper = MemoryMapper(store=MemoryMapperStore(MemoryRepository(conn)), adapter=adapter)
+        first = mapper.map_event(base)
+        memory_id = first.written[0].id
+        cleared = mapper.map_event(edited)
+        assert cleared.failed is False
+        assert cleared.forgotten_ids == (memory_id,)
+        receipt = personal_operation_receipts(cleared)["memory"]
+        assert receipt["status"] == "succeeded"
+        assert receipt["changed"] is True
+        assert receipt["forgotten_ids"] == [memory_id]
+        row = conn.execute(
+            "SELECT status, source_count FROM memory_cards WHERE id=%s",
+            (memory_id,),
+        ).fetchone()
+        assert row == ("archived", 1)
+
+        retried = mapper.map_event(edited)
+        assert retried.forgotten_ids == ()
+        assert personal_operation_receipts(retried)["memory"]["changed"] is False
+        conn.execute("DELETE FROM memory_cards WHERE scope_type='personal' AND scope_id=%s", (scope_id,))
+        conn.commit()
+
+
+def test_edited_source_archives_removed_sibling_and_reports_change_postgres() -> None:
+    psycopg, database_url = _psycopg_and_url()
+    scope_id = f"it-edit-sibling-{uuid.uuid4().hex}"
+    adapter = _EditAdapter([
+        {"candidates": [
+            _edit_candidate("alpha:planned", "Альфа запланирована.", "Альфа отправится 20-го"),
+            _edit_candidate("beta:900", "Бета стоит 900 USD.", "Бета стоит 900 USD"),
+        ]},
+        {"candidates": [
+            _edit_candidate("alpha:planned", "Альфа запланирована.", "Альфа отправится 20-го"),
+        ]},
+    ])
+    base = EventEnvelope(
+        event_id=f"it:{scope_id}:original",
+        event_type=EventType.PRIVATE_MESSAGE,
+        occurred_at=NOW,
+        scope_type=ScopeType.PERSONAL,
+        scope_id=scope_id,
+        actor_user_id="991000001",
+        message_id="880009999",
+        text="Альфа отправится 20-го. Бета стоит 900 USD.",
+    )
+    edited = base.model_copy(update={
+        "event_id": f"it:{scope_id}:edit",
+        "event_type": EventType.EDITED_MESSAGE,
+        "occurred_at": NOW + timedelta(minutes=5),
+        "text": "Альфа отправится 20-го.",
+    })
+
+    with psycopg.connect(database_url) as conn:
+        mapper = MemoryMapper(store=MemoryMapperStore(MemoryRepository(conn)), adapter=adapter)
+        first = mapper.map_event(base)
+        alpha = next(card for card in first.written if card.payload["semantic_key"] == "alpha:planned")
+        beta = next(card for card in first.written if card.payload["semantic_key"] == "beta:900")
+        result = mapper.map_event(edited)
+        assert result.failed is False
+        assert result.written == ()
+        assert result.forgotten_ids == (beta.id,)
+        receipt = personal_operation_receipts(result)["memory"]
+        assert receipt["changed"] is True
+        assert receipt["forgotten_ids"] == [beta.id]
+        rows = dict(conn.execute(
+            "SELECT id, status FROM memory_cards WHERE scope_type='personal' AND scope_id=%s",
+            (scope_id,),
+        ).fetchall())
+        assert rows[alpha.id] in {"active", "candidate"}
+        assert rows[beta.id] == "archived"
+        conn.execute("DELETE FROM memory_cards WHERE scope_type='personal' AND scope_id=%s", (scope_id,))
+        conn.commit()

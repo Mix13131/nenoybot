@@ -474,3 +474,144 @@ def test_group_scope_is_preserved():
 
     assert card.scope_type is ScopeType.GROUP
     assert card.scope_id == "g1"
+
+
+# issue92-final-archive-regressions
+
+def test_edited_zero_candidates_archives_source_and_reports_receipt_change():
+    from app_v2.services.operation_receipts import personal_operation_receipts
+
+    store = FakeStore()
+    adapter = FakeAdapter(responses=[
+        {"candidates": [candidate()]},
+        {"candidates": []},
+        {"candidates": []},
+    ])
+    mapper = MemoryMapper(store=store, adapter=adapter)
+    original = event("Завтра отправлю отчёт", message_id="m-zero")
+    first = mapper.map_event(original)
+    memory_id = first.written[0].id
+    edited = original.model_copy(update={
+        "event_type": EventType.EDITED_MESSAGE,
+        "text": "Это сообщение больше не содержит обещания.",
+        "occurred_at": NOW + timedelta(minutes=1),
+    })
+
+    cleared = mapper.map_event(edited)
+    assert cleared.failed is False
+    assert cleared.reason == "edited_source_cleared"
+    assert cleared.forgotten_ids == (memory_id,)
+    assert store.cards[memory_id].status is MemoryStatus.ARCHIVED
+    receipt = personal_operation_receipts(cleared)["memory"]
+    assert receipt["status"] == "succeeded"
+    assert receipt["changed"] is True
+    assert receipt["forgotten_ids"] == [memory_id]
+
+    retried = mapper.map_event(edited)
+    retry_receipt = personal_operation_receipts(retried)["memory"]
+    assert retried.failed is False
+    assert retried.forgotten_ids == ()
+    assert retry_receipt["changed"] is False
+
+
+def test_edited_source_retains_unchanged_sibling_and_reports_stale_archive():
+    from app_v2.services.operation_receipts import personal_operation_receipts
+
+    store = FakeStore()
+    original = "Альфа отправится 20-го. Бета стоит 900 USD."
+    adapter = FakeAdapter(responses=[
+        {"candidates": [
+            candidate(semantic_key="alpha:planned", summary="Альфа запланирована.", evidence_excerpt="Альфа отправится 20-го"),
+            candidate(semantic_key="beta:900", summary="Бета стоит 900 USD.", evidence_excerpt="Бета стоит 900 USD"),
+        ]},
+        {"candidates": [
+            candidate(semantic_key="alpha:planned", summary="Альфа запланирована.", evidence_excerpt="Альфа отправится 20-го"),
+        ]},
+    ])
+    mapper = MemoryMapper(store=store, adapter=adapter)
+    base = event(original, message_id="m-sibling")
+    first = mapper.map_event(base)
+    alpha = next(card for card in first.written if card.payload["semantic_key"] == "alpha:planned")
+    beta = next(card for card in first.written if card.payload["semantic_key"] == "beta:900")
+    edited = base.model_copy(update={
+        "event_type": EventType.EDITED_MESSAGE,
+        "text": "Альфа отправится 20-го.",
+        "occurred_at": NOW + timedelta(minutes=1),
+    })
+
+    result = mapper.map_event(edited)
+    assert result.failed is False
+    assert result.written == ()
+    assert result.forgotten_ids == (beta.id,)
+    assert store.cards[alpha.id].status is not MemoryStatus.ARCHIVED
+    assert store.cards[beta.id].status is MemoryStatus.ARCHIVED
+    receipt = personal_operation_receipts(result)["memory"]
+    assert receipt["changed"] is True
+    assert receipt["written_ids"] == []
+    assert receipt["forgotten_ids"] == [beta.id]
+
+
+def test_edited_zero_candidates_does_not_archive_same_message_id_in_other_scope():
+    store = FakeStore()
+    adapter = FakeAdapter(responses=[
+        {"candidates": [candidate()]},
+        {"candidates": [candidate()]},
+        {"candidates": []},
+    ])
+    mapper = MemoryMapper(store=store, adapter=adapter)
+    personal = event("Завтра отправлю отчёт", message_id="m-shared", scope=ScopeType.PERSONAL, scope_id="u1")
+    group = event("Завтра отправлю отчёт", message_id="m-shared", scope=ScopeType.GROUP, scope_id="g1")
+    personal_card = mapper.map_event(personal).written[0]
+    group_card = mapper.map_event(group).written[0]
+    edited = personal.model_copy(update={
+        "event_type": EventType.EDITED_MESSAGE,
+        "text": "Обещание удалено.",
+        "occurred_at": NOW + timedelta(minutes=1),
+    })
+
+    result = mapper.map_event(edited)
+    assert result.forgotten_ids == (personal_card.id,)
+    assert store.cards[personal_card.id].status is MemoryStatus.ARCHIVED
+    assert store.cards[group_card.id].status is not MemoryStatus.ARCHIVED
+
+
+def test_edited_zero_candidates_partial_archive_failure_reports_durable_ids():
+    from app_v2.services.operation_receipts import personal_operation_receipts
+
+    class FailSecondArchiveStore(FakeStore):
+        def __init__(self):
+            super().__init__()
+            self.archive_calls = 0
+
+        def archive(self, scope_type, scope_id, memory_id):
+            self.archive_calls += 1
+            if self.archive_calls == 2:
+                raise RuntimeError("simulated archive failure")
+            return super().archive(scope_type, scope_id, memory_id)
+
+    store = FailSecondArchiveStore()
+    adapter = FakeAdapter(responses=[
+        {"candidates": [
+            candidate(semantic_key="alpha:planned", summary="Альфа запланирована.", evidence_excerpt="Альфа отправится 20-го"),
+            candidate(semantic_key="beta:900", summary="Бета стоит 900 USD.", evidence_excerpt="Бета стоит 900 USD"),
+        ]},
+        {"candidates": []},
+    ])
+    mapper = MemoryMapper(store=store, adapter=adapter)
+    base = event("Альфа отправится 20-го. Бета стоит 900 USD.", message_id="m-partial-archive")
+    first = mapper.map_event(base)
+    edited = base.model_copy(update={
+        "event_type": EventType.EDITED_MESSAGE,
+        "text": "Старые сведения полностью удалены.",
+        "occurred_at": NOW + timedelta(minutes=1),
+    })
+
+    result = mapper.map_event(edited)
+    assert result.failed is True
+    assert result.reason == "mapper_failure:RuntimeError"
+    assert len(result.forgotten_ids) == 1
+    assert result.forgotten_ids[0] in {card.id for card in first.written}
+    receipt = personal_operation_receipts(result)["memory"]
+    assert receipt["status"] == "partial"
+    assert receipt["changed"] is True
+    assert receipt["forgotten_ids"] == list(result.forgotten_ids)

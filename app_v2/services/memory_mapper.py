@@ -493,6 +493,12 @@ class MemoryMapper:
         """Reconcile every card grounded in an edited current source as one batch."""
 
         current_source_id = str(event.message_id or event.event_id)
+        source_evidence = MemoryEvidence(
+            message_id=current_source_id,
+            author_id=event.actor_user_id,
+            timestamp=event.occurred_at,
+            excerpt=(event.text or "").strip(),
+        )
         prepared: list[tuple[dict[str, Any], MemoryEvidence, list[str]]] = []
         for candidate in candidates:
             evidence = self._candidate_evidence(event, candidate, recent_context)
@@ -502,17 +508,15 @@ class MemoryMapper:
             if subjects is None:
                 return MapperResult(failed=True, reason="edited_source_invalid_candidate")
             prepared.append((candidate, evidence, subjects))
-        if not prepared:
-            return MapperResult(failed=True, reason="edited_source_empty_batch")
 
         source_lock_factory = getattr(self.store, "source_lock", None)
         source_context = (
-            source_lock_factory(event.scope_type, event.scope_id, prepared[0][1])
+            source_lock_factory(event.scope_type, event.scope_id, source_evidence)
             if callable(source_lock_factory)
             else nullcontext()
         )
         with source_context:
-            stable_cards = self._source_identity_matches(event, prepared[0][1])
+            stable_cards = self._source_identity_matches(event, source_evidence)
             old_keys = [str(card.payload.get("semantic_key") or "") for card in stable_cards]
             new_keys = [str(candidate["semantic_key"]).strip() for candidate, _, _ in prepared]
             locks_factory = getattr(self.store, "semantic_locks", None)
@@ -522,14 +526,44 @@ class MemoryMapper:
                 else nullcontext()
             )
             with locks:
-                stable_cards = self._source_identity_matches(event, prepared[0][1])
+                stable_cards = self._source_identity_matches(event, source_evidence)
+                forgotten: list[str] = []
+
+                if not prepared:
+                    try:
+                        for stale in stable_cards:
+                            if self.store.archive(event.scope_type, event.scope_id, stale.id):
+                                forgotten.append(stale.id)
+                    except Exception as exc:
+                        return MapperResult(
+                            forgotten_ids=tuple(forgotten),
+                            failed=True,
+                            reason=f"mapper_failure:{type(exc).__name__}",
+                        )
+                    return MapperResult(
+                        forgotten_ids=tuple(forgotten),
+                        reason="edited_source_cleared",
+                    )
+
                 by_slot: dict[int, MemoryCard] = {}
                 for card in stable_cards:
                     slot = card.payload.get("source_candidate_index")
                     if not isinstance(slot, int) or slot in by_slot:
-                        for stale in stable_cards:
-                            self.store.archive(event.scope_type, event.scope_id, stale.id)
-                        return MapperResult(failed=True, reason="edited_source_reconciliation_ambiguous")
+                        try:
+                            for stale in stable_cards:
+                                if self.store.archive(event.scope_type, event.scope_id, stale.id):
+                                    forgotten.append(stale.id)
+                        except Exception as exc:
+                            return MapperResult(
+                                forgotten_ids=tuple(forgotten),
+                                failed=True,
+                                reason=f"mapper_failure:{type(exc).__name__}",
+                            )
+                        return MapperResult(
+                            forgotten_ids=tuple(forgotten),
+                            failed=True,
+                            reason="edited_source_reconciliation_ambiguous",
+                        )
                     by_slot[slot] = card
 
                 written: list[MemoryCard] = []
@@ -554,14 +588,19 @@ class MemoryMapper:
                             written.append(card)
                     for stale in stable_cards:
                         if stale.id not in used_ids:
-                            self.store.archive(event.scope_type, event.scope_id, stale.id)
+                            if self.store.archive(event.scope_type, event.scope_id, stale.id):
+                                forgotten.append(stale.id)
                 except Exception as exc:
                     return MapperResult(
                         written=tuple(written),
+                        forgotten_ids=tuple(forgotten),
                         failed=True,
                         reason=f"mapper_failure:{type(exc).__name__}",
                     )
-                return MapperResult(written=tuple(written))
+                return MapperResult(
+                    written=tuple(written),
+                    forgotten_ids=tuple(forgotten),
+                )
 
     @staticmethod
     def _extract_explicit_remember(text: str) -> str | None:
