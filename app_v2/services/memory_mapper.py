@@ -2,10 +2,11 @@ from __future__ import annotations
 
 import hashlib
 import json
+from contextlib import contextmanager, nullcontext
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import Any, Iterable
+from typing import Any, Iterable, Iterator
 
 from app_v2.domain.enums import MemoryOrigin, MemoryStatus, ScopeType
 from app_v2.domain.events import EventEnvelope
@@ -170,51 +171,36 @@ class MemoryMapperStore:
             return None
         return self.repo.get(scope_type, scope_id, row[0])
 
-    def create(self, card: MemoryCard) -> MemoryCard | None:
-        conn = getattr(self.repo, "conn", None)
-        if conn is None or not card.evidence:
-            return self.repo.create(card)
+    @contextmanager
+    def semantic_lock(
+        self,
+        scope_type: ScopeType,
+        scope_id: str,
+        semantic_key: str,
+    ) -> Iterator[None]:
+        """Serialize every merge for one logical Memory Card.
 
-        first_evidence = card.evidence[0]
-        semantic_key = str(card.payload.get("semantic_key") or "")
-        # Serialize retries of the same logical candidate even if two mapper
-        # calls choose different valid evidence excerpts from the same source.
-        # The excerpt remains audit evidence, not the concurrency identity.
-        lock_material = "|".join(
-            (
-                card.scope_type.value,
-                card.scope_id,
-                card.memory_type,
-                str(first_evidence.message_id or ""),
-                str(first_evidence.author_id or ""),
-                semantic_key or card.id,
-            )
-        )
+        Session advisory locks deliberately survive the commits performed by the
+        repository create/update methods. Source/message identity is NOT part of
+        this key: independent evidence for the same semantic card must serialize
+        through the same lock domain.
+        """
+
+        conn = getattr(self.repo, "conn", None)
+        if conn is None or not semantic_key:
+            yield
+            return
+
+        lock_material = "|".join((scope_type.value, scope_id, semantic_key))
         conn.execute(
             "SELECT pg_advisory_lock(hashtextextended(%s, 0))",
             (lock_material,),
         ).fetchone()
-        # Session-level advisory locks survive commit; release the transaction
-        # used for acquisition so the actual read/create starts cleanly.
+        # Session-level locks survive transaction boundaries, including commits
+        # inside MemoryRepository.create/update.
         conn.commit()
         try:
-            existing = self.find_source_match(
-                card.scope_type,
-                card.scope_id,
-                card.memory_type,
-                first_evidence,
-            )
-            if existing is None and semantic_key:
-                existing = self.find_semantic_match(
-                    card.scope_type,
-                    card.scope_id,
-                    semantic_key,
-                )
-            if existing is not None:
-                # Persistence succeeded in another worker/session, but this call
-                # itself did not write. Returning None keeps the receipt no-op.
-                return None
-            return self.repo.create(card)
+            yield
         finally:
             try:
                 conn.rollback()
@@ -231,6 +217,9 @@ class MemoryMapperStore:
                     conn.rollback()
                 except Exception:
                     pass
+
+    def create(self, card: MemoryCard) -> MemoryCard:
+        return self.repo.create(card)
 
     def update(self, card: MemoryCard) -> MemoryCard:
         return self.repo.update(card)
@@ -547,6 +536,29 @@ class MemoryMapper:
         )
         return f"mem_{hashlib.sha256(material.encode('utf-8')).hexdigest()[:32]}"
 
+    @staticmethod
+    def _trusted_subject_keys(
+        candidate: dict[str, Any],
+        evidence: MemoryEvidence,
+    ) -> list[str] | None:
+        """Keep user subject identity grounded in provenance.
+
+        Non-user semantic keys (project/topic tags) may be retained. A model
+        cannot assign a source-grounded person claim to a different user unless
+        a future code-validated relation explicitly supports that case.
+        """
+
+        model_keys = [str(item).strip() for item in candidate.get("subject_keys", []) if str(item).strip()]
+        trusted_user = f"user:{evidence.author_id}" if evidence.author_id else None
+        model_user_keys = [item for item in model_keys if item.startswith("user:")]
+        if model_user_keys:
+            if trusted_user is None or any(item != trusted_user for item in model_user_keys):
+                return None
+        non_user = [item for item in model_keys if not item.startswith("user:")]
+        if trusted_user:
+            return [*non_user, trusted_user]
+        return non_user
+
     def _upsert_candidate(
         self,
         event: EventEnvelope,
@@ -555,15 +567,49 @@ class MemoryMapper:
         explicit: bool,
         recent_context: Iterable[dict[str, Any]],
     ) -> MemoryCard | None:
-        now = datetime.now(timezone.utc)
         requested_memory_type = str(candidate["memory_type"])
-        raw_confidence = float(candidate.get("confidence", 0.5))
         semantic_key = str(candidate["semantic_key"]).strip()
-        existing = self.store.find_semantic_match(event.scope_type, event.scope_id, semantic_key)
+        if not semantic_key:
+            return None
 
         evidence = self._candidate_evidence(event, candidate, recent_context)
         if evidence is None:
             return None
+        subject_keys = self._trusted_subject_keys(candidate, evidence)
+        if subject_keys is None:
+            return None
+
+        lock_factory = getattr(self.store, "semantic_lock", None)
+        lock_context = (
+            lock_factory(event.scope_type, event.scope_id, semantic_key)
+            if callable(lock_factory)
+            else nullcontext()
+        )
+        with lock_context:
+            return self._upsert_candidate_locked(
+                event,
+                candidate,
+                explicit=explicit,
+                evidence=evidence,
+                subject_keys=subject_keys,
+                requested_memory_type=requested_memory_type,
+                semantic_key=semantic_key,
+            )
+
+    def _upsert_candidate_locked(
+        self,
+        event: EventEnvelope,
+        candidate: dict[str, Any],
+        *,
+        explicit: bool,
+        evidence: MemoryEvidence,
+        subject_keys: list[str],
+        requested_memory_type: str,
+        semantic_key: str,
+    ) -> MemoryCard | None:
+        now = datetime.now(timezone.utc)
+        raw_confidence = float(candidate.get("confidence", 0.5))
+        existing = self.store.find_semantic_match(event.scope_type, event.scope_id, semantic_key)
 
         if existing is None:
             source_finder = getattr(self.store, "find_source_match", None)
@@ -577,12 +623,28 @@ class MemoryMapper:
 
         existing_evidence = list(existing.evidence) if existing is not None else []
         source_identity = self._source_identity(evidence)
-        if existing is not None and source_identity in {
-            self._source_identity(item) for item in existing_evidence
-        }:
-            return None
+        same_source_index = next(
+            (
+                index
+                for index, item in enumerate(existing_evidence)
+                if self._source_identity(item) == source_identity
+            ),
+            None,
+        )
+        correction = False
+        new_source = same_source_index is None
+        if same_source_index is not None:
+            if existing_evidence[same_source_index].excerpt == evidence.excerpt:
+                # Exact delivery retry: persistence and receipt no-op.
+                return None
+            # Telegram edits retain source identity. Replace the old evidence;
+            # an edit is a correction, not independent corroboration.
+            correction = True
+            evidence_items = list(existing_evidence)
+            evidence_items[same_source_index] = evidence
+        else:
+            evidence_items = existing_evidence + [evidence]
 
-        evidence_items = existing_evidence + [evidence]
         unique_sources = self._unique_sources(evidence_items)
         source_count = len(unique_sources)
         episode_count = self._episode_count(unique_sources)
@@ -641,7 +703,7 @@ class MemoryMapper:
                 scope_type=event.scope_type,
                 scope_id=event.scope_id,
                 memory_type=memory_type,
-                subject_keys=list(candidate.get("subject_keys") or self._default_subject_keys(event)),
+                subject_keys=subject_keys,
                 summary=str(candidate["summary"]).strip(),
                 payload=payload,
                 importance=float(candidate.get("importance", 0.5)),
@@ -662,13 +724,23 @@ class MemoryMapper:
         if explicit or proposed_status is MemoryStatus.ACTIVE:
             merged_status = MemoryStatus.ACTIVE
 
-        merged_confidence = max(existing.confidence, confidence)
-        if not explicit and source_count >= 2:
-            merged_confidence = min(0.92, merged_confidence + 0.04)
+        if correction:
+            # Same source was edited. Update content/provenance, but never award
+            # an independent-source confidence or confirmation bonus.
+            merged_confidence = existing.confidence
+            merged_last_confirmed = existing.last_confirmed_at
+            merged_subject_keys = subject_keys or list(existing.subject_keys)
+        else:
+            merged_confidence = max(existing.confidence, confidence)
+            if not explicit and new_source and source_count >= 2:
+                merged_confidence = min(0.92, merged_confidence + 0.04)
+            merged_last_confirmed = now if explicit else existing.last_confirmed_at
+            merged_subject_keys = list(existing.subject_keys) or subject_keys
 
         updated = existing.model_copy(
             update={
                 "memory_type": memory_type,
+                "subject_keys": merged_subject_keys,
                 "summary": str(candidate["summary"]).strip(),
                 "payload": {**existing.payload, **payload},
                 "importance": max(existing.importance, float(candidate.get("importance", 0.5))),
@@ -680,7 +752,7 @@ class MemoryMapper:
                 "evidence": evidence_items,
                 "source_count": source_count,
                 "updated_at": now,
-                "last_confirmed_at": now if explicit else existing.last_confirmed_at,
+                "last_confirmed_at": merged_last_confirmed,
             }
         )
         return self.store.update(updated)
