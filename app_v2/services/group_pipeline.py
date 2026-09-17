@@ -90,12 +90,30 @@ class GroupPipeline:
             return ()
         return tuple(item for item in value if isinstance(item, dict))
 
-    @staticmethod
-    def _target_memory_ids(event: EventEnvelope) -> tuple[str, ...]:
+    def _target_memory_ids(self, event: EventEnvelope) -> tuple[str, ...]:
         value = event.metadata.get("target_memory_ids", [])
-        if not isinstance(value, list):
+        if isinstance(value, list):
+            explicit = tuple(str(item) for item in value if str(item).strip())
+            if explicit:
+                return explicit
+
+        lowered = (event.text or "").strip().lower()
+        if lowered not in {"забудь", "забудь это", "forget it", "forget this"}:
             return ()
-        return tuple(str(item) for item in value if str(item).strip())
+        if not event.reply_to_message_id:
+            return ()
+        resolver = getattr(self.intervention_repo, "selected_memory_ids_for_bot_message", None)
+        if resolver is None:
+            return ()
+        try:
+            resolved = resolver(
+                scope_type=ScopeType.GROUP,
+                scope_id=event.scope_id,
+                telegram_message_id=event.reply_to_message_id,
+            )
+        except Exception:
+            return ()
+        return tuple(str(item) for item in resolved if str(item).strip())
 
     def process(self, event: EventEnvelope, *, now: datetime | None = None) -> GroupPipelineResult:
         if event.scope_type is not ScopeType.GROUP:
