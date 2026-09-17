@@ -90,6 +90,13 @@ class GroupPipeline:
             return ()
         return tuple(item for item in value if isinstance(item, dict))
 
+    @staticmethod
+    def _target_memory_ids(event: EventEnvelope) -> tuple[str, ...]:
+        value = event.metadata.get("target_memory_ids", [])
+        if not isinstance(value, list):
+            return ()
+        return tuple(str(item) for item in value if str(item).strip())
+
     def process(self, event: EventEnvelope, *, now: datetime | None = None) -> GroupPipelineResult:
         if event.scope_type is not ScopeType.GROUP:
             raise GroupPipelineError("GroupPipeline accepts only group scope events")
@@ -190,6 +197,7 @@ class GroupPipeline:
             memory_attempted = True
             mapper_result = self.memory_mapper.map_event(
                 event,
+                target_memory_ids=self._target_memory_ids(event),
                 recent_context=self._mapper_context(event),
             )
             mapped_memory_ids = tuple(card.id for card in mapper_result.written)
