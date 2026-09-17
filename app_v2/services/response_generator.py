@@ -29,6 +29,17 @@ _MEMORY_SAVE_RE = re.compile(
     r"(?:запомнил|запомню)\b"
     r"|(?:зафиксировал|зафиксирую|сохранил|сохраню)\s+(?:это\s+)?в\s+памят\w*"
     r"|в\s+памят\w*\s+(?:зафиксировал|зафиксирую|сохранил|сохраню)\b"
+    r"|(?:запись\s+)?в\s+памят\w*\s+(?:сохранена|зафиксирована)\b"
+    r"|памят\w*\s+(?:сохранена|зафиксирована)\b"
+    r")",
+    flags=re.IGNORECASE,
+)
+_MEMORY_FORGET_RE = re.compile(
+    _CLAIM_BOUNDARY
+    + r"(?:(?:я|мы)\s+)?(?:"
+    r"(?:забыл|забуду|удалил|удалю|убрал|уберу)\s+(?:это\s+)?(?:из\s+)?памят\w*"
+    r"|(?:запись|это)\s+(?:из\s+памят\w*\s+)?(?:удалена|убрана|забыта)\b"
+    r"|из\s+памят\w*\s+(?:удалено|убрано|забыто)\b"
     r")",
     flags=re.IGNORECASE,
 )
@@ -38,6 +49,7 @@ _TASK_CREATE_RE = re.compile(
     r"(?:создал|создам|добавил|добавлю|записал|запишу|вн[её]с|внесу|сохранил|сохраню)"
     r"\s+(?:тебе\s+)?(?:эту\s+)?задач\w*"
     r"|задач\w*\s+(?:я\s+)?(?:создал|создам|добавил|добавлю|записал|запишу|вн[её]с|внесу|сохранил|сохраню)\b"
+    r"|задач\w*\s+(?:создана|добавлена|записана|внесена|сохранена)\b"
     r")",
     flags=re.IGNORECASE,
 )
@@ -47,6 +59,7 @@ _REMINDER_CREATE_RE = re.compile(
     r"(?:поставил|поставлю|создал|создам|добавил|добавлю|запланировал|запланирую|настроил|настрою)"
     r"\s+(?:тебе\s+)?напоминан\w*"
     r"|напоминан\w*\s+(?:я\s+)?(?:поставил|поставлю|создал|создам|добавил|добавлю|запланировал|запланирую|настроил|настрою)\b"
+    r"|напоминан\w*\s+(?:поставлено|создано|добавлено|запланировано|настроено)\b"
     r"|(?:тебе\s+)?буду\s+(?:тебе\s+)?напоминать\b"
     r"|(?:тебе\s+)?напомню\s+(?:тебе\s+)?(?:через|завтра|сегодня|в\s+\d|к\s+\d)"
     r"|(?:тебе\s+)?пну\b.{0,50}(?:через|завтра|сегодня|\d{1,2}[./-]\d{1,2}|\d+\s*(?:дн|час|минут))"
@@ -58,11 +71,23 @@ _REMINDER_CANCEL_RE = re.compile(
     + r"(?:(?:я|мы)\s+)?(?:"
     r"(?:отменил|отменю|остановил|остановлю|выключил|выключу)\s+(?:это\s+)?напоминан\w*"
     r"|напоминан\w*\s+(?:я\s+)?(?:отменил|отменю|остановил|остановлю|выключил|выключу)\b"
+    r"|напоминан\w*\s+(?:отменено|остановлено|выключено)\b"
     r"|больше\s+не\s+буду\s+(?:тебе\s+)?напоминать\b"
     r")",
     flags=re.IGNORECASE,
 )
 _QUOTED_TEXT_RE = re.compile(r"«[^»]*»|“[^”]*”|\"[^\"]*\"", flags=re.DOTALL)
+_THIRD_PARTY_AFTER_OBJECT_RE = re.compile(
+    r"^\s+(?:@[A-Za-z0-9_]{3,32}|[А-ЯЁA-Z][А-Яа-яЁёA-Za-z-]{1,40})(?=\s|[,.!?;:]|$)"
+)
+_OBJECT_FIRST_PREFIXES = (
+    "задач",
+    "напоминан",
+    "в память",
+    "памят",
+    "запись",
+    "из памяти",
+)
 
 
 class ResponseGenerator:
@@ -132,6 +157,21 @@ class ResponseGenerator:
         # factual replies such as “Вася создал задачу вчера”.
         return _QUOTED_TEXT_RE.sub(" ", text)
 
+    @staticmethod
+    def _is_third_party_object_first(match: re.Match[str], text: str) -> bool:
+        fragment = match.group(0).lower().lstrip(" .!?;:,")
+        if not fragment.startswith(_OBJECT_FIRST_PREFIXES):
+            return False
+        return bool(_THIRD_PARTY_AFTER_OBJECT_RE.match(text[match.end() :]))
+
+    @classmethod
+    def _has_bot_action_claim(cls, pattern: re.Pattern[str], text: str) -> bool:
+        for match in pattern.finditer(text):
+            if cls._is_third_party_object_first(match, text):
+                continue
+            return True
+        return False
+
     @classmethod
     def _memory_save_confirmed(cls, action_state: dict[str, Any]) -> bool:
         receipt = cls._receipt(action_state, "memory")
@@ -139,6 +179,15 @@ class ResponseGenerator:
             receipt.get("status") == "succeeded"
             and receipt.get("changed") is True
             and receipt.get("written_ids")
+        )
+
+    @classmethod
+    def _memory_forget_confirmed(cls, action_state: dict[str, Any]) -> bool:
+        receipt = cls._receipt(action_state, "memory")
+        return bool(
+            receipt.get("status") == "succeeded"
+            and receipt.get("changed") is True
+            and receipt.get("forgotten_ids")
         )
 
     @classmethod
@@ -167,13 +216,15 @@ class ResponseGenerator:
     def _enforce_operation_receipts(cls, text: str, action_state: dict[str, Any]) -> str:
         claim_text = cls._claim_scan_text(text)
         violations: list[str] = []
-        if _MEMORY_SAVE_RE.search(claim_text) and not cls._memory_save_confirmed(action_state):
+        if cls._has_bot_action_claim(_MEMORY_SAVE_RE, claim_text) and not cls._memory_save_confirmed(action_state):
             violations.append("memory")
-        if _TASK_CREATE_RE.search(claim_text) and not cls._task_change_confirmed(action_state):
+        if cls._has_bot_action_claim(_MEMORY_FORGET_RE, claim_text) and not cls._memory_forget_confirmed(action_state):
+            violations.append("memory_forget")
+        if cls._has_bot_action_claim(_TASK_CREATE_RE, claim_text) and not cls._task_change_confirmed(action_state):
             violations.append("task")
-        if _REMINDER_CREATE_RE.search(claim_text) and not cls._reminder_change_confirmed(action_state, "create"):
+        if cls._has_bot_action_claim(_REMINDER_CREATE_RE, claim_text) and not cls._reminder_change_confirmed(action_state, "create"):
             violations.append("reminder_create")
-        if _REMINDER_CANCEL_RE.search(claim_text) and not cls._reminder_change_confirmed(action_state, "cancel"):
+        if cls._has_bot_action_claim(_REMINDER_CANCEL_RE, claim_text) and not cls._reminder_change_confirmed(action_state, "cancel"):
             violations.append("reminder_cancel")
         if not violations:
             return text
@@ -210,6 +261,11 @@ class ResponseGenerator:
                 )
         elif "memory" in violations:
             parts.append("В память это не записано.")
+        if "memory_forget" in violations and not forgotten_count:
+            if memory.get("status") == "failed":
+                parts.append("Из памяти удалить не удалось.")
+            else:
+                parts.append("Из памяти ничего не удалял.")
 
         if "task" in violations:
             if task.get("status") == "failed":
