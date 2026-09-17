@@ -1,0 +1,122 @@
+name: apply verified codex final fix
+
+on:
+  push:
+    branches:
+      - fix/v2-trusted-memory-feedback
+    paths:
+      - .github/workflows/apply-codex-final-fix.yml
+
+permissions:
+  contents: write
+  issues: read
+
+jobs:
+  apply-test-push:
+    runs-on: ubuntu-24.04
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: nenoy_test
+          POSTGRES_PASSWORD: nenoy_test
+          POSTGRES_DB: nenoy_v2_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U nenoy_test -d nenoy_v2_test"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    env:
+      NENOY_V2_ENV: test
+      NENOY_V2_TEST_DATABASE_URL: postgresql://nenoy_test:nenoy_test@127.0.0.1:5432/nenoy_v2_test
+      EXPECTED_BASE: 6c791e94524539eff71ed162237c48505caa9ffc
+      COMMENT_ID: "5715783758"
+      EXPECTED_BYTES: "22394"
+      EXPECTED_SHA256: 59e1fe8dbb1ea925825b3a82be51b15bfef1cd95df03492aa39b5a49cb68fd60
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 2
+          ref: fix/v2-trusted-memory-feedback
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Verify launcher commit parent
+        run: |
+          test "$(git rev-parse HEAD^)" = "$EXPECTED_BASE"
+
+      - name: Fetch and verify exact Codex patch
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          python - <<'PY'
+          import hashlib, json, os, urllib.request
+
+          repo = os.environ["GITHUB_REPOSITORY"]
+          comment_id = os.environ["COMMENT_ID"]
+          req = urllib.request.Request(
+              f"https://api.github.com/repos/{repo}/issues/comments/{comment_id}",
+              headers={
+                  "Authorization": f"Bearer {os.environ['GH_TOKEN']}",
+                  "Accept": "application/vnd.github+json",
+                  "X-GitHub-Api-Version": "2022-11-28",
+              },
+          )
+          with urllib.request.urlopen(req) as response:
+              body = json.load(response)["body"]
+
+          marker = "```diff\n"
+          start = body.find(marker)
+          if start < 0:
+              raise SystemExit("diff fence not found")
+          start += len(marker)
+          end = body.find("\n```", start)
+          if end < 0:
+              raise SystemExit("closing diff fence not found")
+          raw = body[start:end]
+
+          expected_size = int(os.environ["EXPECTED_BYTES"])
+          expected_hash = os.environ["EXPECTED_SHA256"]
+          candidates = [raw.encode(), (raw + "\n").encode()]
+          patch = next(
+              (value for value in candidates
+               if len(value) == expected_size and hashlib.sha256(value).hexdigest() == expected_hash),
+              None,
+          )
+          if patch is None:
+              details = [(len(v), hashlib.sha256(v).hexdigest()) for v in candidates]
+              raise SystemExit(f"patch metadata mismatch: {details}")
+          open("/tmp/codex-final.patch", "wb").write(patch)
+          print(f"verified patch: {len(patch)} bytes sha256={expected_hash}")
+          PY
+          git apply --check /tmp/codex-final.patch
+          git apply /tmp/codex-final.patch
+
+      - name: Install dependencies
+        run: python -m pip install -r requirements.txt
+
+      - name: Import smoke
+        run: python -c "import app_v2"
+
+      - name: Run full v2 tests on patched tree
+        run: pytest tests_v2 -q
+
+      - name: Commit verified patch and remove launcher
+        run: |
+          rm .github/workflows/apply-codex-final-fix.yml
+          git add -A .github/workflows/apply-codex-final-fix.yml \
+            app_v2/services/memory_mapper.py \
+            app_v2/services/response_generator.py \
+            tests_v2/integration/test_trusted_feedback_memory_postgres.py \
+            tests_v2/unit/test_memory_mapper.py \
+            tests_v2/unit/test_response_generator.py
+          git diff --cached --check
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git commit -m "fix(v2): reconcile edited memory batches"
+          git push origin HEAD:fix/v2-trusted-memory-feedback
