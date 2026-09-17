@@ -29,8 +29,8 @@ _MEMORY_SAVE_RE = re.compile(
     r"(?:запомнил|запомню)\b"
     r"|(?:зафиксировал|зафиксирую|сохранил|сохраню)\s+(?:это\s+)?в\s+памят\w*"
     r"|в\s+памят\w*\s+(?:зафиксировал|зафиксирую|сохранил|сохраню)\b"
-    r"|(?:запись\s+)?в\s+памят\w*\s+(?:сохранена|зафиксирована)\b"
-    r"|памят\w*\s+(?:сохранена|зафиксирована)\b"
+    r"|(?:запис(?:ь|и)|это)\s+(?:успешно\s+)?(?:сохранен(?:а|о|ы)|зафиксирован(?:а|о|ы))\s+в\s+памят\w*"
+    r"|в\s+памят\w*\s+(?:успешно\s+)?(?:сохранен(?:а|о|ы)|зафиксирован(?:а|о|ы))\b"
     r")",
     flags=re.IGNORECASE,
 )
@@ -38,8 +38,8 @@ _MEMORY_FORGET_RE = re.compile(
     _CLAIM_BOUNDARY
     + r"(?:(?:я|мы)\s+)?(?:"
     r"(?:забыл|забуду|удалил|удалю|убрал|уберу)\s+(?:это\s+)?(?:из\s+)?памят\w*"
-    r"|(?:запись|это)\s+(?:из\s+памят\w*\s+)?(?:удалена|убрана|забыта)\b"
-    r"|из\s+памят\w*\s+(?:удалено|убрано|забыто)\b"
+    r"|(?:запис(?:ь|и)|это)\s+(?:из\s+памят\w*\s+)?(?:успешно\s+)?(?:удален(?:а|о|ы)|убран(?:а|о|ы)|забыт(?:а|о|ы))\b"
+    r"|из\s+памят\w*\s+(?:успешно\s+)?(?:удален(?:о|ы)|убран(?:о|ы)|забыт(?:о|ы))\b"
     r")",
     flags=re.IGNORECASE,
 )
@@ -49,7 +49,7 @@ _TASK_CREATE_RE = re.compile(
     r"(?:создал|создам|добавил|добавлю|записал|запишу|вн[её]с|внесу|сохранил|сохраню)"
     r"\s+(?:тебе\s+)?(?:эту\s+)?задач\w*"
     r"|задач\w*\s+(?:я\s+)?(?:создал|создам|добавил|добавлю|записал|запишу|вн[её]с|внесу|сохранил|сохраню)\b"
-    r"|задач\w*\s+(?:создана|добавлена|записана|внесена|сохранена)\b"
+    r"|задач\w*\s+(?:успешно\s+)?(?:создан(?:а|ы)|добавлен(?:а|ы)|записан(?:а|ы)|внесен(?:а|ы)|сохранен(?:а|ы))\b"
     r")",
     flags=re.IGNORECASE,
 )
@@ -59,7 +59,7 @@ _REMINDER_CREATE_RE = re.compile(
     r"(?:поставил|поставлю|создал|создам|добавил|добавлю|запланировал|запланирую|настроил|настрою)"
     r"\s+(?:тебе\s+)?напоминан\w*"
     r"|напоминан\w*\s+(?:я\s+)?(?:поставил|поставлю|создал|создам|добавил|добавлю|запланировал|запланирую|настроил|настрою)\b"
-    r"|напоминан\w*\s+(?:поставлено|создано|добавлено|запланировано|настроено)\b"
+    r"|напоминан\w*\s+(?:успешно\s+)?(?:поставлен(?:о|ы)|создан(?:о|ы)|добавлен(?:о|ы)|запланирован(?:о|ы)|настроен(?:о|ы))\b"
     r"|(?:тебе\s+)?буду\s+(?:тебе\s+)?напоминать\b"
     r"|(?:тебе\s+)?напомню\s+(?:тебе\s+)?(?:через|завтра|сегодня|в\s+\d|к\s+\d)"
     r"|(?:тебе\s+)?пну\b.{0,50}(?:через|завтра|сегодня|\d{1,2}[./-]\d{1,2}|\d+\s*(?:дн|час|минут))"
@@ -71,23 +71,28 @@ _REMINDER_CANCEL_RE = re.compile(
     + r"(?:(?:я|мы)\s+)?(?:"
     r"(?:отменил|отменю|остановил|остановлю|выключил|выключу)\s+(?:это\s+)?напоминан\w*"
     r"|напоминан\w*\s+(?:я\s+)?(?:отменил|отменю|остановил|остановлю|выключил|выключу)\b"
-    r"|напоминан\w*\s+(?:отменено|остановлено|выключено)\b"
+    r"|напоминан\w*\s+(?:успешно\s+)?(?:отменен(?:о|ы)|остановлен(?:о|ы)|выключен(?:о|ы))\b"
     r"|больше\s+не\s+буду\s+(?:тебе\s+)?напоминать\b"
     r")",
     flags=re.IGNORECASE,
 )
 _QUOTED_TEXT_RE = re.compile(r"«[^»]*»|“[^”]*”|\"[^\"]*\"", flags=re.DOTALL)
-_THIRD_PARTY_AFTER_OBJECT_RE = re.compile(
-    r"^\s+(?:@[A-Za-z0-9_]{3,32}|[А-ЯЁA-Z][А-Яа-яЁёA-Za-z-]{1,40})(?=\s|[,.!?;:]|$)"
-)
+_NEXT_TOKEN_RE = re.compile(r"^\s+(@?[A-Za-zА-Яа-яЁё0-9_-]+)")
 _OBJECT_FIRST_PREFIXES = (
     "задач",
     "напоминан",
     "в память",
     "памят",
     "запись",
+    "записи",
     "из памяти",
 )
+_BOT_CLAIM_CONTINUATIONS = {
+    "вчера", "сегодня", "завтра", "сейчас", "уже", "только", "успешно",
+    "автоматически", "быстро", "недавно", "тебе", "вам", "для", "на",
+    "в", "к", "по", "с", "из", "до", "после", "через", "без", "как",
+    "при", "от", "под", "над", "между", "этому", "этой", "это",
+}
 
 
 class ResponseGenerator:
@@ -152,9 +157,6 @@ class ResponseGenerator:
 
     @staticmethod
     def _claim_scan_text(text: str) -> str:
-        # Quotes often describe another participant's action. Excluding quoted
-        # spans plus anchoring verbs to sentence/clause starts avoids rewriting
-        # factual replies such as “Вася создал задачу вчера”.
         return _QUOTED_TEXT_RE.sub(" ", text)
 
     @staticmethod
@@ -162,7 +164,14 @@ class ResponseGenerator:
         fragment = match.group(0).lower().lstrip(" .!?;:,")
         if not fragment.startswith(_OBJECT_FIRST_PREFIXES):
             return False
-        return bool(_THIRD_PARTY_AFTER_OBJECT_RE.match(text[match.end() :]))
+        token_match = _NEXT_TOKEN_RE.match(text[match.end() :])
+        if token_match is None:
+            return False
+        token = token_match.group(1).lower().lstrip("@")
+        # After an object-first action, an ordinary subject noun/name/pronoun
+        # means the sentence describes somebody else's action. Time/location/
+        # manner/preposition continuations still represent a bot action claim.
+        return token not in _BOT_CLAIM_CONTINUATIONS
 
     @classmethod
     def _has_bot_action_claim(cls, pattern: re.Pattern[str], text: str) -> bool:
