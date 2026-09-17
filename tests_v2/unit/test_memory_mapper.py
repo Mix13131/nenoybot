@@ -615,3 +615,163 @@ def test_edited_zero_candidates_partial_archive_failure_reports_durable_ids():
     assert receipt["status"] == "partial"
     assert receipt["changed"] is True
     assert receipt["forgotten_ids"] == list(result.forgotten_ids)
+
+
+# issue92-correction-safety-final
+
+def test_edit_with_rejected_candidate_fails_without_erasing_memory():
+    store = FakeStore()
+    adapter = FakeAdapter(responses=[
+        {"candidates": [candidate(source_message_id="m-safe", evidence_excerpt="Завтра отправлю отчёт")]},
+        {"candidates": [candidate(
+            semantic_key="commitment:changed",
+            source_message_id="m-safe",
+            evidence_excerpt="Фрагмент которого нет в edit",
+        )]},
+    ])
+    mapper = MemoryMapper(store=store, adapter=adapter)
+    base = event("Завтра отправлю отчёт", message_id="m-safe")
+    first = mapper.map_event(base)
+    memory_id = first.written[0].id
+    edited = base.model_copy(update={
+        "event_type": EventType.EDITED_MESSAGE,
+        "text": "Отчёт пока под вопросом",
+        "occurred_at": NOW + timedelta(minutes=1),
+    })
+
+    result = mapper.map_event(edited)
+    assert result.failed is True
+    assert result.reason == "edited_source_invalid_candidate"
+    assert result.written == ()
+    assert result.forgotten_ids == ()
+    assert store.cards[memory_id].status is not MemoryStatus.ARCHIVED
+    assert store.cards[memory_id].evidence[0].excerpt == "Завтра отправлю отчёт"
+
+
+def test_shared_card_edit_new_semantic_key_detaches_only_edited_source():
+    store = FakeStore()
+    adapter = FakeAdapter(responses=[
+        {"candidates": [candidate(
+            semantic_key="shipment:planned",
+            summary="Отправка запланирована.",
+            source_message_id="m-shared-a",
+            evidence_excerpt="Отправка запланирована",
+        )]},
+        {"candidates": [candidate(
+            semantic_key="shipment:planned",
+            summary="Отправка запланирована.",
+            source_message_id="m-shared-b",
+            evidence_excerpt="Да, отправка запланирована",
+        )]},
+        {"candidates": [candidate(
+            semantic_key="shipment:cancelled",
+            summary="Отправка отменена.",
+            source_message_id="m-shared-a",
+            evidence_excerpt="Отправка отменена",
+        )]},
+    ])
+    mapper = MemoryMapper(store=store, adapter=adapter)
+    first_event = event("Отправка запланирована", message_id="m-shared-a")
+    second_event = event("Да, отправка запланирована", message_id="m-shared-b", occurred_at=NOW + timedelta(hours=7))
+    first = mapper.map_event(first_event)
+    mapper.map_event(second_event)
+    shared_id = first.written[0].id
+    assert store.cards[shared_id].source_count == 2
+
+    edited = first_event.model_copy(update={
+        "event_type": EventType.EDITED_MESSAGE,
+        "text": "Отправка отменена",
+        "occurred_at": NOW + timedelta(hours=8),
+    })
+    result = mapper.map_event(edited)
+    assert result.failed is False
+
+    old_card = store.cards[shared_id]
+    assert old_card.status is not MemoryStatus.ARCHIVED
+    assert old_card.payload["semantic_key"] == "shipment:planned"
+    assert old_card.summary == "Отправка запланирована."
+    assert old_card.source_count == 1
+    assert [item.message_id for item in old_card.evidence] == ["m-shared-b"]
+
+    new_cards = [
+        card for card in store.cards.values()
+        if card.status is not MemoryStatus.ARCHIVED
+        and card.payload.get("semantic_key") == "shipment:cancelled"
+    ]
+    assert len(new_cards) == 1
+    assert new_cards[0].source_count == 1
+    assert [item.message_id for item in new_cards[0].evidence] == ["m-shared-a"]
+    assert {card.id for card in result.written} == {old_card.id, new_cards[0].id}
+
+
+def test_zero_candidate_edit_detaches_source_from_shared_card_instead_of_archiving_claim():
+    store = FakeStore()
+    adapter = FakeAdapter(responses=[
+        {"candidates": [candidate(
+            semantic_key="shipment:planned",
+            source_message_id="m-zero-a",
+            evidence_excerpt="Отправка запланирована",
+        )]},
+        {"candidates": [candidate(
+            semantic_key="shipment:planned",
+            source_message_id="m-zero-b",
+            evidence_excerpt="Да, отправка запланирована",
+        )]},
+        {"candidates": []},
+    ])
+    mapper = MemoryMapper(store=store, adapter=adapter)
+    first_event = event("Отправка запланирована", message_id="m-zero-a")
+    second_event = event("Да, отправка запланирована", message_id="m-zero-b", occurred_at=NOW + timedelta(hours=7))
+    shared_id = mapper.map_event(first_event).written[0].id
+    mapper.map_event(second_event)
+
+    edited = first_event.model_copy(update={
+        "event_type": EventType.EDITED_MESSAGE,
+        "text": "Этой информации больше нет",
+        "occurred_at": NOW + timedelta(hours=8),
+    })
+    result = mapper.map_event(edited)
+    assert result.failed is False
+    assert result.forgotten_ids == ()
+    assert [card.id for card in result.written] == [shared_id]
+    old_card = store.cards[shared_id]
+    assert old_card.status is not MemoryStatus.ARCHIVED
+    assert old_card.source_count == 1
+    assert [item.message_id for item in old_card.evidence] == ["m-zero-b"]
+
+
+def test_weaker_single_source_edit_demotes_active_card_and_does_not_raise_confidence():
+    store = FakeStore()
+    strong = candidate(
+        memory_type="commitment",
+        semantic_key="decision:report",
+        summary="Отчёт точно будет завтра.",
+        source_message_id="m-demote",
+        evidence_excerpt="Отчёт точно будет завтра",
+        confidence=0.95,
+    )
+    weak = candidate(
+        memory_type="observation",
+        semantic_key="decision:report",
+        summary="Отчёт, возможно, будет позже.",
+        source_message_id="m-demote",
+        evidence_excerpt="Отчёт, возможно, будет позже",
+        confidence=0.3,
+        usage_policy={"assist": True, "callback": False, "roast": False, "proactive": False},
+    )
+    adapter = FakeAdapter(responses=[{"candidates": [strong]}, {"candidates": [weak]}])
+    mapper = MemoryMapper(store=store, adapter=adapter)
+    base = event("Отчёт точно будет завтра", message_id="m-demote")
+    first = mapper.map_event(base).written[0]
+    assert first.status is MemoryStatus.ACTIVE
+
+    edited = base.model_copy(update={
+        "event_type": EventType.EDITED_MESSAGE,
+        "text": "Отчёт, возможно, будет позже",
+        "occurred_at": NOW + timedelta(minutes=2),
+    })
+    corrected = mapper.map_event(edited).written[-1]
+    assert corrected.id == first.id
+    assert corrected.status is MemoryStatus.CANDIDATE
+    assert corrected.memory_type == "observation"
+    assert corrected.confidence <= first.confidence

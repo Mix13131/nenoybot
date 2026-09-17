@@ -41,7 +41,7 @@ def memory_receipt(mapper_result: Any | None, *, attempted: bool) -> dict[str, A
         changed = False
     elif changed:
         status = "succeeded"
-    elif reason == "insufficient_context":
+    elif reason in {"insufficient_context", "forget_target_ambiguous"}:
         status = "needs_clarification"
     elif reason in {"no_text", "no_mapper_adapter", "memory_mapping_not_selected"}:
         status = "not_attempted"

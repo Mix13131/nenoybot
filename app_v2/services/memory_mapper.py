@@ -346,8 +346,11 @@ class MemoryMapper:
 
         lowered = text.lower()
         if lowered in {"забудь это", "забудь", "forget this", "forget it"}:
+            targets = tuple(dict.fromkeys(str(item) for item in target_memory_ids if str(item).strip()))
+            if not targets:
+                return MapperResult(reason="forget_target_ambiguous")
             forgotten: list[str] = []
-            for memory_id in target_memory_ids:
+            for memory_id in targets:
                 try:
                     archived = self.store.archive(event.scope_type, event.scope_id, memory_id)
                 except Exception as exc:
@@ -386,6 +389,11 @@ class MemoryMapper:
                     "proactive": False,
                 },
             }
+            if event.event_type is EventType.EDITED_MESSAGE:
+                candidates = self._assign_source_candidate_slots(event, (candidate,), ())
+                if len(candidates) != 1:
+                    return MapperResult(failed=True, reason="edited_source_invalid_candidate")
+                return self._reconcile_edited_source(event, candidates, (), explicit=True)
             try:
                 card = self._upsert_candidate(event, candidate, explicit=True, recent_context=())
             except Exception as exc:
@@ -420,14 +428,25 @@ class MemoryMapper:
             return MapperResult(failed=True, reason=f"mapper_failure:{type(exc).__name__}")
 
         parsed = result.parsed or {"candidates": []}
+        raw_candidates = parsed.get("candidates", [])
+        if not isinstance(raw_candidates, list):
+            return MapperResult(failed=True, reason="mapper_invalid_candidates")
         candidates = [
             dict(candidate)
-            for candidate in parsed.get("candidates", [])
-            if candidate.get("memory_type") in _ALLOWED_TYPES
+            for candidate in raw_candidates
+            if isinstance(candidate, dict) and candidate.get("memory_type") in _ALLOWED_TYPES
         ]
-        candidates = self._assign_source_candidate_slots(event, candidates, context_items)
+        if event.event_type is EventType.EDITED_MESSAGE and len(candidates) != len(raw_candidates):
+            return MapperResult(failed=True, reason="edited_source_invalid_candidate")
+        positioned_candidates = self._assign_source_candidate_slots(event, candidates, context_items)
         if event.event_type is EventType.EDITED_MESSAGE:
-            return self._reconcile_edited_source(event, candidates, context_items)
+            # A genuinely empty mapper result means the edited source no longer
+            # contains a memory candidate. If candidates existed but failed
+            # provenance validation, fail closed instead of erasing old memory.
+            if candidates and len(positioned_candidates) != len(candidates):
+                return MapperResult(failed=True, reason="edited_source_invalid_candidate")
+            return self._reconcile_edited_source(event, positioned_candidates, context_items)
+        candidates = positioned_candidates
 
         written: list[MemoryCard] = []
         for candidate in candidates:
@@ -484,11 +503,69 @@ class MemoryMapper:
             result.append(value)
         return result
 
+    def _detach_source_from_card(
+        self,
+        event: EventEnvelope,
+        card: MemoryCard,
+        source_evidence: MemoryEvidence,
+    ) -> tuple[MemoryCard | None, str | None]:
+        """Remove one trusted source from a card without rewriting other provenance."""
+
+        source_identity = self._source_identity(source_evidence)
+        remaining = [
+            item for item in card.evidence
+            if self._source_identity(item) != source_identity
+        ]
+        if len(remaining) == len(card.evidence):
+            return None, None
+        if not remaining:
+            archived = self.store.archive(event.scope_type, event.scope_id, card.id)
+            return None, card.id if archived else None
+
+        unique_sources = self._unique_sources(remaining)
+        source_count = len(unique_sources)
+        episode_count = self._episode_count(unique_sources)
+        anchor = unique_sources[-1]
+        payload = dict(card.payload)
+        payload.update(
+            {
+                "source_message_id": anchor.message_id,
+                "source_author_id": anchor.author_id,
+                "evidence_count": source_count,
+                "episode_count": episode_count,
+                "episode_policy": "unique_source_messages_6h_window",
+            }
+        )
+        # Candidate slot is source-local. Once that source is detached we can no
+        # longer prove the slot for the remaining provenance, so fail closed on
+        # a future ambiguous edit instead of carrying a false mapping.
+        payload.pop("source_candidate_index", None)
+
+        memory_type = card.memory_type
+        status = card.status
+        if memory_type == "pattern" and (source_count < 3 or episode_count < 2):
+            memory_type = "observation"
+            status = MemoryStatus.CANDIDATE
+
+        updated = card.model_copy(
+            update={
+                "memory_type": memory_type,
+                "payload": payload,
+                "evidence": remaining,
+                "source_count": source_count,
+                "status": status,
+                "updated_at": datetime.now(timezone.utc),
+            }
+        )
+        return self.store.update(updated), None
+
     def _reconcile_edited_source(
         self,
         event: EventEnvelope,
         candidates: list[dict[str, Any]],
         recent_context: Iterable[dict[str, Any]],
+        *,
+        explicit: bool = False,
     ) -> MapperResult:
         """Reconcile every card grounded in an edited current source as one batch."""
 
@@ -527,20 +604,26 @@ class MemoryMapper:
             )
             with locks:
                 stable_cards = self._source_identity_matches(event, source_evidence)
+                written: list[MemoryCard] = []
                 forgotten: list[str] = []
 
                 if not prepared:
                     try:
                         for stale in stable_cards:
-                            if self.store.archive(event.scope_type, event.scope_id, stale.id):
-                                forgotten.append(stale.id)
+                            kept, archived_id = self._detach_source_from_card(event, stale, source_evidence)
+                            if kept is not None:
+                                written.append(kept)
+                            if archived_id is not None:
+                                forgotten.append(archived_id)
                     except Exception as exc:
                         return MapperResult(
+                            written=tuple(written),
                             forgotten_ids=tuple(forgotten),
                             failed=True,
                             reason=f"mapper_failure:{type(exc).__name__}",
                         )
                     return MapperResult(
+                        written=tuple(written),
                         forgotten_ids=tuple(forgotten),
                         reason="edited_source_cleared",
                     )
@@ -551,45 +634,77 @@ class MemoryMapper:
                     if not isinstance(slot, int) or slot in by_slot:
                         try:
                             for stale in stable_cards:
-                                if self.store.archive(event.scope_type, event.scope_id, stale.id):
-                                    forgotten.append(stale.id)
+                                kept, archived_id = self._detach_source_from_card(event, stale, source_evidence)
+                                if kept is not None:
+                                    written.append(kept)
+                                if archived_id is not None:
+                                    forgotten.append(archived_id)
                         except Exception as exc:
                             return MapperResult(
+                                written=tuple(written),
                                 forgotten_ids=tuple(forgotten),
                                 failed=True,
                                 reason=f"mapper_failure:{type(exc).__name__}",
                             )
                         return MapperResult(
+                            written=tuple(written),
                             forgotten_ids=tuple(forgotten),
                             failed=True,
                             reason="edited_source_reconciliation_ambiguous",
                         )
                     by_slot[slot] = card
 
-                written: list[MemoryCard] = []
                 used_ids: set[str] = set()
                 try:
                     for candidate, evidence, subjects in prepared:
                         slot = int(candidate["_source_candidate_index"])
                         matched = by_slot.get(slot)
+                        semantic_key = str(candidate["semantic_key"]).strip()
+                        old_semantic_key = (
+                            str(matched.payload.get("semantic_key") or "").strip()
+                            if matched is not None else ""
+                        )
+                        shared_sources = (
+                            len(self._unique_sources(matched.evidence)) > 1
+                            if matched is not None else False
+                        )
+
+                        # If one source in a corroborated card changes logical
+                        # identity, detach only that source. The old card keeps
+                        # the other independent evidence and the edited source
+                        # becomes/merges into a separate semantic card.
+                        stable_for_upsert: tuple[MemoryCard, ...] = (matched,) if matched else ()
+                        if matched is not None and shared_sources and old_semantic_key != semantic_key:
+                            kept, archived_id = self._detach_source_from_card(event, matched, source_evidence)
+                            used_ids.add(matched.id)
+                            if kept is not None:
+                                written.append(kept)
+                            if archived_id is not None:
+                                forgotten.append(archived_id)
+                            stable_for_upsert = ()
+
                         card = self._upsert_candidate_locked(
                             event,
                             candidate,
-                            explicit=False,
+                            explicit=explicit,
                             evidence=evidence,
                             subject_keys=subjects,
                             requested_memory_type=str(candidate["memory_type"]),
-                            semantic_key=str(candidate["semantic_key"]).strip(),
-                            stable_source_cards=(matched,) if matched else (),
+                            semantic_key=semantic_key,
+                            stable_source_cards=stable_for_upsert,
                         )
                         if matched:
                             used_ids.add(matched.id)
                         if card is not None:
                             written.append(card)
+
                     for stale in stable_cards:
                         if stale.id not in used_ids:
-                            if self.store.archive(event.scope_type, event.scope_id, stale.id):
-                                forgotten.append(stale.id)
+                            kept, archived_id = self._detach_source_from_card(event, stale, source_evidence)
+                            if kept is not None:
+                                written.append(kept)
+                            if archived_id is not None:
+                                forgotten.append(archived_id)
                 except Exception as exc:
                     return MapperResult(
                         written=tuple(written),
@@ -1036,20 +1151,33 @@ class MemoryMapper:
             )
             return self.store.create(card)
 
-        merged_status = existing.status
-        if explicit or proposed_status is MemoryStatus.ACTIVE:
-            merged_status = MemoryStatus.ACTIVE
-
-        if correction:
-            merged_confidence = existing.confidence
+        existing_source_count = len(self._unique_sources(existing_evidence))
+        single_source_correction = correction and existing_source_count == 1
+        if single_source_correction:
+            # A correction replaces the only evidence supporting this card, so
+            # status may demote as well as promote. Confidence may decrease, but
+            # a same-source edit never earns a corroboration boost.
+            merged_status = proposed_status
+            merged_confidence = min(existing.confidence, confidence)
             merged_last_confirmed = existing.last_confirmed_at
             merged_subject_keys = subject_keys or list(existing.subject_keys)
         else:
-            merged_confidence = max(existing.confidence, confidence)
-            if not explicit and new_source and source_count >= 2:
-                merged_confidence = min(0.92, merged_confidence + 0.04)
-            merged_last_confirmed = now if explicit else existing.last_confirmed_at
-            merged_subject_keys = list(existing.subject_keys) or subject_keys
+            merged_status = existing.status
+            if explicit or proposed_status is MemoryStatus.ACTIVE:
+                merged_status = MemoryStatus.ACTIVE
+            if correction:
+                # Same semantic claim with other independent support: update the
+                # edited excerpt without allowing it to weaken the corroborated
+                # card solely because one source changed wording.
+                merged_confidence = existing.confidence
+                merged_last_confirmed = existing.last_confirmed_at
+                merged_subject_keys = subject_keys or list(existing.subject_keys)
+            else:
+                merged_confidence = max(existing.confidence, confidence)
+                if not explicit and new_source and source_count >= 2:
+                    merged_confidence = min(0.92, merged_confidence + 0.04)
+                merged_last_confirmed = now if explicit else existing.last_confirmed_at
+                merged_subject_keys = list(existing.subject_keys) or subject_keys
 
         updated = existing.model_copy(
             update={

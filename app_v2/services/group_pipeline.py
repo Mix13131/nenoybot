@@ -97,23 +97,12 @@ class GroupPipeline:
             if explicit:
                 return explicit
 
-        lowered = (event.text or "").strip().lower()
-        if lowered not in {"забудь", "забудь это", "forget it", "forget this"}:
-            return ()
-        if not event.reply_to_message_id:
-            return ()
-        resolver = getattr(self.intervention_repo, "selected_memory_ids_for_bot_message", None)
-        if resolver is None:
-            return ()
-        try:
-            resolved = resolver(
-                scope_type=ScopeType.GROUP,
-                scope_id=event.scope_id,
-                telegram_message_id=event.reply_to_message_id,
-            )
-        except Exception:
-            return ()
-        return tuple(str(item) for item in resolved if str(item).strip())
+        # selected_memory_ids on an intervention are the full retrieval/context
+        # set used during generation, not a verified list of facts mentioned in
+        # the sent text. Without explicit referenced-memory provenance, reply
+        # bound "забудь это" is ambiguous and must ask for clarification rather
+        # than deleting unrelated context memories.
+        return ()
 
     def process(self, event: EventEnvelope, *, now: datetime | None = None) -> GroupPipelineResult:
         if event.scope_type is not ScopeType.GROUP:

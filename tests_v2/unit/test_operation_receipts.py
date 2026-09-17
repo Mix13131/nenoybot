@@ -128,3 +128,10 @@ def test_not_scheduled_and_error_reminders_are_not_claimable_success() -> None:
     assert clarify["changed"] is False
     assert failed["status"] == "failed"
     assert failed["changed"] is False
+
+
+def test_ambiguous_forget_receipt_needs_clarification():
+    from app_v2.services.memory_mapper import MapperResult
+    receipt = memory_receipt(MapperResult(reason="forget_target_ambiguous"), attempted=True)
+    assert receipt["status"] == "needs_clarification"
+    assert receipt["changed"] is False

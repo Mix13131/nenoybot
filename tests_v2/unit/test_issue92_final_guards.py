@@ -131,21 +131,22 @@ def test_group_target_memory_ids_prefer_explicit_current_event_metadata() -> Non
     assert repo.calls == []
 
 
-def test_group_forget_resolves_memories_from_replied_bot_intervention() -> None:
+def test_group_forget_does_not_delete_reply_retrieval_context() -> None:
     repo = FakeInterventionRepo(("mem-a", "mem-b"))
     pipeline = _pipeline_with_interventions(repo)
     event = _forget_event()
-    assert pipeline._target_memory_ids(event) == ("mem-a", "mem-b")
-    assert repo.calls == [
-        {
-            "scope_type": ScopeType.GROUP,
-            "scope_id": "-100777",
-            "telegram_message_id": "700",
-        }
-    ]
+    assert pipeline._target_memory_ids(event) == ()
+    assert repo.calls == []
 
 
 def test_group_forget_without_resolvable_reply_is_safe_noop() -> None:
     repo = FakeInterventionRepo(())
     pipeline = _pipeline_with_interventions(repo)
     assert pipeline._target_memory_ids(_forget_event(reply_to=None)) == ()
+
+
+def test_group_forget_single_reply_context_is_still_not_proven_target() -> None:
+    repo = FakeInterventionRepo(("mem-a",))
+    pipeline = _pipeline_with_interventions(repo)
+    assert pipeline._target_memory_ids(_forget_event()) == ()
+    assert repo.calls == []

@@ -397,3 +397,110 @@ def test_edited_source_archives_removed_sibling_and_reports_change_postgres() ->
         assert rows[beta.id] == "archived"
         conn.execute("DELETE FROM memory_cards WHERE scope_type='personal' AND scope_id=%s", (scope_id,))
         conn.commit()
+
+
+# issue92-correction-safety-postgres-final
+
+def test_shared_card_edit_splits_changed_source_postgres() -> None:
+    psycopg, database_url = _psycopg_and_url()
+    scope_id = f"it-shared-split-{uuid.uuid4().hex}"
+
+    def c(key, summary, source, excerpt, memory_type="commitment", confidence=0.9):
+        value = _edit_candidate(key, summary, excerpt)
+        value["source_message_id"] = source
+        value["memory_type"] = memory_type
+        value["confidence"] = confidence
+        return value
+
+    adapter = _EditAdapter([
+        {"candidates": [c("shipment:planned", "Отправка запланирована.", "880010001", "Отправка запланирована")]},
+        {"candidates": [c("shipment:planned", "Отправка запланирована.", "880010002", "Да, отправка запланирована")]},
+        {"candidates": [c("shipment:cancelled", "Отправка отменена.", "880010001", "Отправка отменена")]},
+    ])
+    first_event = EventEnvelope(
+        event_id=f"it:{scope_id}:a",
+        event_type=EventType.PRIVATE_MESSAGE,
+        occurred_at=NOW,
+        scope_type=ScopeType.PERSONAL,
+        scope_id=scope_id,
+        actor_user_id="991000001",
+        message_id="880010001",
+        text="Отправка запланирована",
+    )
+    second_event = first_event.model_copy(update={
+        "event_id": f"it:{scope_id}:b",
+        "message_id": "880010002",
+        "occurred_at": NOW + timedelta(hours=7),
+        "text": "Да, отправка запланирована",
+    })
+    edited = first_event.model_copy(update={
+        "event_id": f"it:{scope_id}:edit",
+        "event_type": EventType.EDITED_MESSAGE,
+        "occurred_at": NOW + timedelta(hours=8),
+        "text": "Отправка отменена",
+    })
+
+    with psycopg.connect(database_url) as conn:
+        mapper = MemoryMapper(store=MemoryMapperStore(MemoryRepository(conn)), adapter=adapter)
+        old_id = mapper.map_event(first_event).written[0].id
+        mapper.map_event(second_event)
+        result = mapper.map_event(edited)
+        assert result.failed is False
+        rows = conn.execute(
+            """
+            SELECT id, status, source_count, payload ->> 'semantic_key', summary, evidence
+            FROM memory_cards
+            WHERE scope_type='personal' AND scope_id=%s AND status IN ('candidate','active')
+            ORDER BY payload ->> 'semantic_key'
+            """,
+            (scope_id,),
+        ).fetchall()
+        assert len(rows) == 2
+        by_key = {row[3]: row for row in rows}
+        planned = by_key["shipment:planned"]
+        cancelled = by_key["shipment:cancelled"]
+        assert planned[0] == old_id
+        assert planned[2] == 1
+        assert planned[4] == "Отправка запланирована."
+        assert [item["message_id"] for item in planned[5]] == ["880010002"]
+        assert cancelled[2] == 1
+        assert [item["message_id"] for item in cancelled[5]] == ["880010001"]
+        assert {card.id for card in result.written} == {planned[0], cancelled[0]}
+        conn.execute("DELETE FROM memory_cards WHERE scope_type='personal' AND scope_id=%s", (scope_id,))
+        conn.commit()
+
+
+def test_rejected_edit_candidate_does_not_erase_postgres_memory() -> None:
+    psycopg, database_url = _psycopg_and_url()
+    scope_id = f"it-invalid-edit-{uuid.uuid4().hex}"
+    adapter = _EditAdapter([
+        {"candidates": [_edit_candidate("alpha:planned", "Альфа запланирована.", "Альфа отправится 20-го")]},
+        {"candidates": [_edit_candidate("alpha:cancelled", "Альфа отменена.", "Фрагмента нет в edit")]},
+    ])
+    base = EventEnvelope(
+        event_id=f"it:{scope_id}:original",
+        event_type=EventType.PRIVATE_MESSAGE,
+        occurred_at=NOW,
+        scope_type=ScopeType.PERSONAL,
+        scope_id=scope_id,
+        actor_user_id="991000001",
+        message_id="880009999",
+        text="Альфа отправится 20-го.",
+    )
+    edited = base.model_copy(update={
+        "event_id": f"it:{scope_id}:edit",
+        "event_type": EventType.EDITED_MESSAGE,
+        "occurred_at": NOW + timedelta(minutes=5),
+        "text": "Альфа пока под вопросом.",
+    })
+    with psycopg.connect(database_url) as conn:
+        mapper = MemoryMapper(store=MemoryMapperStore(MemoryRepository(conn)), adapter=adapter)
+        memory_id = mapper.map_event(base).written[0].id
+        result = mapper.map_event(edited)
+        assert result.failed is True
+        assert result.reason == "edited_source_invalid_candidate"
+        row = conn.execute("SELECT status, evidence FROM memory_cards WHERE id=%s", (memory_id,)).fetchone()
+        assert row[0] in {"candidate", "active"}
+        assert row[1][0]["excerpt"] == "Альфа отправится 20-го"
+        conn.execute("DELETE FROM memory_cards WHERE scope_type='personal' AND scope_id=%s", (scope_id,))
+        conn.commit()
