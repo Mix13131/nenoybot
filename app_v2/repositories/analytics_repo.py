@@ -10,6 +10,17 @@ def _scope_filter(alias: str, scope_id: str | None) -> tuple[str, list[object]]:
     return f" AND {alias}.scope_id=%s", [scope_id]
 
 
+_REACTION_ORDER_SQL = """
+CASE
+    WHEN (f.payload ->> 'source_event_id') ~ '^tg:[0-9]+$'
+    THEN split_part(f.payload ->> 'source_event_id', ':', 2)::bigint
+    ELSE NULL
+END DESC NULLS LAST,
+f.created_at DESC,
+f.id DESC
+""".strip()
+
+
 class AnalyticsRepository:
     """Read-only PostgreSQL product analytics for НеНой v2."""
 
@@ -122,7 +133,7 @@ class AnalyticsRepository:
                     SELECT f.*,
                            ROW_NUMBER() OVER (
                                PARTITION BY f.scope_id, f.intervention_id, f.user_id
-                               ORDER BY f.created_at DESC, f.id DESC
+                               ORDER BY {_REACTION_ORDER_SQL}
                            ) AS rn
                     FROM feedback_events f
                     WHERE f.feedback_type LIKE 'reaction_%%'
@@ -155,7 +166,7 @@ class AnalyticsRepository:
                     SELECT f.*,
                            ROW_NUMBER() OVER (
                                PARTITION BY f.scope_id, f.intervention_id, f.user_id
-                               ORDER BY f.created_at DESC, f.id DESC
+                               ORDER BY {_REACTION_ORDER_SQL}
                            ) AS rn
                     FROM feedback_events f
                     WHERE f.feedback_type LIKE 'reaction_%%'
@@ -209,7 +220,7 @@ class AnalyticsRepository:
                     SELECT f.*,
                            ROW_NUMBER() OVER (
                                PARTITION BY f.scope_id, f.intervention_id, f.user_id
-                               ORDER BY f.created_at DESC, f.id DESC
+                               ORDER BY {_REACTION_ORDER_SQL}
                            ) AS rn
                     FROM feedback_events f
                     WHERE f.feedback_type LIKE 'reaction_%%'
@@ -300,7 +311,7 @@ class AnalyticsRepository:
                         f.created_at,
                         ROW_NUMBER() OVER (
                             PARTITION BY f.scope_id, f.intervention_id, f.user_id
-                            ORDER BY f.created_at DESC, f.id DESC
+                            ORDER BY {_REACTION_ORDER_SQL}
                         ) AS rn
                     FROM feedback_events f
                     JOIN replies r ON r.id=f.intervention_id
