@@ -30,6 +30,7 @@ _MEMORY_SAVE_RE = re.compile(
     r"|(?:зафиксировал|зафиксирую|сохранил|сохраню)\s+(?:это\s+)?в\s+памят\w*"
     r"|в\s+памят\w*\s+(?:зафиксировал|зафиксирую|сохранил|сохраню)\b"
     r"|(?:запис(?:ь|и)|это)\s+(?:успешно\s+)?(?:сохранен(?:а|о|ы)|зафиксирован(?:а|о|ы))\s+в\s+памят\w*"
+    r"|(?:запис(?:ь|и)|это)\s+в\s+памят\w*\s+(?:успешно\s+)?(?:сохранен(?:а|о|ы)|зафиксирован(?:а|о|ы))\b"
     r"|в\s+памят\w*\s+(?:успешно\s+)?(?:сохранен(?:а|о|ы)|зафиксирован(?:а|о|ы))\b"
     r")",
     flags=re.IGNORECASE,
@@ -92,7 +93,19 @@ _BOT_CLAIM_CONTINUATIONS = {
     "автоматически", "быстро", "недавно", "тебе", "вам", "для", "на",
     "в", "к", "по", "с", "из", "до", "после", "через", "без", "как",
     "при", "от", "под", "над", "между", "этому", "этой", "это",
+    "я", "мы", "мной", "нами", "корректно", "правильно",
 }
+_THIRD_PARTY_ROLE_NOUNS = {
+    "пользователь", "пользовательница", "подрядчик", "подрядчица",
+    "клиент", "клиентка", "менеджер", "администратор", "коллега",
+    "сотрудник", "сотрудница", "оператор", "исполнитель", "исполнительница",
+}
+_THIRD_PARTY_ROLE_PHRASE_RE = re.compile(
+    r"^\s+(?:(?:наш|наша|мой|моя|их|его|её)\s+)?"
+    r"(пользователь(?:ница)?|подрядчик|подрядчица|клиент(?:ка)?|менеджер|"
+    r"администратор|коллега|сотрудник|сотрудница|оператор|исполнитель(?:ница)?)\b",
+    flags=re.IGNORECASE,
+)
 
 
 class ResponseGenerator:
@@ -167,11 +180,14 @@ class ResponseGenerator:
         token_match = _NEXT_TOKEN_RE.match(text[match.end() :])
         if token_match is None:
             return False
-        token = token_match.group(1).lower().lstrip("@")
-        # After an object-first action, an ordinary subject noun/name/pronoun
-        # means the sentence describes somebody else's action. Time/location/
-        # manner/preposition continuations still represent a bot action claim.
-        return token not in _BOT_CLAIM_CONTINUATIONS
+        remainder = text[match.end() :]
+        if _THIRD_PARTY_ROLE_PHRASE_RE.match(remainder):
+            return True
+        raw_token = token_match.group(1)
+        token = raw_token.lower().lstrip("@")
+        if token in _BOT_CLAIM_CONTINUATIONS:
+            return False
+        return raw_token.startswith("@") or raw_token[:1].isupper() or token in _THIRD_PARTY_ROLE_NOUNS
 
     @classmethod
     def _has_bot_action_claim(cls, pattern: re.Pattern[str], text: str) -> bool:

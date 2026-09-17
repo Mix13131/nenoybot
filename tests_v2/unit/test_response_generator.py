@@ -205,6 +205,40 @@ def test_third_party_or_quoted_action_statements_are_not_rewritten(text):
     assert result.text == text
 
 
+@pytest.mark.parametrize(
+    "text",
+    [
+        "Задачу создал пользователь вчера.",
+        "Напоминание поставил подрядчик.",
+        "Запись в память сохранила сотрудница.",
+    ],
+)
+def test_lowercase_role_third_party_action_facts_are_not_rewritten(text):
+    result = ResponseGenerator(adapter=FakeAdapter(text=text)).generate(
+        _context(action_state=receipts(memory_changed=False))
+    )
+    assert result.text == text
+
+
+@pytest.mark.parametrize(
+    "text, expected",
+    [
+        ("Задачу создал я.", "Задачу не создавал"),
+        ("Задача создана мной.", "Задачу не создавал"),
+        ("Задача создана корректно.", "Задачу не создавал"),
+        ("Напоминание поставлено мной.", "Напоминание не ставил"),
+        ("Запись в память сохранена успешно.", "В память это не записано"),
+        ("Запись из памяти удалена мной.", "Из памяти ничего не удал"),
+    ],
+)
+def test_first_person_and_modifier_action_claims_require_receipts(text, expected):
+    result = ResponseGenerator(adapter=FakeAdapter(text=text)).generate(
+        _context(action_state=receipts(memory_changed=False))
+    )
+    assert expected in result.text
+    assert result.text != text
+
+
 def test_false_memory_claim_is_blocked_when_nothing_was_written():
     adapter = FakeAdapter(text="Запомнил. Дальше разберёмся.")
     result = ResponseGenerator(adapter=adapter).generate(

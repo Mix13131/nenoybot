@@ -4,6 +4,7 @@ import os
 import threading
 import uuid
 from datetime import datetime, timedelta, timezone
+from types import SimpleNamespace
 
 import pytest
 
@@ -44,6 +45,91 @@ def _explicit_event(scope_id: str) -> EventEnvelope:
         message_id="880000001",
         text="Запомни: конкурентный тест памяти",
     )
+
+
+class _EditAdapter:
+    def __init__(self, responses) -> None:
+        self.responses = list(responses)
+
+    def generate_json(self, *args, **kwargs):
+        return SimpleNamespace(parsed=self.responses.pop(0))
+
+
+def _edit_candidate(key: str, summary: str, excerpt: str) -> dict:
+    return {
+        "memory_type": "commitment",
+        "semantic_key": key,
+        "summary": summary,
+        "subject_keys": ["user:991000001"],
+        "source_message_id": "880009999",
+        "evidence_excerpt": excerpt,
+        "payload": {
+            "statement_kind": "commitment",
+            "status": "open",
+            "due_at": None,
+            "verbatim": excerpt,
+            "claim_kind": "plan",
+        },
+        "importance": 0.8,
+        "confidence": 0.9,
+        "usage_policy": {"assist": True, "callback": True, "roast": False, "proactive": True},
+    }
+
+
+def test_multi_card_edited_source_reconciles_full_batch_postgres() -> None:
+    psycopg, database_url = _psycopg_and_url()
+    scope_id = f"it-edit-batch-{uuid.uuid4().hex}"
+    original_text = "Альфа отправится 20-го. Бета стоит 900 USD."
+    edited_text = "Альфа отменена. Бета стоит 750 USD."
+    adapter = _EditAdapter([
+        {"candidates": [
+            _edit_candidate("alpha:planned", "Альфа запланирована.", "Альфа отправится 20-го"),
+            _edit_candidate("beta:900", "Бета стоит 900 USD.", "Бета стоит 900 USD"),
+        ]},
+        {"candidates": [
+            _edit_candidate("alpha:cancelled", "Альфа отменена.", "Альфа отменена"),
+            _edit_candidate("beta:750", "Бета стоит 750 USD.", "Бета стоит 750 USD"),
+        ]},
+    ])
+    base_event = EventEnvelope(
+        event_id=f"it:{scope_id}:original",
+        event_type=EventType.PRIVATE_MESSAGE,
+        occurred_at=NOW,
+        scope_type=ScopeType.PERSONAL,
+        scope_id=scope_id,
+        actor_user_id="991000001",
+        message_id="880009999",
+        text=original_text,
+    )
+    edit_event = base_event.model_copy(update={
+        "event_id": f"it:{scope_id}:edit",
+        "event_type": EventType.EDITED_MESSAGE,
+        "occurred_at": NOW + timedelta(minutes=5),
+        "text": edited_text,
+    })
+
+    with psycopg.connect(database_url) as conn:
+        mapper = MemoryMapper(store=MemoryMapperStore(MemoryRepository(conn)), adapter=adapter)
+        first = mapper.map_event(base_event)
+        corrected = mapper.map_event(edit_event)
+        assert len(first.written) == 2
+        assert corrected.failed is False
+        assert len(corrected.written) == 2
+        rows = conn.execute(
+            """
+            SELECT status, source_count, payload ->> 'semantic_key', evidence
+            FROM memory_cards WHERE scope_type='personal' AND scope_id=%s
+            ORDER BY id
+            """,
+            (scope_id,),
+        ).fetchall()
+        assert len(rows) == 2
+        assert {row[0] for row in rows} <= {"candidate", "active"}
+        assert {row[1] for row in rows} == {1}
+        assert {row[2] for row in rows} == {"alpha:cancelled", "beta:750"}
+        assert {row[3][0]["excerpt"] for row in rows} == {"Альфа отменена", "Бета стоит 750 USD"}
+        conn.execute("DELETE FROM memory_cards WHERE scope_type='personal' AND scope_id=%s", (scope_id,))
+        conn.commit()
 
 
 def test_same_memory_source_concurrent_postgres_retry_creates_one_card() -> None:

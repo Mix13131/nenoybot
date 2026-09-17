@@ -207,7 +207,6 @@ class MemoryMapperStore:
                   FROM jsonb_array_elements(mc.evidence) AS ev
                   WHERE ev ->> 'message_id' = %s
                     AND COALESCE(ev ->> 'author_id', '') = %s
-                    AND (ev ->> 'timestamp')::timestamptz = %s
               )
             ORDER BY mc.id
             """,
@@ -216,7 +215,6 @@ class MemoryMapperStore:
                 scope_id,
                 str(evidence.message_id or ""),
                 str(evidence.author_id or ""),
-                evidence.timestamp,
             ),
         ).fetchall()
         cards: list[MemoryCard] = []
@@ -283,7 +281,6 @@ class MemoryMapperStore:
                 scope_id,
                 str(evidence.message_id or ""),
                 str(evidence.author_id or ""),
-                evidence.timestamp.isoformat(),
             )
         )
         with self._session_locks((material,)):
@@ -423,10 +420,17 @@ class MemoryMapper:
             return MapperResult(failed=True, reason=f"mapper_failure:{type(exc).__name__}")
 
         parsed = result.parsed or {"candidates": []}
+        candidates = [
+            dict(candidate)
+            for candidate in parsed.get("candidates", [])
+            if candidate.get("memory_type") in _ALLOWED_TYPES
+        ]
+        candidates = self._assign_source_candidate_slots(event, candidates, context_items)
+        if event.event_type is EventType.EDITED_MESSAGE:
+            return self._reconcile_edited_source(event, candidates, context_items)
+
         written: list[MemoryCard] = []
-        for candidate in parsed.get("candidates", []):
-            if candidate.get("memory_type") not in _ALLOWED_TYPES:
-                continue
+        for candidate in candidates:
             try:
                 card = self._upsert_candidate(
                     event,
@@ -446,6 +450,118 @@ class MemoryMapper:
             if card is not None:
                 written.append(card)
         return MapperResult(written=tuple(written))
+
+    def _assign_source_candidate_slots(
+        self,
+        event: EventEnvelope,
+        candidates: Iterable[dict[str, Any]],
+        recent_context: Iterable[dict[str, Any]],
+    ) -> list[dict[str, Any]]:
+        """Assign deterministic positions to candidates grounded in each source."""
+
+        sources = self._trusted_sources(event, recent_context)
+        positioned: list[tuple[str, int, int, dict[str, Any]]] = []
+        for order, candidate in enumerate(candidates):
+            evidence = self._candidate_evidence(event, candidate, recent_context)
+            if evidence is None:
+                continue
+            source = sources.get(str(evidence.message_id or ""))
+            offset = source.text.find(evidence.excerpt) if source is not None else -1
+            positioned.append((str(evidence.message_id or ""), offset, order, candidate))
+
+        slots: dict[int, int] = {}
+        grouped: dict[str, list[tuple[int, int, dict[str, Any]]]] = {}
+        for source_id, offset, order, candidate in positioned:
+            grouped.setdefault(source_id, []).append((offset, order, candidate))
+        for items in grouped.values():
+            for slot, (_, order, _) in enumerate(sorted(items, key=lambda item: (item[0], item[1]))):
+                slots[order] = slot
+
+        result: list[dict[str, Any]] = []
+        for _, _, order, candidate in positioned:
+            value = dict(candidate)
+            value["_source_candidate_index"] = slots[order]
+            result.append(value)
+        return result
+
+    def _reconcile_edited_source(
+        self,
+        event: EventEnvelope,
+        candidates: list[dict[str, Any]],
+        recent_context: Iterable[dict[str, Any]],
+    ) -> MapperResult:
+        """Reconcile every card grounded in an edited current source as one batch."""
+
+        current_source_id = str(event.message_id or event.event_id)
+        prepared: list[tuple[dict[str, Any], MemoryEvidence, list[str]]] = []
+        for candidate in candidates:
+            evidence = self._candidate_evidence(event, candidate, recent_context)
+            if evidence is None or evidence.message_id != current_source_id:
+                return MapperResult(failed=True, reason="edited_source_invalid_candidate")
+            subjects = self._trusted_subject_keys(candidate, evidence)
+            if subjects is None:
+                return MapperResult(failed=True, reason="edited_source_invalid_candidate")
+            prepared.append((candidate, evidence, subjects))
+        if not prepared:
+            return MapperResult(failed=True, reason="edited_source_empty_batch")
+
+        source_lock_factory = getattr(self.store, "source_lock", None)
+        source_context = (
+            source_lock_factory(event.scope_type, event.scope_id, prepared[0][1])
+            if callable(source_lock_factory)
+            else nullcontext()
+        )
+        with source_context:
+            stable_cards = self._source_identity_matches(event, prepared[0][1])
+            old_keys = [str(card.payload.get("semantic_key") or "") for card in stable_cards]
+            new_keys = [str(candidate["semantic_key"]).strip() for candidate, _, _ in prepared]
+            locks_factory = getattr(self.store, "semantic_locks", None)
+            locks = (
+                locks_factory(event.scope_type, event.scope_id, (*old_keys, *new_keys))
+                if callable(locks_factory)
+                else nullcontext()
+            )
+            with locks:
+                stable_cards = self._source_identity_matches(event, prepared[0][1])
+                by_slot: dict[int, MemoryCard] = {}
+                for card in stable_cards:
+                    slot = card.payload.get("source_candidate_index")
+                    if not isinstance(slot, int) or slot in by_slot:
+                        for stale in stable_cards:
+                            self.store.archive(event.scope_type, event.scope_id, stale.id)
+                        return MapperResult(failed=True, reason="edited_source_reconciliation_ambiguous")
+                    by_slot[slot] = card
+
+                written: list[MemoryCard] = []
+                used_ids: set[str] = set()
+                try:
+                    for candidate, evidence, subjects in prepared:
+                        slot = int(candidate["_source_candidate_index"])
+                        matched = by_slot.get(slot)
+                        card = self._upsert_candidate_locked(
+                            event,
+                            candidate,
+                            explicit=False,
+                            evidence=evidence,
+                            subject_keys=subjects,
+                            requested_memory_type=str(candidate["memory_type"]),
+                            semantic_key=str(candidate["semantic_key"]).strip(),
+                            stable_source_cards=(matched,) if matched else (),
+                        )
+                        if matched:
+                            used_ids.add(matched.id)
+                        if card is not None:
+                            written.append(card)
+                    for stale in stable_cards:
+                        if stale.id not in used_ids:
+                            self.store.archive(event.scope_type, event.scope_id, stale.id)
+                except Exception as exc:
+                    return MapperResult(
+                        written=tuple(written),
+                        failed=True,
+                        reason=f"mapper_failure:{type(exc).__name__}",
+                    )
+                return MapperResult(written=tuple(written))
 
     @staticmethod
     def _extract_explicit_remember(text: str) -> str | None:
@@ -585,13 +701,13 @@ class MemoryMapper:
         )
 
     @staticmethod
-    def _source_identity(evidence: MemoryEvidence) -> tuple[str | None, str | None, datetime]:
-        return (evidence.message_id, evidence.author_id, evidence.timestamp)
+    def _source_identity(evidence: MemoryEvidence) -> tuple[str | None, str | None]:
+        return (evidence.message_id, evidence.author_id)
 
     @classmethod
     def _unique_sources(cls, evidence_items: Iterable[MemoryEvidence]) -> list[MemoryEvidence]:
         result: list[MemoryEvidence] = []
-        seen: set[tuple[str | None, str | None, datetime]] = set()
+        seen: set[tuple[str | None, str | None]] = set()
         for item in evidence_items:
             identity = cls._source_identity(item)
             if identity in seen:
@@ -854,6 +970,9 @@ class MemoryMapper:
                 "episode_policy": "unique_source_messages_6h_window",
             }
         )
+        source_candidate_index = candidate.get("_source_candidate_index")
+        if isinstance(source_candidate_index, int):
+            payload["source_candidate_index"] = source_candidate_index
 
         if existing is None:
             card = MemoryCard(

@@ -29,6 +29,19 @@ class FakeStore:
                 return card
         return None
 
+    def find_source_identity_matches(self, scope_type, scope_id, evidence):
+        return tuple(
+            card for card in self.cards.values()
+            if card.scope_type is scope_type
+            and card.scope_id == scope_id
+            and card.status in {MemoryStatus.CANDIDATE, MemoryStatus.ACTIVE}
+            and any(
+                item.message_id == evidence.message_id
+                and item.author_id == evidence.author_id
+                for item in card.evidence
+            )
+        )
+
     def create(self, card):
         self.create_calls += 1
         if self.fail_create_at == self.create_calls:
@@ -211,6 +224,35 @@ def test_same_source_retry_is_true_noop_without_refresh_or_write_receipt():
     assert persisted.source_count == 1
     assert persisted.payload["episode_count"] == 1
     assert store.update_calls == 0
+
+
+def test_edited_multi_card_source_reconciles_all_slots_and_archives_stale_cards():
+    store = FakeStore()
+    original = "Альфа отправится 20-го. Бета стоит 900 USD."
+    edited = "Альфа отменена. Бета стоит 750 USD."
+    adapter = FakeAdapter(responses=[
+        {"candidates": [
+            candidate(semantic_key="alpha:planned", summary="Альфа запланирована.", evidence_excerpt="Альфа отправится 20-го"),
+            candidate(semantic_key="beta:900", summary="Бета стоит 900 USD.", evidence_excerpt="Бета стоит 900 USD"),
+        ]},
+        {"candidates": [
+            candidate(semantic_key="alpha:cancelled", summary="Альфа отменена.", evidence_excerpt="Альфа отменена"),
+            candidate(semantic_key="beta:750", summary="Бета стоит 750 USD.", evidence_excerpt="Бета стоит 750 USD"),
+        ]},
+    ])
+    mapper = MemoryMapper(store=store, adapter=adapter)
+    first = mapper.map_event(event(original))
+    edit_event = event(edited).model_copy(update={"event_type": EventType.EDITED_MESSAGE})
+
+    corrected = mapper.map_event(edit_event)
+
+    assert corrected.failed is False
+    assert len(corrected.written) == 2
+    assert {card.id for card in corrected.written} == {card.id for card in first.written}
+    assert {card.payload["semantic_key"] for card in corrected.written} == {"alpha:cancelled", "beta:750"}
+    assert {card.evidence[0].excerpt for card in corrected.written} == {"Альфа отменена", "Бета стоит 750 USD"}
+    assert all(card.source_count == 1 for card in corrected.written)
+    assert all(card.status is not MemoryStatus.ARCHIVED for card in store.cards.values())
 
 
 def test_partial_write_preserves_already_committed_cards_in_mapper_result():
