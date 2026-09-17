@@ -47,7 +47,12 @@ def _personality(mode):
     }
 
 
-def _context(scope_type=ScopeType.PERSONAL, mode=ResponseMode.ASSISTANT, memories=()):
+def _context(
+    scope_type=ScopeType.PERSONAL,
+    mode=ResponseMode.ASSISTANT,
+    memories=(),
+    action_state=None,
+):
     return GenerationContext(
         scope_type=scope_type,
         scope_id="u1" if scope_type is ScopeType.PERSONAL else "g1",
@@ -62,7 +67,7 @@ def _context(scope_type=ScopeType.PERSONAL, mode=ResponseMode.ASSISTANT, memorie
         hot_messages=({"message_id": "1", "text": "Привет"},),
         memories=tuple(memories),
         target_user_id="u1",
-        action_state={},
+        action_state=dict(action_state or {}),
         estimated_hot_tokens=20,
         estimated_memory_tokens=0,
     )
@@ -92,6 +97,41 @@ def test_group_prompt_selected_for_group_context():
     _, _, kwargs = adapter.calls[0]
     assert "Group Generator" in kwargs["instructions"]
     assert "не объясняй шутку" in kwargs["instructions"]
+
+
+def test_character_specific_group_prompt_selected_from_action_state():
+    adapter = FakeAdapter()
+    generator = ResponseGenerator(adapter=adapter)
+
+    generator.generate(
+        _context(
+            ScopeType.GROUP,
+            ResponseMode.GROUP_HELP,
+            action_state={"character_id": "diamond_voice"},
+        )
+    )
+
+    _, input_text, kwargs = adapter.calls[0]
+    payload = json.loads(input_text)
+    assert "Бриллиантовый голос — Group Assistant" in kwargs["instructions"]
+    assert "не заменяешь её" in kwargs["instructions"]
+    assert payload["action_state"]["character_id"] == "diamond_voice"
+
+
+def test_unknown_group_character_falls_back_to_nenoy_prompt():
+    adapter = FakeAdapter()
+    generator = ResponseGenerator(adapter=adapter)
+
+    generator.generate(
+        _context(
+            ScopeType.GROUP,
+            ResponseMode.GROUP_HELP,
+            action_state={"character_id": "unknown_character"},
+        )
+    )
+
+    _, _, kwargs = adapter.calls[0]
+    assert "Group Generator" in kwargs["instructions"]
 
 
 def test_group_callback_without_memory_is_blocked_before_model_call():
