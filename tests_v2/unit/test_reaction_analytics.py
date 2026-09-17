@@ -61,7 +61,11 @@ def test_reaction_quality_by_mode_is_zero_safe_and_current_state_based() -> None
     sql, params = conn.calls[0]
     normalized = " ".join(sql.split())
     assert "PARTITION BY f.scope_id, f.intervention_id, f.user_id" in normalized
-    assert "ORDER BY f.created_at DESC, f.id DESC" in normalized
+    assert "payload ->> 'source_event_id'" in normalized
+    assert "split_part(f.payload ->> 'source_event_id', ':', 2)::bigint" in normalized
+    assert "DESC NULLS LAST" in normalized
+    assert "f.created_at DESC" in normalized
+    assert "f.id DESC" in normalized
     assert "f.user_id IS NOT NULL" in normalized
     assert "feedback_type <> 'reaction_removed'" in normalized
     assert "reaction_families" in normalized
