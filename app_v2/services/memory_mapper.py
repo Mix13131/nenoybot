@@ -8,7 +8,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Iterable, Iterator
 
-from app_v2.domain.enums import MemoryOrigin, MemoryStatus, ScopeType
+from app_v2.domain.enums import EventType, MemoryOrigin, MemoryStatus, ScopeType
 from app_v2.domain.events import EventEnvelope
 from app_v2.domain.memory import MemoryCard, MemoryEvidence, UsagePolicy
 from app_v2.services.model_router import ModelRole
@@ -140,6 +140,8 @@ class MemoryMapperStore:
         memory_type: str,
         evidence: MemoryEvidence,
     ) -> MemoryCard | None:
+        """Find an exact source+excerpt match for ordinary retry detection."""
+
         conn = getattr(self.repo, "conn", None)
         if conn is None:
             finder = getattr(self.repo, "find_source_match", None)
@@ -171,6 +173,137 @@ class MemoryMapperStore:
             return None
         return self.repo.get(scope_type, scope_id, row[0])
 
+    def find_source_identity_matches(
+        self,
+        scope_type: ScopeType,
+        scope_id: str,
+        evidence: MemoryEvidence,
+    ) -> tuple[MemoryCard, ...]:
+        """Find cards grounded in the same stable Telegram source identity.
+
+        Excerpt and semantic key are intentionally excluded. This lookup is
+        used only for EDITED_MESSAGE reconciliation. Multiple matches are kept
+        visible so the mapper can fail conservatively instead of overwriting an
+        arbitrary card from a long multi-memory source message.
+        """
+
+        conn = getattr(self.repo, "conn", None)
+        if conn is None:
+            finder = getattr(self.repo, "find_source_identity_matches", None)
+            if finder is None:
+                return ()
+            value = finder(scope_type, scope_id, evidence)
+            return tuple(value or ())
+
+        rows = conn.execute(
+            """
+            SELECT DISTINCT mc.id
+            FROM memory_cards mc
+            WHERE mc.scope_type=%s
+              AND mc.scope_id=%s
+              AND mc.status IN ('candidate','active')
+              AND EXISTS (
+                  SELECT 1
+                  FROM jsonb_array_elements(mc.evidence) AS ev
+                  WHERE ev ->> 'message_id' = %s
+                    AND COALESCE(ev ->> 'author_id', '') = %s
+                    AND (ev ->> 'timestamp')::timestamptz = %s
+              )
+            ORDER BY mc.id
+            """,
+            (
+                scope_type.value,
+                scope_id,
+                str(evidence.message_id or ""),
+                str(evidence.author_id or ""),
+                evidence.timestamp,
+            ),
+        ).fetchall()
+        cards: list[MemoryCard] = []
+        for row in rows:
+            card = self.repo.get(scope_type, scope_id, row[0])
+            if card is not None:
+                cards.append(card)
+        return tuple(cards)
+
+    @contextmanager
+    def _session_locks(self, materials: Iterable[str]) -> Iterator[None]:
+        conn = getattr(self.repo, "conn", None)
+        ordered = sorted({item for item in materials if item})
+        if conn is None or not ordered:
+            yield
+            return
+
+        acquired: list[str] = []
+        try:
+            for material in ordered:
+                conn.execute(
+                    "SELECT pg_advisory_lock(hashtextextended(%s, 0))",
+                    (material,),
+                ).fetchone()
+                acquired.append(material)
+            # Session locks survive the create/update commits below.
+            conn.commit()
+            yield
+        finally:
+            try:
+                conn.rollback()
+            except Exception:
+                pass
+            for material in reversed(acquired):
+                try:
+                    conn.execute(
+                        "SELECT pg_advisory_unlock(hashtextextended(%s, 0))",
+                        (material,),
+                    ).fetchone()
+                except Exception:
+                    try:
+                        conn.rollback()
+                    except Exception:
+                        pass
+            try:
+                conn.commit()
+            except Exception:
+                try:
+                    conn.rollback()
+                except Exception:
+                    pass
+
+    @contextmanager
+    def source_lock(
+        self,
+        scope_type: ScopeType,
+        scope_id: str,
+        evidence: MemoryEvidence,
+    ) -> Iterator[None]:
+        material = "|".join(
+            (
+                "source",
+                scope_type.value,
+                scope_id,
+                str(evidence.message_id or ""),
+                str(evidence.author_id or ""),
+                evidence.timestamp.isoformat(),
+            )
+        )
+        with self._session_locks((material,)):
+            yield
+
+    @contextmanager
+    def semantic_locks(
+        self,
+        scope_type: ScopeType,
+        scope_id: str,
+        semantic_keys: Iterable[str],
+    ) -> Iterator[None]:
+        materials = [
+            "|".join(("semantic", scope_type.value, scope_id, key))
+            for key in semantic_keys
+            if key
+        ]
+        with self._session_locks(materials):
+            yield
+
     @contextmanager
     def semantic_lock(
         self,
@@ -178,45 +311,8 @@ class MemoryMapperStore:
         scope_id: str,
         semantic_key: str,
     ) -> Iterator[None]:
-        """Serialize every merge for one logical Memory Card.
-
-        Session advisory locks deliberately survive the commits performed by the
-        repository create/update methods. Source/message identity is NOT part of
-        this key: independent evidence for the same semantic card must serialize
-        through the same lock domain.
-        """
-
-        conn = getattr(self.repo, "conn", None)
-        if conn is None or not semantic_key:
+        with self.semantic_locks(scope_type, scope_id, (semantic_key,)):
             yield
-            return
-
-        lock_material = "|".join((scope_type.value, scope_id, semantic_key))
-        conn.execute(
-            "SELECT pg_advisory_lock(hashtextextended(%s, 0))",
-            (lock_material,),
-        ).fetchone()
-        # Session-level locks survive transaction boundaries, including commits
-        # inside MemoryRepository.create/update.
-        conn.commit()
-        try:
-            yield
-        finally:
-            try:
-                conn.rollback()
-            except Exception:
-                pass
-            try:
-                conn.execute(
-                    "SELECT pg_advisory_unlock(hashtextextended(%s, 0))",
-                    (lock_material,),
-                ).fetchone()
-                conn.commit()
-            except Exception:
-                try:
-                    conn.rollback()
-                except Exception:
-                    pass
 
     def create(self, card: MemoryCard) -> MemoryCard:
         return self.repo.create(card)
@@ -559,6 +655,20 @@ class MemoryMapper:
             return [*non_user, trusted_user]
         return non_user
 
+    def _source_identity_matches(
+        self,
+        event: EventEnvelope,
+        evidence: MemoryEvidence,
+    ) -> tuple[MemoryCard, ...]:
+        finder = getattr(self.store, "find_source_identity_matches", None)
+        if finder is None:
+            return ()
+        try:
+            value = finder(event.scope_type, event.scope_id, evidence)
+        except Exception:
+            return ()
+        return tuple(value or ())
+
     def _upsert_candidate(
         self,
         event: EventEnvelope,
@@ -579,22 +689,50 @@ class MemoryMapper:
         if subject_keys is None:
             return None
 
-        lock_factory = getattr(self.store, "semantic_lock", None)
-        lock_context = (
-            lock_factory(event.scope_type, event.scope_id, semantic_key)
-            if callable(lock_factory)
+        edited = event.event_type is EventType.EDITED_MESSAGE
+        source_lock_factory = getattr(self.store, "source_lock", None)
+        source_context = (
+            source_lock_factory(event.scope_type, event.scope_id, evidence)
+            if edited and callable(source_lock_factory)
             else nullcontext()
         )
-        with lock_context:
-            return self._upsert_candidate_locked(
-                event,
-                candidate,
-                explicit=explicit,
-                evidence=evidence,
-                subject_keys=subject_keys,
-                requested_memory_type=requested_memory_type,
-                semantic_key=semantic_key,
-            )
+        with source_context:
+            stable_cards = self._source_identity_matches(event, evidence) if edited else ()
+            old_keys = [
+                str(card.payload.get("semantic_key") or "")
+                for card in stable_cards
+                if str(card.payload.get("semantic_key") or "")
+            ]
+            semantic_locks_factory = getattr(self.store, "semantic_locks", None)
+            if callable(semantic_locks_factory):
+                semantic_context = semantic_locks_factory(
+                    event.scope_type,
+                    event.scope_id,
+                    (semantic_key, *old_keys),
+                )
+            else:
+                lock_factory = getattr(self.store, "semantic_lock", None)
+                semantic_context = (
+                    lock_factory(event.scope_type, event.scope_id, semantic_key)
+                    if callable(lock_factory)
+                    else nullcontext()
+                )
+            with semantic_context:
+                # Re-read after all relevant locks are held. For an edited
+                # source this prevents semantic-key changes from racing another
+                # worker or leaving the old card behind merely because the new
+                # excerpt/key no longer matches it.
+                stable_cards = self._source_identity_matches(event, evidence) if edited else ()
+                return self._upsert_candidate_locked(
+                    event,
+                    candidate,
+                    explicit=explicit,
+                    evidence=evidence,
+                    subject_keys=subject_keys,
+                    requested_memory_type=requested_memory_type,
+                    semantic_key=semantic_key,
+                    stable_source_cards=stable_cards,
+                )
 
     def _upsert_candidate_locked(
         self,
@@ -606,10 +744,31 @@ class MemoryMapper:
         subject_keys: list[str],
         requested_memory_type: str,
         semantic_key: str,
+        stable_source_cards: tuple[MemoryCard, ...] = (),
     ) -> MemoryCard | None:
         now = datetime.now(timezone.utc)
         raw_confidence = float(candidate.get("confidence", 0.5))
-        existing = self.store.find_semantic_match(event.scope_type, event.scope_id, semantic_key)
+        semantic_existing = self.store.find_semantic_match(
+            event.scope_type,
+            event.scope_id,
+            semantic_key,
+        )
+        existing = semantic_existing
+
+        if event.event_type is EventType.EDITED_MESSAGE and stable_source_cards:
+            stable_by_id = {card.id: card for card in stable_source_cards}
+            if semantic_existing is not None:
+                if semantic_existing.id not in stable_by_id:
+                    # The edited source points at one card while the new key is
+                    # already occupied by another. Do not guess a merge target.
+                    return None
+            elif len(stable_source_cards) == 1:
+                existing = stable_source_cards[0]
+            else:
+                # A long source message may ground multiple cards. Without a
+                # unique semantic match an edited candidate is ambiguous; fail
+                # closed instead of overwriting an arbitrary memory.
+                return None
 
         if existing is None:
             source_finder = getattr(self.store, "find_source_match", None)
@@ -635,10 +794,9 @@ class MemoryMapper:
         new_source = same_source_index is None
         if same_source_index is not None:
             if existing_evidence[same_source_index].excerpt == evidence.excerpt:
-                # Exact delivery retry: persistence and receipt no-op.
+                # Same trusted source and same content: exact delivery retry,
+                # even if a nondeterministic mapper proposed another key.
                 return None
-            # Telegram edits retain source identity. Replace the old evidence;
-            # an edit is a correction, not independent corroboration.
             correction = True
             evidence_items = list(existing_evidence)
             evidence_items[same_source_index] = evidence
@@ -725,8 +883,6 @@ class MemoryMapper:
             merged_status = MemoryStatus.ACTIVE
 
         if correction:
-            # Same source was edited. Update content/provenance, but never award
-            # an independent-source confidence or confirmation bonus.
             merged_confidence = existing.confidence
             merged_last_confirmed = existing.last_confirmed_at
             merged_subject_keys = subject_keys or list(existing.subject_keys)
