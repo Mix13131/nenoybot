@@ -216,6 +216,8 @@ class GroupPipeline:
         action_state: dict[str, Any] = {
             "group_title": group_context.title,
             "participant_role": group_context.participant.role,
+            "character_id": str(profile.get("character_id") or "nenoy"),
+            "group_profile": str(profile.get("profile") or "friends"),
             "behavior_probe_ids": list(behavior_memory_ids),
             "mapped_memory_ids": list(mapped_memory_ids),
         }
