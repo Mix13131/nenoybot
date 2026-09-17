@@ -33,14 +33,14 @@ def _receipts(*, memory=None, task=None, reminder=None):
 def test_passive_success_claims_require_real_receipts() -> None:
     state = _receipts()
 
-    assert "Задачу не создавал" in ResponseGenerator._enforce_operation_receipts(
-        "Задача создана.", state
-    )
-    assert "Напоминание не ставил" in ResponseGenerator._enforce_operation_receipts(
-        "Напоминание поставлено.", state
-    )
-    assert "Из памяти ничего не удалял" in ResponseGenerator._enforce_operation_receipts(
-        "Запись из памяти удалена.", state
+    for text in ("Задача создана.", "Задачи созданы."):
+        assert "Задачу не создавал" in ResponseGenerator._enforce_operation_receipts(text, state)
+    for text in ("Напоминание поставлено.", "Напоминания поставлены."):
+        assert "Напоминание не ставил" in ResponseGenerator._enforce_operation_receipts(text, state)
+    for text in ("Запись из памяти удалена.", "Записи из памяти удалены."):
+        assert "Из памяти ничего не удалял" in ResponseGenerator._enforce_operation_receipts(text, state)
+    assert "В память это не записано" in ResponseGenerator._enforce_operation_receipts(
+        "Запись сохранена в памяти.", state
     )
 
 
@@ -72,27 +72,80 @@ def test_passive_claims_are_allowed_with_matching_real_receipts() -> None:
 
 def test_object_first_third_party_facts_are_not_rewritten() -> None:
     state = _receipts()
-    assert ResponseGenerator._enforce_operation_receipts(
-        "Задачу создал Вася вчера.", state
-    ) == "Задачу создал Вася вчера."
-    assert ResponseGenerator._enforce_operation_receipts(
-        "Напоминание поставила Оля утром.", state
-    ) == "Напоминание поставила Оля утром."
+    for text in (
+        "Задачу создал Вася вчера.",
+        "Задачу создал пользователь вчера.",
+        "Задачу создал наш менеджер вчера.",
+        "Напоминание поставил подрядчик.",
+        "Напоминание поставила Оля утром.",
+    ):
+        assert ResponseGenerator._enforce_operation_receipts(text, state) == text
 
 
-def test_group_target_memory_ids_are_taken_only_from_current_event_metadata() -> None:
-    event = EventEnvelope(
+def test_object_first_bot_claim_without_receipt_is_still_blocked() -> None:
+    state = _receipts()
+    assert "Задачу не создавал" in ResponseGenerator._enforce_operation_receipts(
+        "Задачу создал вчера.", state
+    )
+    assert "Напоминание не ставил" in ResponseGenerator._enforce_operation_receipts(
+        "Напоминание поставил на завтра.", state
+    )
+
+
+class FakeInterventionRepo:
+    def __init__(self, resolved=()):
+        self.resolved = tuple(resolved)
+        self.calls = []
+
+    def selected_memory_ids_for_bot_message(self, **kwargs):
+        self.calls.append(kwargs)
+        return self.resolved
+
+
+def _pipeline_with_interventions(repo):
+    pipeline = object.__new__(GroupPipeline)
+    pipeline.intervention_repo = repo
+    return pipeline
+
+
+def _forget_event(*, metadata=None, reply_to="700"):
+    return EventEnvelope(
         event_id="tg:501",
-        event_type=EventType.GROUP_MESSAGE,
+        event_type=EventType.REPLY_TO_BOT,
         occurred_at="2026-09-17T09:00:00+00:00",
         scope_type=ScopeType.GROUP,
         scope_id="-100777",
         actor_user_id="11",
         message_id="501",
+        reply_to_message_id=reply_to,
         text="забудь это",
-        metadata={"target_memory_ids": ["mem-a", "", 42]},
+        metadata=metadata or {},
     )
-    assert GroupPipeline._target_memory_ids(event) == ("mem-a", "42")
 
-    event_without_targets = event.model_copy(update={"metadata": {}})
-    assert GroupPipeline._target_memory_ids(event_without_targets) == ()
+
+def test_group_target_memory_ids_prefer_explicit_current_event_metadata() -> None:
+    repo = FakeInterventionRepo(("from-reply",))
+    pipeline = _pipeline_with_interventions(repo)
+    event = _forget_event(metadata={"target_memory_ids": ["mem-a", "", 42]})
+    assert pipeline._target_memory_ids(event) == ("mem-a", "42")
+    assert repo.calls == []
+
+
+def test_group_forget_resolves_memories_from_replied_bot_intervention() -> None:
+    repo = FakeInterventionRepo(("mem-a", "mem-b"))
+    pipeline = _pipeline_with_interventions(repo)
+    event = _forget_event()
+    assert pipeline._target_memory_ids(event) == ("mem-a", "mem-b")
+    assert repo.calls == [
+        {
+            "scope_type": ScopeType.GROUP,
+            "scope_id": "-100777",
+            "telegram_message_id": "700",
+        }
+    ]
+
+
+def test_group_forget_without_resolvable_reply_is_safe_noop() -> None:
+    repo = FakeInterventionRepo(())
+    pipeline = _pipeline_with_interventions(repo)
+    assert pipeline._target_memory_ids(_forget_event(reply_to=None)) == ()
