@@ -1,0 +1,82 @@
+name: finalize issue92 pre-mutation matching
+
+on:
+  push:
+    branches:
+      - fix/v2-trusted-memory-feedback
+    paths:
+      - .github/workflows/finalize-issue92-pre-mutation-matching.yml
+
+permissions:
+  contents: write
+
+jobs:
+  patch-test-push:
+    runs-on: ubuntu-24.04
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: nenoy_test
+          POSTGRES_PASSWORD: nenoy_test
+          POSTGRES_DB: nenoy_v2_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U nenoy_test -d nenoy_v2_test"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    env:
+      NENOY_V2_ENV: test
+      NENOY_V2_TEST_DATABASE_URL: postgresql://nenoy_test:nenoy_test@127.0.0.1:5432/nenoy_v2_test
+      EXPECTED_BASE: d0ccaa28a5b99b11e44a4be3e53781b5460442c3
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          ref: fix/v2-trusted-memory-feedback
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Verify trusted base is ancestor
+        run: git merge-base --is-ancestor "$EXPECTED_BASE" HEAD
+
+      - name: Apply bounded pre-mutation matcher fix
+        run: python .github/scripts/finalize_issue92_pre_mutation_matching.py
+
+      - name: Install dependencies
+        run: python -m pip install -r requirements.txt
+
+      - name: Import smoke
+        run: python -c "import app_v2"
+
+      - name: Run focused regressions
+        run: >-
+          pytest
+          tests_v2/unit/test_memory_mapper.py
+          tests_v2/unit/test_issue92_memory_corrections.py
+          tests_v2/integration/test_trusted_feedback_memory_postgres.py
+          -q
+
+      - name: Run full v2 suite
+        run: pytest tests_v2 -q
+
+      - name: Commit verified fix and remove temporary launcher files
+        run: |
+          rm .github/workflows/finalize-issue92-pre-mutation-matching.yml
+          rm .github/scripts/finalize_issue92_pre_mutation_matching.py
+          git add -A \
+            .github/workflows/finalize-issue92-pre-mutation-matching.yml \
+            .github/scripts/finalize_issue92_pre_mutation_matching.py \
+            app_v2/services/memory_mapper.py \
+            tests_v2/unit/test_memory_mapper.py \
+            tests_v2/integration/test_trusted_feedback_memory_postgres.py
+          git diff --cached --check
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git commit -m "fix(v2): resolve edited memories before mutation"
+          git push origin HEAD:fix/v2-trusted-memory-feedback
