@@ -46,7 +46,10 @@ jobs:
         run: git merge-base --is-ancestor "$EXPECTED_BASE" HEAD
 
       - name: Apply bounded pre-mutation matcher fix
-        run: python .github/scripts/finalize_issue92_pre_mutation_matching.py
+        run: |
+          python .github/scripts/finalize_issue92_pre_mutation_matching.py
+          sed -i 's/message_id="880020001"/message_id="880009999"/' tests_v2/integration/test_trusted_feedback_memory_postgres.py
+          test "$(grep -c 'message_id="880009999"' tests_v2/integration/test_trusted_feedback_memory_postgres.py)" -ge 1
 
       - name: Install dependencies
         run: python -m pip install -r requirements.txt
