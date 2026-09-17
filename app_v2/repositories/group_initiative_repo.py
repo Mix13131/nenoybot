@@ -64,7 +64,14 @@ class GroupInitiativeRepository:
                     f.created_at,
                     ROW_NUMBER() OVER (
                         PARTITION BY f.scope_id, f.intervention_id, f.user_id
-                        ORDER BY f.created_at DESC, f.id DESC
+                        ORDER BY
+                            CASE
+                                WHEN (f.payload ->> 'source_event_id') ~ '^tg:[0-9]+$'
+                                THEN split_part(f.payload ->> 'source_event_id', ':', 2)::bigint
+                                ELSE NULL
+                            END DESC NULLS LAST,
+                            f.created_at DESC,
+                            f.id DESC
                     ) AS rn
                 FROM feedback_events f
                 WHERE f.scope_id=%s
