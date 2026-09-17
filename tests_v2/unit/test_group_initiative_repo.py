@@ -38,7 +38,11 @@ def test_feedback_count_uses_latest_reaction_state_per_voter() -> None:
     normalized = " ".join(sql.split())
     assert "ROW_NUMBER() OVER" in normalized
     assert "PARTITION BY f.scope_id, f.intervention_id, f.user_id" in normalized
-    assert "ORDER BY f.created_at DESC, f.id DESC" in normalized
+    assert "payload ->> 'source_event_id'" in normalized
+    assert "split_part(f.payload ->> 'source_event_id', ':', 2)::bigint" in normalized
+    assert "DESC NULLS LAST" in normalized
+    assert "f.created_at DESC" in normalized
+    assert "f.id DESC" in normalized
     assert "f.user_id IS NOT NULL" in normalized
     assert "f.intervention_id IS NOT NULL" in normalized
     # Psycopg parameterized SQL must escape a literal percent as %% so the
