@@ -628,37 +628,99 @@ class MemoryMapper:
                         reason="edited_source_cleared",
                     )
 
-                by_slot: dict[int, MemoryCard] = {}
+                # Resolve the full old↔new mapping before the first persistence
+                # mutation. Exact semantic identity is stronger than positional
+                # slots because removing an earlier fact renumbers current slots.
+                # Positional fallback is allowed only when cardinality is stable
+                # and the remaining mapping is provably one-to-one.
+                semantic_cards: dict[str, list[MemoryCard]] = {}
                 for card in stable_cards:
-                    slot = card.payload.get("source_candidate_index")
-                    if not isinstance(slot, int) or slot in by_slot:
-                        try:
-                            for stale in stable_cards:
-                                kept, archived_id = self._detach_source_from_card(event, stale, source_evidence)
-                                if kept is not None:
-                                    written.append(kept)
-                                if archived_id is not None:
-                                    forgotten.append(archived_id)
-                        except Exception as exc:
-                            return MapperResult(
-                                written=tuple(written),
-                                forgotten_ids=tuple(forgotten),
-                                failed=True,
-                                reason=f"mapper_failure:{type(exc).__name__}",
-                            )
+                    key = str(card.payload.get("semantic_key") or "").strip()
+                    if key:
+                        semantic_cards.setdefault(key, []).append(card)
+
+                resolved_matches: dict[int, MemoryCard | None] = {}
+                mapped_ids: set[str] = set()
+                pending: list[int] = []
+                seen_new_keys: set[str] = set()
+                for index, (candidate, _evidence, _subjects) in enumerate(prepared):
+                    semantic_key = str(candidate["semantic_key"]).strip()
+                    if semantic_key in seen_new_keys:
                         return MapperResult(
-                            written=tuple(written),
-                            forgotten_ids=tuple(forgotten),
                             failed=True,
                             reason="edited_source_reconciliation_ambiguous",
                         )
-                    by_slot[slot] = card
+                    seen_new_keys.add(semantic_key)
+                    matches = [
+                        card for card in semantic_cards.get(semantic_key, ())
+                        if card.id not in mapped_ids
+                    ]
+                    if len(matches) > 1:
+                        return MapperResult(
+                            failed=True,
+                            reason="edited_source_reconciliation_ambiguous",
+                        )
+                    if len(matches) == 1:
+                        resolved_matches[index] = matches[0]
+                        mapped_ids.add(matches[0].id)
+                    else:
+                        pending.append(index)
+
+                unmatched_stable = [card for card in stable_cards if card.id not in mapped_ids]
+                if pending and unmatched_stable:
+                    if len(pending) == 1 and len(unmatched_stable) == 1:
+                        # With exactly one old and one new unmatched object, the
+                        # mapping is unambiguous even if a legacy/shared card no
+                        # longer carries a source-local slot.
+                        index = pending[0]
+                        resolved_matches[index] = unmatched_stable[0]
+                        mapped_ids.add(unmatched_stable[0].id)
+                    elif len(prepared) == len(stable_cards) and len(pending) == len(unmatched_stable):
+                        by_slot: dict[int, MemoryCard] = {}
+                        for card in unmatched_stable:
+                            slot = card.payload.get("source_candidate_index")
+                            if not isinstance(slot, int) or slot in by_slot:
+                                return MapperResult(
+                                    failed=True,
+                                    reason="edited_source_reconciliation_ambiguous",
+                                )
+                            by_slot[slot] = card
+                        slot_mapped_ids: set[str] = set()
+                        for index in pending:
+                            candidate = prepared[index][0]
+                            slot = candidate.get("_source_candidate_index")
+                            if not isinstance(slot, int):
+                                return MapperResult(
+                                    failed=True,
+                                    reason="edited_source_reconciliation_ambiguous",
+                                )
+                            matched = by_slot.get(slot)
+                            if matched is None or matched.id in slot_mapped_ids:
+                                return MapperResult(
+                                    failed=True,
+                                    reason="edited_source_reconciliation_ambiguous",
+                                )
+                            resolved_matches[index] = matched
+                            slot_mapped_ids.add(matched.id)
+                            mapped_ids.add(matched.id)
+                    else:
+                        # Candidate insertion/removal plus an identity change is
+                        # not safely resolvable from position. Reject before any
+                        # detach/archive/update rather than guessing.
+                        return MapperResult(
+                            failed=True,
+                            reason="edited_source_reconciliation_ambiguous",
+                        )
+                elif pending:
+                    # All existing cards were matched semantically; remaining
+                    # candidates are genuine additions to this source.
+                    for index in pending:
+                        resolved_matches[index] = None
 
                 used_ids: set[str] = set()
                 try:
-                    for candidate, evidence, subjects in prepared:
-                        slot = int(candidate["_source_candidate_index"])
-                        matched = by_slot.get(slot)
+                    for index, (candidate, evidence, subjects) in enumerate(prepared):
+                        matched = resolved_matches[index]
                         semantic_key = str(candidate["semantic_key"]).strip()
                         old_semantic_key = (
                             str(matched.payload.get("semantic_key") or "").strip()

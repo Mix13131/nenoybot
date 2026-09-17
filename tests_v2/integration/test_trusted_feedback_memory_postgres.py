@@ -504,3 +504,58 @@ def test_rejected_edit_candidate_does_not_erase_postgres_memory() -> None:
         assert row[1][0]["excerpt"] == "Альфа отправится 20-го"
         conn.execute("DELETE FROM memory_cards WHERE scope_type='personal' AND scope_id=%s", (scope_id,))
         conn.commit()
+
+
+# issue92-pre-mutation-matching-postgres-final
+
+def test_edit_retaining_later_candidate_uses_semantic_identity_postgres() -> None:
+    psycopg, database_url = _psycopg_and_url()
+    scope_id = f"it-retain-beta-{uuid.uuid4().hex}"
+    adapter = _EditAdapter([
+        {"candidates": [
+            _edit_candidate("alpha:planned", "Альфа запланирована.", "Альфа отправится 20-го"),
+            _edit_candidate("beta:900", "Бета стоит 900 USD.", "Бета стоит 900 USD"),
+        ]},
+        {"candidates": [
+            _edit_candidate("beta:900", "Бета стоит 900 USD.", "Бета стоит 900 USD"),
+        ]},
+    ])
+    base = EventEnvelope(
+        event_id=f"it:{scope_id}:original",
+        event_type=EventType.PRIVATE_MESSAGE,
+        occurred_at=NOW,
+        scope_type=ScopeType.PERSONAL,
+        scope_id=scope_id,
+        actor_user_id="991000001",
+        message_id="880009999",
+        text="Альфа отправится 20-го. Бета стоит 900 USD.",
+    )
+    edited = base.model_copy(update={
+        "event_id": f"it:{scope_id}:edit",
+        "event_type": EventType.EDITED_MESSAGE,
+        "occurred_at": NOW + timedelta(minutes=5),
+        "text": "Бета стоит 900 USD.",
+    })
+    with psycopg.connect(database_url) as conn:
+        mapper = MemoryMapper(store=MemoryMapperStore(MemoryRepository(conn)), adapter=adapter)
+        first = mapper.map_event(base)
+        alpha = next(card for card in first.written if card.payload["semantic_key"] == "alpha:planned")
+        beta = next(card for card in first.written if card.payload["semantic_key"] == "beta:900")
+        result = mapper.map_event(edited)
+        assert result.failed is False
+        assert result.forgotten_ids == (alpha.id,)
+        rows = dict(conn.execute(
+            "SELECT id, status FROM memory_cards WHERE scope_type='personal' AND scope_id=%s",
+            (scope_id,),
+        ).fetchall())
+        assert rows[alpha.id] == "archived"
+        assert rows[beta.id] in {"candidate", "active"}
+        beta_row = conn.execute(
+            "SELECT payload ->> 'semantic_key', summary, evidence FROM memory_cards WHERE id=%s",
+            (beta.id,),
+        ).fetchone()
+        assert beta_row[0] == "beta:900"
+        assert beta_row[1] == "Бета стоит 900 USD."
+        assert beta_row[2][0]["excerpt"] == "Бета стоит 900 USD"
+        conn.execute("DELETE FROM memory_cards WHERE scope_type='personal' AND scope_id=%s", (scope_id,))
+        conn.commit()

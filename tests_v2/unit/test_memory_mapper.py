@@ -775,3 +775,114 @@ def test_weaker_single_source_edit_demotes_active_card_and_does_not_raise_confid
     assert corrected.status is MemoryStatus.CANDIDATE
     assert corrected.memory_type == "observation"
     assert corrected.confidence <= first.confidence
+
+
+# issue92-pre-mutation-matching-final
+
+def test_ambiguous_edited_source_fails_before_any_memory_mutation():
+    store = FakeStore()
+    adapter = FakeAdapter(responses=[
+        {"candidates": [
+            candidate(semantic_key="alpha:old", summary="Альфа старая.", evidence_excerpt="Альфа старая"),
+            candidate(semantic_key="beta:old", summary="Бета старая.", evidence_excerpt="Бета старая"),
+        ]},
+        {"candidates": [
+            candidate(semantic_key="alpha:new", summary="Альфа новая.", evidence_excerpt="Альфа новая"),
+            candidate(semantic_key="beta:new", summary="Бета новая.", evidence_excerpt="Бета новая"),
+        ]},
+    ])
+    mapper = MemoryMapper(store=store, adapter=adapter)
+    base = event("Альфа старая. Бета старая.", message_id="m-ambiguous")
+    first = mapper.map_event(base)
+    assert len(first.written) == 2
+
+    snapshots = {}
+    for card in first.written:
+        payload = dict(card.payload)
+        payload.pop("source_candidate_index", None)
+        legacy = card.model_copy(update={"payload": payload})
+        store.cards[card.id] = legacy
+        snapshots[card.id] = legacy
+
+    edited = base.model_copy(update={
+        "event_type": EventType.EDITED_MESSAGE,
+        "text": "Альфа новая. Бета новая.",
+        "occurred_at": NOW + timedelta(minutes=1),
+    })
+    result = mapper.map_event(edited)
+
+    assert result.failed is True
+    assert result.reason == "edited_source_reconciliation_ambiguous"
+    assert result.written == ()
+    assert result.forgotten_ids == ()
+    assert store.cards == snapshots
+    assert all(card.status is not MemoryStatus.ARCHIVED for card in store.cards.values())
+
+
+def test_edit_retaining_later_candidate_matches_semantic_identity_not_renumbered_slot():
+    from app_v2.services.operation_receipts import personal_operation_receipts
+
+    store = FakeStore()
+    adapter = FakeAdapter(responses=[
+        {"candidates": [
+            candidate(semantic_key="alpha:planned", summary="Альфа запланирована.", evidence_excerpt="Альфа отправится 20-го"),
+            candidate(semantic_key="beta:900", summary="Бета стоит 900 USD.", evidence_excerpt="Бета стоит 900 USD"),
+        ]},
+        {"candidates": [
+            candidate(semantic_key="beta:900", summary="Бета стоит 900 USD.", evidence_excerpt="Бета стоит 900 USD"),
+        ]},
+    ])
+    mapper = MemoryMapper(store=store, adapter=adapter)
+    base = event("Альфа отправится 20-го. Бета стоит 900 USD.", message_id="m-retain-beta")
+    first = mapper.map_event(base)
+    alpha = next(card for card in first.written if card.payload["semantic_key"] == "alpha:planned")
+    beta = next(card for card in first.written if card.payload["semantic_key"] == "beta:900")
+
+    edited = base.model_copy(update={
+        "event_type": EventType.EDITED_MESSAGE,
+        "text": "Бета стоит 900 USD.",
+        "occurred_at": NOW + timedelta(minutes=1),
+    })
+    result = mapper.map_event(edited)
+
+    assert result.failed is False
+    assert result.written == ()
+    assert result.forgotten_ids == (alpha.id,)
+    assert store.cards[alpha.id].status is MemoryStatus.ARCHIVED
+    assert store.cards[beta.id].status is not MemoryStatus.ARCHIVED
+    assert store.cards[beta.id].payload["semantic_key"] == "beta:900"
+    assert store.cards[beta.id].summary == "Бета стоит 900 USD."
+    assert store.cards[beta.id].evidence[0].excerpt == "Бета стоит 900 USD"
+    receipt = personal_operation_receipts(result)["memory"]
+    assert receipt["changed"] is True
+    assert receipt["forgotten_ids"] == [alpha.id]
+
+
+def test_removed_plus_identity_changed_candidate_fails_closed_without_guessing():
+    store = FakeStore()
+    adapter = FakeAdapter(responses=[
+        {"candidates": [
+            candidate(semantic_key="alpha:old", summary="Альфа старая.", evidence_excerpt="Альфа старая"),
+            candidate(semantic_key="beta:old", summary="Бета старая.", evidence_excerpt="Бета старая"),
+        ]},
+        {"candidates": [
+            candidate(semantic_key="beta:new", summary="Бета новая.", evidence_excerpt="Бета новая"),
+        ]},
+    ])
+    mapper = MemoryMapper(store=store, adapter=adapter)
+    base = event("Альфа старая. Бета старая.", message_id="m-remove-change")
+    first = mapper.map_event(base)
+    before = dict(store.cards)
+    edited = base.model_copy(update={
+        "event_type": EventType.EDITED_MESSAGE,
+        "text": "Бета новая.",
+        "occurred_at": NOW + timedelta(minutes=1),
+    })
+
+    result = mapper.map_event(edited)
+    assert result.failed is True
+    assert result.reason == "edited_source_reconciliation_ambiguous"
+    assert result.written == ()
+    assert result.forgotten_ids == ()
+    assert store.cards == before
+    assert {card.id for card in first.written} == set(store.cards)
