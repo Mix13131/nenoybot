@@ -22,7 +22,7 @@ class GeneratedResponse:
     usage_id: str
 
 
-_CLAIM_BOUNDARY = r"(?:^|[.!?;:,]\s+)"
+_CLAIM_BOUNDARY = r"(?:(?:^|\n)[ \t]*(?:(?:[-*+•]|\d+[.)])[ \t]+)?|[.!?;:,][ \t]+)"
 _MEMORY_SAVE_RE = re.compile(
     _CLAIM_BOUNDARY
     + r"(?:(?:я|мы)\s+)?(?:"
@@ -174,7 +174,7 @@ class ResponseGenerator:
 
     @staticmethod
     def _is_third_party_object_first(match: re.Match[str], text: str) -> bool:
-        fragment = match.group(0).lower().lstrip(" .!?;:,")
+        fragment = match.group(0).lower().lstrip(" \t\r\n.!?;:,-*+•0123456789)")
         if not fragment.startswith(_OBJECT_FIRST_PREFIXES):
             return False
         token_match = _NEXT_TOKEN_RE.match(text[match.end() :])

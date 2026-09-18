@@ -357,3 +357,36 @@ def test_empty_model_text_is_rejected():
     generator = ResponseGenerator(adapter=FakeAdapter(text="   "))
     with pytest.raises(ResponseGenerationError, match="empty text"):
         generator.generate(_context())
+
+
+@pytest.mark.parametrize(
+    "text, expected",
+    [
+        ("- Задача создана.", "Задачу не создавал"),
+        ("Результат:\n- Напоминание поставлено.", "Напоминание не ставил"),
+        ("Результат\nЗапись сохранена в памяти.", "В память это не записано"),
+        ("1. Задача создана.", "Задачу не создавал"),
+        ("* Напоминание поставлено.", "Напоминание не ставил"),
+    ],
+)
+def test_operation_claims_at_line_and_markdown_list_boundaries_require_receipts(text, expected):
+    result = ResponseGenerator(adapter=FakeAdapter(text=text)).generate(
+        _context(action_state=receipts(memory_changed=False))
+    )
+    assert expected in result.text
+    assert result.text != text
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "- Задачу создал пользователь вчера.",
+        "* Напоминание поставил подрядчик.",
+        "1. Запись в память сохранила сотрудница.",
+    ],
+)
+def test_markdown_list_third_party_action_facts_are_not_rewritten(text):
+    result = ResponseGenerator(adapter=FakeAdapter(text=text)).generate(
+        _context(action_state=receipts(memory_changed=False))
+    )
+    assert result.text == text
