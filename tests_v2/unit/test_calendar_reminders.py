@@ -41,6 +41,14 @@ def test_today_tomorrow_and_explicit_timezone():
     assert service._timezone("в 9 Europe/Berlin") == "Europe/Berlin"
 
 
+def test_complete_valid_iana_timezone_identifiers():
+    service = GroupReminderService(FakeReminderRepo())
+    assert service._timezone("в 9 America/Argentina/Buenos_Aires") == "America/Argentina/Buenos_Aires"
+    assert service._timezone("в 9 America/Indiana/Indianapolis") == "America/Indiana/Indianapolis"
+    assert service._timezone("в 9 UTC") == "UTC"
+    assert service._timezone("в 9 Invalid/Nowhere") is None
+
+
 def test_dst_gap_advances_and_fold_uses_first_occurrence():
     gap = resolve_local(datetime(2026, 3, 29).date(), 2, 30, "Europe/Berlin")
     assert (gap.hour, gap.minute) == (3, 0)
