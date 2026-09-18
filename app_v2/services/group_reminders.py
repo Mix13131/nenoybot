@@ -41,7 +41,9 @@ _CALENDAR_RE = re.compile(
     r".*?\bв\s+(?P<hour>[01]?\d|2[0-3])(?::(?P<minute>[0-5]\d))?(?:\s*(?:утра))?",
     flags=re.IGNORECASE,
 )
-_TIMEZONE_TOKEN_RE = re.compile(r"(?<![A-Za-z0-9_+./-])([A-Za-z][A-Za-z0-9_+.-]*(?:/[A-Za-z0-9_+.-]+)*)(?![A-Za-z0-9_+./-])")
+_TIMEZONE_TOKEN_RE = re.compile(
+    r"(?<![A-Za-z0-9_+./-])(UTC|[A-Za-z][A-Za-z0-9_+.-]*/[A-Za-z0-9_+.-]+(?:/[A-Za-z0-9_+.-]+)*)(?![A-Za-z0-9_+./-])"
+)
 _TZ_ALIASES = {"по московскому времени": "Europe/Moscow", "мск": "Europe/Moscow"}
 
 _MIN_RECURRING_INTERVAL_SECONDS = 15 * 60
