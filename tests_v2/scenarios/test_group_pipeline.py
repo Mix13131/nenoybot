@@ -156,6 +156,19 @@ def test_ordinary_group_chat_is_silent() -> None:
     assert p.response_generator.calls == []
 
 
+def test_low_signal_ordinary_group_message_does_not_trigger_mapper() -> None:
+    mapper = FakeMemoryMapper()
+    pipeline(mapper=mapper).process(event(text="ок"))
+    assert mapper.calls == []
+
+
+def test_low_signal_group_edit_always_reaches_mapper_reconciliation() -> None:
+    mapper = FakeMemoryMapper(memory_ids=())
+    pipeline(mapper=mapper).process(event(EventType.EDITED_MESSAGE, text="ок"))
+    assert len(mapper.calls) == 1
+    assert mapper.calls[0][0].event_type is EventType.EDITED_MESSAGE
+
+
 def test_direct_mention_replies_despite_silence_first() -> None:
     p=pipeline()
     result=p.process(event(EventType.DIRECT_MENTION, text="@nenoy что думаешь?"))
