@@ -37,13 +37,14 @@ def test_feedback_count_uses_latest_reaction_state_per_voter() -> None:
     sql, params = conn.calls[0]
     normalized = " ".join(sql.split())
     assert "ROW_NUMBER() OVER" in normalized
-    assert "PARTITION BY f.scope_id, f.intervention_id, f.user_id" in normalized
+    assert "PARTITION BY f.scope_id, f.intervention_id, COALESCE(" in normalized
+    assert "payload ->> 'reactor_key'" in normalized
     assert "payload ->> 'source_event_id'" in normalized
     assert "split_part(f.payload ->> 'source_event_id', ':', 2)::bigint" in normalized
     assert "DESC NULLS LAST" in normalized
     assert "f.created_at DESC" in normalized
     assert "f.id DESC" in normalized
-    assert "f.user_id IS NOT NULL" in normalized
+    assert "f.user_id IS NOT NULL" not in normalized
     assert "f.intervention_id IS NOT NULL" in normalized
     # Psycopg parameterized SQL must escape a literal percent as %% so the
     # server receives the intended LIKE 'reaction_%' pattern.

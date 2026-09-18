@@ -83,6 +83,15 @@ def _unique_in_order(values: list[str]) -> list[str]:
     return result
 
 
+def _reaction_reactor_key(event: EventEnvelope) -> str | None:
+    if event.actor_user_id is not None and str(event.actor_user_id).strip():
+        return f"user:{event.actor_user_id}"
+    actor_chat_id = event.metadata.get("actor_chat_id")
+    if actor_chat_id is None or not str(actor_chat_id).strip():
+        return None
+    return f"actor_chat:{actor_chat_id}"
+
+
 def _reaction_type(event: EventEnvelope) -> tuple[str, float, dict[str, Any]]:
     old_items = event.metadata.get("old_reaction") or []
     new_items = event.metadata.get("new_reaction") or []
@@ -187,6 +196,9 @@ class FeedbackCollector:
             if intervention_id is None:
                 return FeedbackCollectionResult(None, None)
             feedback_type, value, extra_payload = _reaction_type(event)
+            reactor_key = _reaction_reactor_key(event)
+            if reactor_key is not None:
+                extra_payload["reactor_key"] = reactor_key
         else:
             if (
                 event.event_type in {EventType.REPLY_TO_BOT, EventType.REPLY_TO_BOT_MESSAGE}

@@ -19,6 +19,12 @@ END DESC NULLS LAST,
 f.created_at DESC,
 f.id DESC
 """.strip()
+_REACTION_ACTOR_SQL = """
+COALESCE(
+    'user:' || f.user_id::text,
+    NULLIF(f.payload ->> 'reactor_key', '')
+)
+""".strip()
 
 
 class AnalyticsRepository:
@@ -132,13 +138,13 @@ class AnalyticsRepository:
             f"""WITH ranked_reactions AS (
                     SELECT f.*,
                            ROW_NUMBER() OVER (
-                               PARTITION BY f.scope_id, f.intervention_id, f.user_id
+                               PARTITION BY f.scope_id, f.intervention_id, {_REACTION_ACTOR_SQL}
                                ORDER BY {_REACTION_ORDER_SQL}
                            ) AS rn
                     FROM feedback_events f
                     WHERE f.feedback_type LIKE 'reaction_%%'
                       AND f.intervention_id IS NOT NULL
-                      AND f.user_id IS NOT NULL
+                      AND {_REACTION_ACTOR_SQL} IS NOT NULL
                       AND f.created_at < %s
                       {feedback_scope}
                 )
@@ -165,13 +171,13 @@ class AnalyticsRepository:
             f"""WITH ranked_reactions AS (
                     SELECT f.*,
                            ROW_NUMBER() OVER (
-                               PARTITION BY f.scope_id, f.intervention_id, f.user_id
+                               PARTITION BY f.scope_id, f.intervention_id, {_REACTION_ACTOR_SQL}
                                ORDER BY {_REACTION_ORDER_SQL}
                            ) AS rn
                     FROM feedback_events f
                     WHERE f.feedback_type LIKE 'reaction_%%'
                       AND f.intervention_id IS NOT NULL
-                      AND f.user_id IS NOT NULL
+                      AND {_REACTION_ACTOR_SQL} IS NOT NULL
                       AND f.created_at < %s
                       {feedback_scope}
                 ),
@@ -219,13 +225,13 @@ class AnalyticsRepository:
             f"""WITH ranked_reactions AS (
                     SELECT f.*,
                            ROW_NUMBER() OVER (
-                               PARTITION BY f.scope_id, f.intervention_id, f.user_id
+                               PARTITION BY f.scope_id, f.intervention_id, {_REACTION_ACTOR_SQL}
                                ORDER BY {_REACTION_ORDER_SQL}
                            ) AS rn
                     FROM feedback_events f
                     WHERE f.feedback_type LIKE 'reaction_%%'
                       AND f.intervention_id IS NOT NULL
-                      AND f.user_id IS NOT NULL
+                      AND {_REACTION_ACTOR_SQL} IS NOT NULL
                       AND f.created_at < %s
                       {feedback_scope}
                 )
@@ -306,17 +312,18 @@ class AnalyticsRepository:
                         f.id,
                         f.intervention_id,
                         f.user_id,
+                        {_REACTION_ACTOR_SQL} AS reactor_key,
                         f.feedback_type,
                         f.payload,
                         f.created_at,
                         ROW_NUMBER() OVER (
-                            PARTITION BY f.scope_id, f.intervention_id, f.user_id
+                            PARTITION BY f.scope_id, f.intervention_id, {_REACTION_ACTOR_SQL}
                             ORDER BY {_REACTION_ORDER_SQL}
                         ) AS rn
                     FROM feedback_events f
                     JOIN replies r ON r.id=f.intervention_id
                     WHERE f.feedback_type LIKE 'reaction_%%'
-                      AND f.user_id IS NOT NULL
+                      AND {_REACTION_ACTOR_SQL} IS NOT NULL
                       AND f.created_at < %s
                 ),
                 current_states AS (
@@ -329,7 +336,7 @@ class AnalyticsRepository:
                     r.mode,
                     COUNT(DISTINCT r.id) AS interventions,
                     COUNT(c.id) AS reacting_states,
-                    COUNT(DISTINCT c.user_id) AS reacting_participants,
+                    COUNT(DISTINCT c.reactor_key) AS reacting_participants,
                     COUNT(DISTINCT CASE WHEN c.id IS NOT NULL THEN r.id END) AS reacted_interventions,
                     COUNT(*) FILTER (WHERE c.feedback_type='reaction_positive') AS positive_votes,
                     COUNT(*) FILTER (WHERE c.feedback_type='reaction_negative') AS negative_votes,

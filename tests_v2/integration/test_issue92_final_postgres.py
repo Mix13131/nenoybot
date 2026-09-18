@@ -289,3 +289,108 @@ def test_reaction_current_state_prefers_telegram_update_sequence_over_insert_ord
         conn.execute("DELETE FROM interventions WHERE id IN (%s,%s)", (intervention1, intervention2))
         conn.execute("DELETE FROM users WHERE id IN (%s,%s)", (user1, user2))
         conn.commit()
+
+
+def test_anonymous_actor_chat_reaction_current_state_postgres() -> None:
+    psycopg, database_url = _psycopg_and_url()
+    suffix = int(uuid.uuid4().hex[:10], 16)
+    scope_id = f"-100{suffix}"
+    other_scope_id = f"-200{suffix}"
+    since = NOW - timedelta(minutes=5)
+    until = NOW + timedelta(minutes=5)
+
+    with psycopg.connect(database_url) as conn:
+        intervention = conn.execute(
+            """
+            INSERT INTO interventions(
+                scope_type, scope_id, primary_action, mode,
+                reason_codes, policy_version, created_at
+            ) VALUES ('group', %s, 'reply', 'group_roast', '[]'::jsonb, 'test', %s)
+            RETURNING id
+            """,
+            (scope_id, NOW),
+        ).fetchone()[0]
+        other_intervention = conn.execute(
+            """
+            INSERT INTO interventions(
+                scope_type, scope_id, primary_action, mode,
+                reason_codes, policy_version, created_at
+            ) VALUES ('group', %s, 'reply', 'group_roast', '[]'::jsonb, 'test', %s)
+            RETURNING id
+            """,
+            (other_scope_id, NOW),
+        ).fetchone()[0]
+
+        def insert_actor_chat(feedback_id, scope, intervention_id, reactor_key, feedback_type, update_id):
+            value = 1.0 if feedback_type == "reaction_positive" else -1.0 if feedback_type == "reaction_negative" else 0.0
+            families = (
+                ["approval_support"] if feedback_type == "reaction_positive"
+                else ["explicit_negative"] if feedback_type == "reaction_negative"
+                else []
+            )
+            conn.execute(
+                """
+                INSERT INTO feedback_events(
+                    feedback_id, intervention_id, scope_id, user_id,
+                    feedback_type, value, payload, created_at
+                ) VALUES (%s,%s,%s,NULL,%s,%s,%s::jsonb,%s)
+                """,
+                (
+                    feedback_id,
+                    intervention_id,
+                    scope,
+                    feedback_type,
+                    value,
+                    json.dumps({
+                        "source_event_id": f"tg:{update_id}",
+                        "reactor_key": reactor_key,
+                        "reaction_families": families,
+                    }),
+                    NOW,
+                ),
+            )
+
+        actor_a = "actor_chat:-100900001"
+        actor_b = "actor_chat:-100900002"
+        insert_actor_chat("it:anon:a:positive", scope_id, intervention, actor_a, "reaction_positive", 400)
+        insert_actor_chat("it:anon:a:negative", scope_id, intervention, actor_a, "reaction_negative", 401)
+        insert_actor_chat("it:anon:b:positive", scope_id, intervention, actor_b, "reaction_positive", 402)
+        insert_actor_chat("it:anon:other:negative", other_scope_id, other_intervention, actor_a, "reaction_negative", 450)
+        conn.commit()
+
+        initiative = GroupInitiativeRepository(conn)
+        assert initiative.count_feedback_since(scope_id, ["reaction_positive"], since) == 1
+        assert initiative.count_feedback_since(scope_id, ["reaction_negative"], since) == 1
+
+        analytics_repo = AnalyticsRepository(conn)
+        quality = analytics_repo.reaction_quality_by_mode(since, until, scope_id)
+        assert len(quality) == 1
+        assert quality[0]["reacting_states"] == 2
+        assert quality[0]["reacting_participants"] == 2
+        assert quality[0]["positive_votes"] == 1
+        assert quality[0]["negative_votes"] == 1
+
+        counts = analytics_repo.group_counts(since, until, scope_id)
+        assert counts["reactions"] == 2
+        assert counts["negative_feedback"] == 1
+
+        insert_actor_chat("it:anon:a:removed", scope_id, intervention, actor_a, "reaction_removed", 403)
+        conn.commit()
+
+        assert initiative.count_feedback_since(scope_id, ["reaction_positive"], since) == 1
+        assert initiative.count_feedback_since(scope_id, ["reaction_negative"], since) == 0
+
+        quality_after = analytics_repo.reaction_quality_by_mode(since, until, scope_id)
+        assert len(quality_after) == 1
+        assert quality_after[0]["reacting_states"] == 1
+        assert quality_after[0]["reacting_participants"] == 1
+        assert quality_after[0]["positive_votes"] == 1
+        assert quality_after[0]["negative_votes"] == 0
+
+        counts_after = analytics_repo.group_counts(since, until, scope_id)
+        assert counts_after["reactions"] == 1
+        assert counts_after["negative_feedback"] == 0
+
+        conn.execute("DELETE FROM feedback_events WHERE scope_id IN (%s,%s)", (scope_id, other_scope_id))
+        conn.execute("DELETE FROM interventions WHERE id IN (%s,%s)", (intervention, other_intervention))
+        conn.commit()

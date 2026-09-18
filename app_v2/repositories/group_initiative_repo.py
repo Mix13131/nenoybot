@@ -5,6 +5,12 @@ from typing import Iterable
 
 
 _DIRECT_REASON_CODES = ("direct_mention", "reply_to_bot", "question_to_bot")
+_REACTION_ACTOR_SQL = """
+COALESCE(
+    'user:' || f.user_id::text,
+    NULLIF(f.payload ->> 'reactor_key', '')
+)
+""".strip()
 
 
 class GroupInitiativeRepository:
@@ -53,7 +59,7 @@ class GroupInitiativeRepository:
             return 0
 
         row = self.conn.execute(
-            """
+            f"""
             WITH ranked_reactions AS (
                 SELECT
                     f.id,
@@ -63,7 +69,7 @@ class GroupInitiativeRepository:
                     f.feedback_type,
                     f.created_at,
                     ROW_NUMBER() OVER (
-                        PARTITION BY f.scope_id, f.intervention_id, f.user_id
+                        PARTITION BY f.scope_id, f.intervention_id, {_REACTION_ACTOR_SQL}
                         ORDER BY
                             CASE
                                 WHEN (f.payload ->> 'source_event_id') ~ '^tg:[0-9]+$'
@@ -76,7 +82,7 @@ class GroupInitiativeRepository:
                 FROM feedback_events f
                 WHERE f.scope_id=%s
                   AND f.intervention_id IS NOT NULL
-                  AND f.user_id IS NOT NULL
+                  AND {_REACTION_ACTOR_SQL} IS NOT NULL
                   AND f.feedback_type LIKE 'reaction_%%'
             )
             SELECT

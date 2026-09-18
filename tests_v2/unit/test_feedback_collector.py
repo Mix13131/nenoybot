@@ -21,6 +21,7 @@ def evt(
     metadata=None,
     scope_type=ScopeType.GROUP,
     scope_id="-100777",
+    actor_user_id="123",
 ):
     return EventEnvelope(
         event_id=event_id,
@@ -28,7 +29,7 @@ def evt(
         occurred_at=NOW,
         scope_type=scope_type,
         scope_id=scope_id,
-        actor_user_id="123",
+        actor_user_id=actor_user_id,
         message_id=message_id,
         reply_to_message_id=reply_to,
         text=text,
@@ -85,6 +86,7 @@ def test_positive_reaction_is_attached_to_sent_bot_intervention() -> None:
     assert result.feedback.feedback_type == "reaction_positive"
     assert result.feedback.value == 1.0
     assert result.record is not None and result.record.intervention_id == 42
+    assert result.feedback.payload["reactor_key"] == "user:123"
     assert repo.bot_lookup == [("-100777", 88)]
 
 
@@ -268,3 +270,42 @@ def test_unrelated_group_message_is_not_recorded_as_feedback() -> None:
     )
     assert result.feedback is None
     assert result.record is None
+
+
+def test_anonymous_actor_chat_reaction_has_stable_reactor_key() -> None:
+    result = FeedbackCollector(FakeRepo()).collect(
+        evt(
+            EventType.REACTION_ADDED,
+            actor_user_id=None,
+            metadata={
+                "actor_chat_id": "-10099112233",
+                "actor_chat_type": "supergroup",
+                "new_reaction": [{"type": "emoji", "emoji": "👍"}],
+            },
+        )
+    )
+    assert result.feedback is not None
+    assert result.feedback.user_id is None
+    assert result.feedback.feedback_type == "reaction_positive"
+    assert result.feedback.payload["reactor_key"] == "actor_chat:-10099112233"
+
+
+def test_anonymous_actor_chat_reaction_retry_is_idempotent() -> None:
+    repo = FakeRepo()
+    collector = FeedbackCollector(repo)
+    event = evt(
+        EventType.REACTION_ADDED,
+        event_id="tg:anon-retry-1",
+        actor_user_id=None,
+        metadata={
+            "actor_chat_id": "-10099112233",
+            "new_reaction": [{"type": "emoji", "emoji": "👎"}],
+        },
+    )
+    first = collector.collect(event)
+    second = collector.collect(event)
+    assert first.feedback is not None
+    assert first.feedback.payload["reactor_key"] == "actor_chat:-10099112233"
+    assert first.record is not None and first.record.created is True
+    assert second.record is not None and second.record.created is False
+    assert first.record.id == second.record.id
