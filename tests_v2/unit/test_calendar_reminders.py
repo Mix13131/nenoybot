@@ -330,3 +330,72 @@ def test_one_shot_reference_uses_event_time_not_delayed_worker_time():
 
     assert completed.status == "scheduled"
     assert completed.due_at == datetime(2026, 1, 3, 9, 0, tzinfo=timezone.utc)
+
+
+def test_calendar_target_and_stop_on_reply_match_interval_metadata():
+    repo = FakeReminderRepo()
+    service = GroupReminderService(repo)
+    now = datetime(2026, 1, 2, 5, 0, tzinfo=timezone.utc)
+
+    action = service.maybe_schedule(
+        make_event(
+            text="НеНой, напоминай @alice каждый день в 19:00 Europe/Moscow, пока она не ответит",
+            event_type=EventType.DIRECT_MENTION,
+        ),
+        now=now,
+    )
+
+    assert action.status == "scheduled"
+    assert action.target_username == "alice"
+    assert action.stop_on_reply is True
+    payload = repo.created[0]["payload"]
+    assert payload["target_username"] == "alice"
+    assert payload["stop_on_reply"] is True
+    assert "@alice" in payload["text"]
+
+
+def test_calendar_target_and_stop_survive_timezone_clarification():
+    repo = FakeReminderRepo()
+    service = GroupReminderService(repo)
+    now = datetime(2026, 1, 2, 5, 0, tzinfo=timezone.utc)
+
+    first = service.maybe_schedule(
+        make_event(
+            text="НеНой, напоминай @alice каждый день в 19:00, пока она не ответит",
+            event_type=EventType.DIRECT_MENTION,
+        ),
+        now=now,
+    )
+    assert first.reason == "timezone_required"
+    assert repo.pending["payload"]["target_username"] == "alice"
+    assert repo.pending["payload"]["stop_on_reply"] is True
+
+    reply = make_event(
+        text="Europe/Moscow",
+        event_type=EventType.REPLY_TO_BOT,
+    ).model_copy(update={"occurred_at": now})
+    completed = service.maybe_schedule(reply, now=now)
+
+    assert completed.status == "scheduled"
+    assert completed.target_username == "alice"
+    assert completed.stop_on_reply is True
+    assert repo.created[0]["payload"]["target_username"] == "alice"
+    assert repo.created[0]["payload"]["stop_on_reply"] is True
+
+
+def test_multiple_calendar_times_fail_closed():
+    repo = FakeReminderRepo()
+    service = GroupReminderService(repo)
+    now = datetime(2026, 1, 2, 5, 0, tzinfo=timezone.utc)
+
+    action = service.maybe_schedule(
+        make_event(
+            text="НеНой, напоминай каждый день в 9:00 или в 10:00 Europe/Moscow",
+            event_type=EventType.DIRECT_MENTION,
+        ),
+        now=now,
+    )
+
+    assert action.status == "not_scheduled"
+    assert action.reason == "unsupported_time_expression"
+    assert repo.created == []
