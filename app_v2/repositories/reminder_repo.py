@@ -124,11 +124,27 @@ class ReminderRepository:
         )
         self.conn.commit()
 
-    def get_pending_calendar_intent(self, *, scope_id: str, actor_user_id: str):
+    def get_pending_calendar_intent(
+        self,
+        *,
+        scope_id: str,
+        actor_user_id: str,
+        message_thread_id: str | int | None = None,
+        max_age_hours: int = 24,
+    ):
+        if max_age_hours <= 0:
+            return None
+        thread_id = None if message_thread_id is None else str(message_thread_id)
         row = self.conn.execute(
             """SELECT id, source_event_id, payload FROM pending_calendar_intents
-               WHERE scope_type='group' AND scope_id=%s AND actor_user_id=%s AND status='pending'
-               ORDER BY created_at DESC LIMIT 1""", (scope_id, actor_user_id),
+               WHERE scope_type='group'
+                 AND scope_id=%s
+                 AND actor_user_id=%s
+                 AND status='pending'
+                 AND created_at >= CURRENT_TIMESTAMP - (%s * INTERVAL '1 hour')
+                 AND (payload ->> 'message_thread_id') IS NOT DISTINCT FROM %s
+               ORDER BY created_at DESC LIMIT 1""",
+            (scope_id, actor_user_id, max_age_hours, thread_id),
         ).fetchone()
         return None if row is None else {"id": int(row[0]), "source_event_id": row[1], "payload": dict(row[2])}
 
