@@ -25,6 +25,12 @@ class FakeReminderRepo:
         self.pending = {"id": 3, "source_event_id": kwargs["source_event_id"], "payload": kwargs["payload"]}
 
     def get_pending_calendar_intent(self, **kwargs):
+        if self.pending is None:
+            return None
+        expected = self.pending["payload"].get("message_thread_id")
+        actual = kwargs.get("message_thread_id")
+        if (None if expected is None else str(expected)) != (None if actual is None else str(actual)):
+            return None
         return self.pending
 
     def complete_pending_calendar_intent(self, intent_id):
