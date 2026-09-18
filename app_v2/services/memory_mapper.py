@@ -489,6 +489,14 @@ class MemoryMapper:
 
         written: list[MemoryCard] = []
         for candidate in candidates:
+            evidence = self._candidate_evidence(event, candidate, context_items)
+            if (
+                not str(candidate.get("semantic_key") or "").strip()
+                or evidence is None
+                or self._trusted_subject_keys(candidate, evidence) is None
+            ):
+                rejected_candidate = True
+                continue
             try:
                 card = self._upsert_candidate(
                     event,
@@ -790,6 +798,7 @@ class MemoryMapper:
                             evidence,
                             str(candidate["memory_type"]),
                             semantic_key,
+                            subjects,
                         )
                         destination_is_other_card = (
                             matched is not None
@@ -1056,21 +1065,22 @@ class MemoryMapper:
         candidate: dict[str, Any],
         evidence: MemoryEvidence,
         requested_memory_type: str,
+        trusted_subject_keys: Iterable[str],
     ) -> str | None:
         if not evidence.author_id:
             return None
 
         trusted_user = f"user:{evidence.author_id}"
-        model_subjects = {
+        trusted_subjects = {
             str(item).strip()
-            for item in candidate.get("subject_keys", [])
+            for item in trusted_subject_keys
             if str(item).strip()
         }
-        model_targets_author = trusted_user in model_subjects
+        trusted_targets_author = trusted_user in trusted_subjects
 
         if requested_memory_type in _DIRECT_STATEMENT_TYPES:
             return trusted_user
-        if requested_memory_type in {"goal", "plan", "preference"} and model_targets_author:
+        if requested_memory_type in {"goal", "plan", "preference"} and trusted_targets_author:
             return trusted_user
 
         # Explicit remembers and model observations may still be speaker-bound
@@ -1094,7 +1104,7 @@ class MemoryMapper:
             "мою", "моего", "моей", "моем", "моим", "моими",
             "i", "me", "my", "mine",
         }
-        if model_targets_author and tokens.intersection(first_person_tokens):
+        if trusted_targets_author and tokens.intersection(first_person_tokens):
             return trusted_user
         return None
 
@@ -1105,11 +1115,13 @@ class MemoryMapper:
         evidence: MemoryEvidence,
         requested_memory_type: str,
         semantic_key: str,
+        trusted_subject_keys: Iterable[str],
     ) -> MemoryCard | None:
         subject_user_key = self._person_specific_subject_key(
             candidate,
             evidence,
             requested_memory_type,
+            trusted_subject_keys,
         )
         if subject_user_key:
             finder = getattr(self.store, "find_semantic_match_for_subject", None)
@@ -1267,6 +1279,7 @@ class MemoryMapper:
             evidence,
             requested_memory_type,
             semantic_key,
+            subject_keys,
         )
         existing = semantic_existing
 
