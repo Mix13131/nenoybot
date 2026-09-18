@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import json
-from datetime import datetime, timezone
 from types import SimpleNamespace
 
 import pytest
@@ -47,7 +46,13 @@ def _personality(mode):
     }
 
 
-def _context(scope_type=ScopeType.PERSONAL, mode=ResponseMode.ASSISTANT, memories=()):
+def _context(
+    scope_type=ScopeType.PERSONAL,
+    mode=ResponseMode.ASSISTANT,
+    memories=(),
+    *,
+    action_state=None,
+):
     return GenerationContext(
         scope_type=scope_type,
         scope_id="u1" if scope_type is ScopeType.PERSONAL else "g1",
@@ -62,10 +67,31 @@ def _context(scope_type=ScopeType.PERSONAL, mode=ResponseMode.ASSISTANT, memorie
         hot_messages=({"message_id": "1", "text": "Привет"},),
         memories=tuple(memories),
         target_user_id="u1",
-        action_state={},
+        action_state=dict(action_state or {}),
         estimated_hot_tokens=20,
         estimated_memory_tokens=0,
     )
+
+
+def receipts(*, memory_changed=False, reminder=None, task=None):
+    memory = {
+        "status": "succeeded",
+        "changed": memory_changed,
+        "written_ids": ["m1"] if memory_changed else [],
+        "forgotten_ids": [],
+    }
+    task_receipt = task or {
+        "status": "not_attempted",
+        "changed": False,
+        "entity_ids": [],
+    }
+    reminder_receipt = reminder or {
+        "status": "not_attempted",
+        "changed": False,
+        "entity_ids": [],
+        "operation": None,
+    }
+    return {"operation_receipts": {"memory": memory, "task": task_receipt, "reminder": reminder_receipt}}
 
 
 def test_personal_prompt_selected_and_compact_personality_sent():
@@ -92,6 +118,7 @@ def test_group_prompt_selected_for_group_context():
     _, _, kwargs = adapter.calls[0]
     assert "Group Generator" in kwargs["instructions"]
     assert "не объясняй шутку" in kwargs["instructions"]
+    assert "operation_receipts" in kwargs["instructions"]
 
 
 def test_group_callback_without_memory_is_blocked_before_model_call():
@@ -124,6 +151,185 @@ def test_group_callback_with_memory_passes_grounded_memory_to_model():
     assert payload["memories"][0]["evidence"][0]["excerpt"] == "Уже еду"
 
 
+def test_operation_receipts_are_passed_to_model_payload():
+    action_state = receipts(memory_changed=True)
+    adapter = FakeAdapter(text="В память зафиксировал.")
+    ResponseGenerator(adapter=adapter).generate(_context(action_state=action_state))
+    payload = json.loads(adapter.calls[0][1])
+    assert payload["action_state"]["operation_receipts"]["memory"]["written_ids"] == ["m1"]
+    assert payload["action_state"]["operation_receipts"]["task"]["status"] == "not_attempted"
+
+
+def test_false_task_and_future_reminder_claims_are_replaced_with_truthful_status():
+    adapter = FakeAdapter(text="Принял. Задачу создал, пну 21.10.")
+    result = ResponseGenerator(adapter=adapter).generate(
+        _context(action_state=receipts(memory_changed=True))
+    )
+    assert "В память зафиксировал" in result.text
+    assert "Задачу не создавал" in result.text
+    assert "Напоминание не ставил" in result.text
+    assert "пну 21.10" not in result.text
+
+
+@pytest.mark.parametrize(
+    "text, expected",
+    [
+        ("Поставлю напоминание завтра.", "Напоминание не ставил"),
+        ("Я тебе напомню завтра.", "Напоминание не ставил"),
+        ("Задачу создам сейчас.", "Задачу не создавал"),
+        ("Запомню это.", "В память это не записано"),
+    ],
+)
+def test_future_bot_action_promises_are_blocked_without_receipt(text, expected):
+    adapter = FakeAdapter(text=text)
+    result = ResponseGenerator(adapter=adapter).generate(
+        _context(action_state=receipts(memory_changed=False))
+    )
+    assert expected in result.text
+    assert result.text != text
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "Вася создал задачу вчера.",
+        "Вася поставил напоминание себе на завтра.",
+        "Пользователь сказал: «Задачу создал, напоминание поставлю сам».",
+    ],
+)
+def test_third_party_or_quoted_action_statements_are_not_rewritten(text):
+    adapter = FakeAdapter(text=text)
+    result = ResponseGenerator(adapter=adapter).generate(
+        _context(action_state=receipts(memory_changed=False))
+    )
+    assert result.text == text
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "Задачу создал пользователь вчера.",
+        "Напоминание поставил подрядчик.",
+        "Запись в память сохранила сотрудница.",
+    ],
+)
+def test_lowercase_role_third_party_action_facts_are_not_rewritten(text):
+    result = ResponseGenerator(adapter=FakeAdapter(text=text)).generate(
+        _context(action_state=receipts(memory_changed=False))
+    )
+    assert result.text == text
+
+
+@pytest.mark.parametrize(
+    "text, expected",
+    [
+        ("Задачу создал я.", "Задачу не создавал"),
+        ("Задача создана мной.", "Задачу не создавал"),
+        ("Задача создана корректно.", "Задачу не создавал"),
+        ("Напоминание поставлено мной.", "Напоминание не ставил"),
+        ("Запись в память сохранена успешно.", "В память это не записано"),
+        ("Запись из памяти удалена мной.", "Из памяти ничего не удал"),
+    ],
+)
+def test_first_person_and_modifier_action_claims_require_receipts(text, expected):
+    result = ResponseGenerator(adapter=FakeAdapter(text=text)).generate(
+        _context(action_state=receipts(memory_changed=False))
+    )
+    assert expected in result.text
+    assert result.text != text
+
+
+def test_false_memory_claim_is_blocked_when_nothing_was_written():
+    adapter = FakeAdapter(text="Запомнил. Дальше разберёмся.")
+    result = ResponseGenerator(adapter=adapter).generate(
+        _context(action_state=receipts(memory_changed=False))
+    )
+    assert "В память это не записано" in result.text
+    assert result.text != adapter.text
+
+
+def test_partial_memory_claim_reports_committed_part_without_full_success():
+    action_state = {
+        "operation_receipts": {
+            "memory": {
+                "status": "partial",
+                "changed": True,
+                "written_ids": ["m1"],
+                "forgotten_ids": [],
+            },
+            "task": {"status": "not_attempted", "changed": False, "entity_ids": []},
+            "reminder": {
+                "status": "not_attempted",
+                "changed": False,
+                "entity_ids": [],
+                "operation": None,
+            },
+        }
+    }
+    adapter = FakeAdapter(text="Запомнил всё.")
+    result = ResponseGenerator(adapter=adapter).generate(_context(action_state=action_state))
+    assert "Часть памяти записана" in result.text
+    assert "операция завершилась не полностью" in result.text
+    assert "В память это не записано" not in result.text
+    assert result.text != adapter.text
+
+
+def test_real_group_reminder_create_may_be_confirmed():
+    reminder = {
+        "status": "succeeded",
+        "changed": True,
+        "entity_ids": ["42"],
+        "operation": "create",
+    }
+    adapter = FakeAdapter(text="Поставил напоминание. Буду пинать по расписанию.")
+    result = ResponseGenerator(adapter=adapter).generate(
+        _context(
+            ScopeType.GROUP,
+            ResponseMode.GROUP_DIRECT_REPLY,
+            action_state=receipts(reminder=reminder),
+        )
+    )
+    assert result.text == adapter.text
+
+
+def test_zero_cancelled_reminders_cannot_be_reported_as_cancelled():
+    reminder = {
+        "status": "succeeded",
+        "changed": False,
+        "entity_ids": [],
+        "operation": "cancel",
+        "cancelled_count": 0,
+    }
+    adapter = FakeAdapter(text="Остановил напоминание.")
+    result = ResponseGenerator(adapter=adapter).generate(
+        _context(
+            ScopeType.GROUP,
+            ResponseMode.GROUP_DIRECT_REPLY,
+            action_state=receipts(reminder=reminder),
+        )
+    )
+    assert "Активное напоминание не остановлено" in result.text
+
+
+def test_needs_clarification_never_turns_into_scheduled_claim():
+    reminder = {
+        "status": "needs_clarification",
+        "changed": False,
+        "entity_ids": [],
+        "operation": "create",
+    }
+    adapter = FakeAdapter(text="Поставил напоминание.")
+    result = ResponseGenerator(adapter=adapter).generate(
+        _context(
+            ScopeType.GROUP,
+            ResponseMode.GROUP_DIRECT_REPLY,
+            action_state=receipts(reminder=reminder),
+        )
+    )
+    assert "Напоминание не поставлено" in result.text
+    assert "уточнить время или адресата" in result.text
+
+
 def test_generator_rejects_non_reply_decision():
     adapter = FakeAdapter()
     generator = ResponseGenerator(adapter=adapter)
@@ -151,3 +357,36 @@ def test_empty_model_text_is_rejected():
     generator = ResponseGenerator(adapter=FakeAdapter(text="   "))
     with pytest.raises(ResponseGenerationError, match="empty text"):
         generator.generate(_context())
+
+
+@pytest.mark.parametrize(
+    "text, expected",
+    [
+        ("- Задача создана.", "Задачу не создавал"),
+        ("Результат:\n- Напоминание поставлено.", "Напоминание не ставил"),
+        ("Результат\nЗапись сохранена в памяти.", "В память это не записано"),
+        ("1. Задача создана.", "Задачу не создавал"),
+        ("* Напоминание поставлено.", "Напоминание не ставил"),
+    ],
+)
+def test_operation_claims_at_line_and_markdown_list_boundaries_require_receipts(text, expected):
+    result = ResponseGenerator(adapter=FakeAdapter(text=text)).generate(
+        _context(action_state=receipts(memory_changed=False))
+    )
+    assert expected in result.text
+    assert result.text != text
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "- Задачу создал пользователь вчера.",
+        "* Напоминание поставил подрядчик.",
+        "1. Запись в память сохранила сотрудница.",
+    ],
+)
+def test_markdown_list_third_party_action_facts_are_not_rewritten(text):
+    result = ResponseGenerator(adapter=FakeAdapter(text=text)).generate(
+        _context(action_state=receipts(memory_changed=False))
+    )
+    assert result.text == text

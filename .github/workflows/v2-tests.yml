@@ -10,6 +10,20 @@ jobs:
   test-v2:
     runs-on: ubuntu-latest
     timeout-minutes: 10
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: nenoy_test
+          POSTGRES_PASSWORD: nenoy_test
+          POSTGRES_DB: nenoy_v2_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U nenoy_test -d nenoy_v2_test"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -23,4 +37,5 @@ jobs:
       - name: Run v2 tests
         env:
           NENOY_V2_ENV: test
+          NENOY_V2_TEST_DATABASE_URL: postgresql://nenoy_test:nenoy_test@127.0.0.1:5432/nenoy_v2_test
         run: pytest tests_v2 -q

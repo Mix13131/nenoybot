@@ -5,6 +5,12 @@ from typing import Iterable
 
 
 _DIRECT_REASON_CODES = ("direct_mention", "reply_to_bot", "question_to_bot")
+_REACTION_ACTOR_SQL = """
+COALESCE(
+    'user:' || f.user_id::text,
+    NULLIF(f.payload ->> 'reactor_key', '')
+)
+""".strip()
 
 
 class GroupInitiativeRepository:
@@ -51,15 +57,53 @@ class GroupInitiativeRepository:
         types = [item for item in feedback_types if item]
         if not types:
             return 0
+
         row = self.conn.execute(
-            """
-            SELECT COUNT(*)
-            FROM feedback_events
-            WHERE scope_id=%s
-              AND created_at >= %s
-              AND feedback_type = ANY(%s::text[])
+            f"""
+            WITH ranked_reactions AS (
+                SELECT
+                    f.id,
+                    f.scope_id,
+                    f.intervention_id,
+                    f.user_id,
+                    f.feedback_type,
+                    f.created_at,
+                    ROW_NUMBER() OVER (
+                        PARTITION BY f.scope_id, f.intervention_id, {_REACTION_ACTOR_SQL}
+                        ORDER BY
+                            CASE
+                                WHEN (f.payload ->> 'source_event_id') ~ '^tg:[0-9]+$'
+                                THEN split_part(f.payload ->> 'source_event_id', ':', 2)::bigint
+                                ELSE NULL
+                            END DESC NULLS LAST,
+                            f.created_at DESC,
+                            f.id DESC
+                    ) AS rn
+                FROM feedback_events f
+                WHERE f.scope_id=%s
+                  AND f.intervention_id IS NOT NULL
+                  AND {_REACTION_ACTOR_SQL} IS NOT NULL
+                  AND f.feedback_type LIKE 'reaction_%%'
+            )
+            SELECT
+                (
+                    SELECT COUNT(*)
+                    FROM feedback_events f
+                    WHERE f.scope_id=%s
+                      AND f.created_at >= %s
+                      AND f.feedback_type = ANY(%s::text[])
+                      AND f.feedback_type NOT LIKE 'reaction_%%'
+                )
+                +
+                (
+                    SELECT COUNT(*)
+                    FROM ranked_reactions r
+                    WHERE r.rn=1
+                      AND r.created_at >= %s
+                      AND r.feedback_type = ANY(%s::text[])
+                )
             """,
-            (scope_id, since, types),
+            (scope_id, scope_id, since, types, since, types),
         ).fetchone()
         return int(row[0] if row else 0)
 

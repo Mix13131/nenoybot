@@ -67,3 +67,52 @@ class InterventionRepository:
             scope_id=scope_id,
             generated_text=generated_text,
         )
+
+    def selected_memory_ids_for_bot_message(
+        self,
+        *,
+        scope_type: ScopeType,
+        scope_id: str,
+        telegram_message_id: str | int | None,
+    ) -> tuple[str, ...]:
+        """Resolve memories behind one actually sent bot message in this scope.
+
+        This is intentionally reply-bound. A generic "forget this" without a
+        verifiable replied-to bot message must not guess which memory to erase.
+        """
+
+        try:
+            message_id = int(telegram_message_id) if telegram_message_id is not None else None
+        except (TypeError, ValueError):
+            return ()
+        if message_id is None:
+            return ()
+
+        row = self.conn.execute(
+            """
+            SELECT i.selected_memory_ids
+            FROM outbox o
+            JOIN interventions i
+              ON i.id = NULLIF(o.payload -> 'metadata' ->> 'intervention_id', '')::bigint
+            WHERE o.channel='telegram'
+              AND o.destination_id=%s
+              AND o.telegram_message_id=%s
+              AND o.status='sent'
+              AND i.scope_type=%s
+              AND i.scope_id=%s
+            ORDER BY o.sent_at DESC NULLS LAST, o.id DESC
+            LIMIT 1
+            """,
+            (scope_id, message_id, scope_type.value, scope_id),
+        ).fetchone()
+        if not row:
+            return ()
+        raw = row[0]
+        if isinstance(raw, str):
+            try:
+                raw = json.loads(raw)
+            except Exception:
+                return ()
+        if not isinstance(raw, list):
+            return ()
+        return tuple(str(item) for item in raw if str(item).strip())

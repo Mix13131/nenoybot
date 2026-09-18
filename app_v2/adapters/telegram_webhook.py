@@ -238,6 +238,7 @@ def _normalize_reaction(update_id: int, reaction: dict[str, Any]) -> NormalizedT
     if not isinstance(chat, dict) or chat.get("id") is None:
         return None
     actor = reaction.get("user") if isinstance(reaction.get("user"), dict) else None
+    actor_chat = reaction.get("actor_chat") if isinstance(reaction.get("actor_chat"), dict) else None
     new_reaction = reaction.get("new_reaction") or []
     event_type = EventType.REACTION_ADDED if new_reaction else EventType.REACTION_REMOVED
     message_id = reaction.get("message_id")
@@ -252,6 +253,14 @@ def _normalize_reaction(update_id: int, reaction: dict[str, Any]) -> NormalizedT
         metadata={
             "telegram_chat_type": chat.get("type"),
             "actor_username": actor.get("username") if actor else None,
+            "actor_chat_id": (
+                str(actor_chat["id"])
+                if actor_chat and actor_chat.get("id") is not None
+                else None
+            ),
+            "actor_chat_type": actor_chat.get("type") if actor_chat else None,
+            "actor_chat_title": actor_chat.get("title") if actor_chat else None,
+            "actor_chat_username": actor_chat.get("username") if actor_chat else None,
             "old_reaction": reaction.get("old_reaction") or [],
             "new_reaction": new_reaction,
         },

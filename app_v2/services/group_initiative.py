@@ -5,6 +5,7 @@ from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
+from app_v2.domain.enums import EventType, ScopeType
 from app_v2.domain.events import EventEnvelope
 from app_v2.repositories.group_context_repo import GroupContext
 
@@ -23,6 +24,27 @@ _MUTE_PHRASES = (
     "тихо, бот",
     "тихо бот",
 )
+_BOT_ADDRESSED_GROUP_TYPES = {
+    EventType.DIRECT_MENTION,
+    EventType.REPLY_TO_BOT,
+    EventType.REPLY_TO_BOT_MESSAGE,
+    EventType.NEGATIVE_FEEDBACK,
+    EventType.MUTE_REQUEST,
+}
+
+
+def is_addressed_to_bot(event: EventEnvelope) -> bool:
+    """Return whether text/control semantics are explicitly scoped to НеНой.
+
+    Personal messages are inherently addressed to the bot. In groups we trust
+    only normalized direct/reply events and explicit feedback/control event
+    types; ordinary group text (including replies between people) must not be
+    reinterpreted as a bot command merely because it contains a trigger phrase.
+    """
+
+    if event.scope_type is ScopeType.PERSONAL:
+        return event.event_type not in {EventType.REACTION_ADDED, EventType.REACTION_REMOVED}
+    return event.event_type in _BOT_ADDRESSED_GROUP_TYPES
 
 
 def _int(value: Any, default: int, *, low: int, high: int) -> int:
@@ -96,7 +118,10 @@ class GroupInitiativeService:
         share_window_minutes = _int(profile.get("bot_share_window_minutes"), 60, low=5, high=1440)
         min_messages_for_share = _int(profile.get("bot_share_min_messages"), 10, low=1, high=1000)
 
-        silence_requested = self.is_silence_request(event.text)
+        silence_requested = is_addressed_to_bot(event) and (
+            event.event_type is EventType.MUTE_REQUEST
+            or self.is_silence_request(event.text)
+        )
         silent_until = group_context.silent_until
         if silence_requested:
             requested_until = now + timedelta(minutes=mute_minutes)

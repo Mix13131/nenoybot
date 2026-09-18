@@ -13,6 +13,7 @@ class AnalyticsReport:
     end: datetime
     metrics: dict[str, int | float]
     group_cost_by_day: tuple[dict[str, Any], ...] = ()
+    reaction_quality_by_mode: tuple[dict[str, Any], ...] = ()
 
     def as_dict(self) -> dict[str, Any]:
         data = asdict(self)
@@ -24,6 +25,9 @@ class AnalyticsReport:
                 "day": item["day"].isoformat() if hasattr(item.get("day"), "isoformat") else item.get("day"),
             }
             for item in self.group_cost_by_day
+        ]
+        data["reaction_quality_by_mode"] = [
+            dict(item) for item in self.reaction_quality_by_mode
         ]
         return data
 
@@ -47,7 +51,21 @@ class AnalyticsReportService:
         if scope == "group":
             metrics = self.repo.group_counts(start, end, scope_id)
             daily = tuple(self.repo.group_cost_by_day(start, end, scope_id))
-            return AnalyticsReport(scope, scope_id, start, end, metrics, daily)
+            quality_reader = getattr(self.repo, "reaction_quality_by_mode", None)
+            quality = (
+                tuple(quality_reader(start, end, scope_id))
+                if callable(quality_reader)
+                else ()
+            )
+            return AnalyticsReport(
+                scope,
+                scope_id,
+                start,
+                end,
+                metrics,
+                daily,
+                quality,
+            )
         raise ValueError(f"Unsupported analytics scope: {scope}")
 
     def last_hours(
@@ -92,6 +110,20 @@ def render_text(report: AnalyticsReport) -> str:
             lines.append(f"{key}: {value:.6f}" if "cost" in key else f"{key}: {value:.3f}")
         else:
             lines.append(f"{key}: {value}")
+    if report.reaction_quality_by_mode:
+        lines.append("")
+        lines.append("reaction_quality_by_mode:")
+        for item in report.reaction_quality_by_mode:
+            lines.append(
+                "  "
+                + f"{item.get('mode')}: "
+                + f"interventions={item.get('interventions', 0)} "
+                + f"reacted={item.get('reacted_interventions', 0)} "
+                + f"positive={item.get('positive_votes', 0)} "
+                + f"negative={item.get('negative_votes', 0)} "
+                + f"laughter={item.get('laughter_entertainment_states', 0)} "
+                + f"contextual={item.get('contextual_unknown_states', 0)}"
+            )
     if report.group_cost_by_day:
         lines.append("")
         lines.append("group_cost_by_day:")

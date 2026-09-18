@@ -69,6 +69,64 @@ class ContextBuilder:
         self.memory_max_cards = max(self.memory_min_cards, memory_max_cards)
         self.memory_token_budget = max(100, memory_token_budget)
 
+    def mapper_context(
+        self,
+        event: EventEnvelope,
+        *,
+        limit: int = 12,
+        char_budget: int = 3000,
+    ) -> tuple[dict[str, Any], ...]:
+        """Return small, replay-safe, trusted-local context for MemoryMapper.
+
+        The messages table currently has no persisted forum topic id. For a
+        threaded Telegram event we therefore fail closed to empty context
+        rather than mix independent topics and pretend isolation is guaranteed.
+        """
+        if event.metadata.get("message_thread_id") is not None:
+            return ()
+        reader = getattr(self.message_repo, "recent_before_event", None)
+        if reader is None:
+            return ()
+        try:
+            rows = reader(
+                event.scope_type,
+                event.scope_id,
+                before=event.occurred_at,
+                before_message_id=event.message_id,
+                boundary_event_id=event.event_id,
+                limit=max(1, min(limit, 20)),
+            )
+        except Exception:
+            return ()
+
+        selected: list[dict[str, Any]] = []
+        used = 0
+        budget = max(400, min(char_budget, 6000))
+        for item in reversed(rows):
+            text = item.text.strip()
+            if not text:
+                continue
+            # Bound individual old messages as well as the whole context. The
+            # current event itself is supplied separately and is never clipped here.
+            text = text[:800]
+            cost = len(text) + 120
+            if selected and used + cost > budget:
+                break
+            selected.append(
+                {
+                    "message_id": item.message_id,
+                    "author_user_id": item.author_user_id,
+                    "text": text,
+                    "created_at": item.created_at.isoformat(),
+                    "reply_to_message_id": item.reply_to_message_id,
+                }
+            )
+            used += cost
+            if len(selected) >= max(1, min(limit, 20)):
+                break
+        selected.reverse()
+        return tuple(selected)
+
     def build(
         self,
         *,
