@@ -49,16 +49,18 @@ def test_pending_one_shot_preserves_original_calendar_day_across_midnight():
         repo = FakeReminderRepo()
         service = GroupReminderService(repo)
         original = datetime(2026, 1, 2, 23, 50, tzinfo=timezone.utc)
-        service.maybe_schedule(
-            make_event(text=f"НеНой, напомни {word} в {expected_due:%H:%M}",
-                       event_type=EventType.DIRECT_MENTION),
-            now=original,
-        )
+        original_event = make_event(
+            text=f"НеНой, напомни {word} в {expected_due:%H:%M}",
+            event_type=EventType.DIRECT_MENTION,
+        ).model_copy(update={"occurred_at": original})
+        service.maybe_schedule(original_event, now=original)
 
-        action = service.maybe_schedule(
-            make_event(text="UTC", event_type=EventType.REPLY_TO_BOT),
-            now=datetime(2026, 1, 3, 8, 0, tzinfo=timezone.utc),
-        )
+        clarification_time = datetime(2026, 1, 3, 8, 0, tzinfo=timezone.utc)
+        reply_event = make_event(
+            text="UTC",
+            event_type=EventType.REPLY_TO_BOT,
+        ).model_copy(update={"occurred_at": clarification_time})
+        action = service.maybe_schedule(reply_event, now=clarification_time)
 
         if word == "сегодня":
             assert action.status == "not_scheduled"
@@ -72,10 +74,14 @@ def test_pending_one_shot_preserves_original_calendar_day_across_midnight():
 
 def test_direct_one_shot_with_timezone_is_unchanged():
     repo = FakeReminderRepo()
+    request_time = datetime(2026, 1, 2, 23, 50, tzinfo=timezone.utc)
+    event = make_event(
+        text="НеНой, напомни завтра в 09:00 UTC",
+        event_type=EventType.DIRECT_MENTION,
+    ).model_copy(update={"occurred_at": request_time})
     action = GroupReminderService(repo).maybe_schedule(
-        make_event(text="НеНой, напомни завтра в 09:00 UTC",
-                   event_type=EventType.DIRECT_MENTION),
-        now=datetime(2026, 1, 2, 23, 50, tzinfo=timezone.utc),
+        event,
+        now=request_time,
     )
     assert action.status == "scheduled"
     assert action.due_at == datetime(2026, 1, 3, 9, 0, tzinfo=timezone.utc)
