@@ -133,6 +133,43 @@ class MemoryMapperStore:
             return None
         return self.repo.get(scope_type, scope_id, row[0])
 
+    def find_semantic_match_for_subject(
+        self,
+        scope_type: ScopeType,
+        scope_id: str,
+        semantic_key: str,
+        subject_user_key: str,
+    ) -> MemoryCard | None:
+        """Find a semantic card owned by the same trusted person subject."""
+
+        conn = getattr(self.repo, "conn", None)
+        if conn is None:
+            finder = getattr(self.repo, "find_semantic_match_for_subject", None)
+            if finder is not None:
+                return finder(scope_type, scope_id, semantic_key, subject_user_key)
+            existing = self.find_semantic_match(scope_type, scope_id, semantic_key)
+            if existing is None or subject_user_key not in existing.subject_keys:
+                return None
+            return existing
+
+        row = conn.execute(
+            """
+            SELECT id
+            FROM memory_cards
+            WHERE scope_type=%s
+              AND scope_id=%s
+              AND status IN ('candidate','active')
+              AND payload ->> 'semantic_key' = %s
+              AND %s = ANY(subject_keys)
+            ORDER BY updated_at DESC
+            LIMIT 1
+            """,
+            (scope_type.value, scope_id, semantic_key, subject_user_key),
+        ).fetchone()
+        if not row:
+            return None
+        return self.repo.get(scope_type, scope_id, row[0])
+
     def find_source_match(
         self,
         scope_type: ScopeType,
@@ -739,9 +776,11 @@ class MemoryMapper:
                         # the cross-card merge and the stale source card is
                         # incorrectly treated as retained.
                         stable_for_upsert: tuple[MemoryCard, ...] = (matched,) if matched else ()
-                        semantic_destination = self.store.find_semantic_match(
-                            event.scope_type,
-                            event.scope_id,
+                        semantic_destination = self._find_semantic_candidate_match(
+                            event,
+                            candidate,
+                            evidence,
+                            str(candidate["memory_type"]),
                             semantic_key,
                         )
                         destination_is_other_card = (
@@ -1004,6 +1043,86 @@ class MemoryMapper:
             return [*non_user, trusted_user]
         return non_user
 
+    @staticmethod
+    def _person_specific_subject_key(
+        candidate: dict[str, Any],
+        evidence: MemoryEvidence,
+        requested_memory_type: str,
+    ) -> str | None:
+        if not evidence.author_id:
+            return None
+        model_subjects = [
+            str(item).strip()
+            for item in candidate.get("subject_keys", [])
+            if str(item).strip()
+        ]
+        model_has_user_subject = any(item.startswith("user:") for item in model_subjects)
+        if requested_memory_type in _DIRECT_STATEMENT_TYPES or model_has_user_subject:
+            return f"user:{evidence.author_id}"
+        return None
+
+    def _find_semantic_candidate_match(
+        self,
+        event: EventEnvelope,
+        candidate: dict[str, Any],
+        evidence: MemoryEvidence,
+        requested_memory_type: str,
+        semantic_key: str,
+    ) -> MemoryCard | None:
+        subject_user_key = self._person_specific_subject_key(
+            candidate,
+            evidence,
+            requested_memory_type,
+        )
+        if subject_user_key:
+            finder = getattr(self.store, "find_semantic_match_for_subject", None)
+            if callable(finder):
+                return finder(
+                    event.scope_type,
+                    event.scope_id,
+                    semantic_key,
+                    subject_user_key,
+                )
+        existing = self.store.find_semantic_match(
+            event.scope_type,
+            event.scope_id,
+            semantic_key,
+        )
+        if (
+            existing is not None
+            and subject_user_key
+            and subject_user_key not in existing.subject_keys
+        ):
+            return None
+        return existing
+
+    @classmethod
+    def _is_exact_source_retry(
+        cls,
+        candidate: dict[str, Any],
+        evidence: MemoryEvidence,
+        stable_source_cards: Iterable[MemoryCard],
+    ) -> bool:
+        """Prove a replay from trusted provenance before model classification."""
+
+        source_identity = cls._source_identity(evidence)
+        candidate_slot = candidate.get("_source_candidate_index")
+        for card in stable_source_cards:
+            card_slot = card.payload.get("source_candidate_index")
+            if (
+                isinstance(candidate_slot, int)
+                and isinstance(card_slot, int)
+                and candidate_slot != card_slot
+            ):
+                continue
+            for item in card.evidence:
+                if (
+                    cls._source_identity(item) == source_identity
+                    and item.excerpt == evidence.excerpt
+                ):
+                    return True
+        return False
+
     def _source_identity_matches(
         self,
         event: EventEnvelope,
@@ -1042,11 +1161,11 @@ class MemoryMapper:
         source_lock_factory = getattr(self.store, "source_lock", None)
         source_context = (
             source_lock_factory(event.scope_type, event.scope_id, evidence)
-            if edited and callable(source_lock_factory)
+            if callable(source_lock_factory)
             else nullcontext()
         )
         with source_context:
-            stable_cards = self._source_identity_matches(event, evidence) if edited else ()
+            stable_cards = self._source_identity_matches(event, evidence)
             old_keys = [
                 str(card.payload.get("semantic_key") or "")
                 for card in stable_cards
@@ -1071,7 +1190,7 @@ class MemoryMapper:
                 # source this prevents semantic-key changes from racing another
                 # worker or leaving the old card behind merely because the new
                 # excerpt/key no longer matches it.
-                stable_cards = self._source_identity_matches(event, evidence) if edited else ()
+                stable_cards = self._source_identity_matches(event, evidence)
                 return self._upsert_candidate_locked(
                     event,
                     candidate,
@@ -1097,9 +1216,19 @@ class MemoryMapper:
     ) -> MemoryCard | None:
         now = datetime.now(timezone.utc)
         raw_confidence = float(candidate.get("confidence", 0.5))
-        semantic_existing = self.store.find_semantic_match(
-            event.scope_type,
-            event.scope_id,
+
+        if (
+            event.event_type is not EventType.EDITED_MESSAGE
+            and stable_source_cards
+            and self._is_exact_source_retry(candidate, evidence, stable_source_cards)
+        ):
+            return None
+
+        semantic_existing = self._find_semantic_candidate_match(
+            event,
+            candidate,
+            evidence,
+            requested_memory_type,
             semantic_key,
         )
         existing = semantic_existing

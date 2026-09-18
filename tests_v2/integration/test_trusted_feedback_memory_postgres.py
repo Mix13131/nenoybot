@@ -653,3 +653,163 @@ def test_edited_source_merges_into_existing_semantic_card_postgres() -> None:
         assert after_retry == before_retry
         conn.execute("DELETE FROM memory_cards WHERE scope_type='personal' AND scope_id=%s", (scope_id,))
         conn.commit()
+
+
+
+def test_same_source_retry_classification_drift_is_noop_postgres() -> None:
+    psycopg, database_url = _psycopg_and_url()
+    scope_id = f"it-classification-retry-{uuid.uuid4().hex}"
+    message_id = "880040001"
+
+    def retry_candidate(memory_type: str, semantic_key: str, confidence: float) -> dict:
+        return {
+            "memory_type": memory_type,
+            "semantic_key": semantic_key,
+            "summary": "Пользователь отправит отчёт завтра.",
+            "subject_keys": ["user:991000001"],
+            "source_message_id": message_id,
+            "evidence_excerpt": "Завтра отправлю отчёт",
+            "payload": {
+                "statement_kind": "commitment" if memory_type == "commitment" else "none",
+                "status": "open",
+                "due_at": None,
+                "verbatim": "Завтра отправлю отчёт",
+                "claim_kind": "plan",
+            },
+            "importance": 0.8,
+            "confidence": confidence,
+            "usage_policy": {
+                "assist": True,
+                "callback": True,
+                "roast": False,
+                "proactive": True,
+            },
+        }
+
+    adapter = _EditAdapter([
+        {"candidates": [retry_candidate("commitment", "commitment:send-report", 0.9)]},
+        {"candidates": [retry_candidate("observation", "observation:drifted-key", 0.4)]},
+    ])
+    source = EventEnvelope(
+        event_id=f"it:{scope_id}:source",
+        event_type=EventType.PRIVATE_MESSAGE,
+        occurred_at=NOW,
+        scope_type=ScopeType.PERSONAL,
+        scope_id=scope_id,
+        actor_user_id="991000001",
+        message_id=message_id,
+        text="Завтра отправлю отчёт",
+    )
+
+    with psycopg.connect(database_url) as conn:
+        mapper = MemoryMapper(store=MemoryMapperStore(MemoryRepository(conn)), adapter=adapter)
+        first = mapper.map_event(source)
+        first_card = first.written[0]
+        before = conn.execute(
+            "SELECT id, memory_type, payload, evidence, source_count, updated_at FROM memory_cards WHERE id=%s",
+            (first_card.id,),
+        ).fetchone()
+
+        retried = mapper.map_event(source)
+
+        assert retried.written == ()
+        rows = conn.execute(
+            """
+            SELECT id, memory_type, payload, evidence, source_count, updated_at
+            FROM memory_cards
+            WHERE scope_type='personal' AND scope_id=%s
+            """,
+            (scope_id,),
+        ).fetchall()
+        assert rows == [before]
+        conn.execute(
+            "DELETE FROM memory_cards WHERE scope_type='personal' AND scope_id=%s",
+            (scope_id,),
+        )
+        conn.commit()
+
+
+def test_group_person_specific_semantic_key_isolated_by_author_postgres() -> None:
+    psycopg, database_url = _psycopg_and_url()
+    scope_id = f"it-author-semantic-{uuid.uuid4().hex}"
+
+    def person_candidate(author_id: str, message_id: str) -> dict:
+        return {
+            "memory_type": "commitment",
+            "semantic_key": "commitment:send-report",
+            "summary": "Участник отправит отчёт завтра.",
+            "subject_keys": [f"user:{author_id}"],
+            "source_message_id": message_id,
+            "evidence_excerpt": "Завтра отправлю отчёт",
+            "payload": {
+                "statement_kind": "commitment",
+                "status": "open",
+                "due_at": None,
+                "verbatim": "Завтра отправлю отчёт",
+                "claim_kind": "plan",
+            },
+            "importance": 0.8,
+            "confidence": 0.9,
+            "usage_policy": {
+                "assist": True,
+                "callback": True,
+                "roast": False,
+                "proactive": True,
+            },
+        }
+
+    adapter = _EditAdapter([
+        {"candidates": [person_candidate("991000001", "880040101")]},
+        {"candidates": [person_candidate("991000002", "880040102")]},
+    ])
+    first_event = EventEnvelope(
+        event_id=f"it:{scope_id}:u1",
+        event_type=EventType.GROUP_MESSAGE,
+        occurred_at=NOW,
+        scope_type=ScopeType.GROUP,
+        scope_id=scope_id,
+        actor_user_id="991000001",
+        message_id="880040101",
+        text="Завтра отправлю отчёт",
+    )
+    second_event = first_event.model_copy(update={
+        "event_id": f"it:{scope_id}:u2",
+        "occurred_at": NOW + timedelta(minutes=1),
+        "actor_user_id": "991000002",
+        "message_id": "880040102",
+    })
+
+    with psycopg.connect(database_url) as conn:
+        mapper = MemoryMapper(store=MemoryMapperStore(MemoryRepository(conn)), adapter=adapter)
+        first = mapper.map_event(first_event)
+        second = mapper.map_event(second_event)
+
+        assert len(first.written) == 1
+        assert len(second.written) == 1
+        assert first.written[0].id != second.written[0].id
+
+        rows = conn.execute(
+            """
+            SELECT id, subject_keys, evidence, source_count
+            FROM memory_cards
+            WHERE scope_type='group'
+              AND scope_id=%s
+              AND payload ->> 'semantic_key'='commitment:send-report'
+              AND status IN ('candidate','active')
+            ORDER BY id
+            """,
+            (scope_id,),
+        ).fetchall()
+        assert len(rows) == 2
+        authors = {
+            row[2][0]["author_id"]: (row[1], row[3])
+            for row in rows
+        }
+        assert authors["991000001"] == (["user:991000001"], 1)
+        assert authors["991000002"] == (["user:991000002"], 1)
+
+        conn.execute(
+            "DELETE FROM memory_cards WHERE scope_type='group' AND scope_id=%s",
+            (scope_id,),
+        )
+        conn.commit()

@@ -29,6 +29,24 @@ class FakeStore:
                 return card
         return None
 
+    def find_semantic_match_for_subject(
+        self,
+        scope_type,
+        scope_id,
+        semantic_key,
+        subject_user_key,
+    ):
+        for card in self.cards.values():
+            if (
+                card.scope_type is scope_type
+                and card.scope_id == scope_id
+                and card.status in {MemoryStatus.CANDIDATE, MemoryStatus.ACTIVE}
+                and card.payload.get("semantic_key") == semantic_key
+                and subject_user_key in card.subject_keys
+            ):
+                return card
+        return None
+
     def find_source_identity_matches(self, scope_type, scope_id, evidence):
         return tuple(
             card for card in self.cards.values()
@@ -85,6 +103,7 @@ def event(
     scope_id="u1",
     message_id="m1",
     occurred_at=NOW,
+    actor_user_id="u1",
 ):
     return EventEnvelope(
         event_id=f"evt:{message_id}",
@@ -92,7 +111,7 @@ def event(
         occurred_at=occurred_at,
         scope_type=scope,
         scope_id=scope_id,
-        actor_user_id="u1",
+        actor_user_id=actor_user_id,
         message_id=message_id,
         text=text,
     )
@@ -951,3 +970,82 @@ def test_edited_source_merges_into_existing_semantic_card_and_archives_old_card(
     assert personal_operation_receipts(retried)["memory"]["changed"] is False
     assert store.cards[existing_b.id] == merged
     assert merged.confidence >= before_retry.confidence
+
+
+
+def test_same_source_retry_is_noop_when_model_classification_drifts():
+    store = FakeStore()
+    source = event("Завтра отправлю отчёт", message_id="m-classification-retry")
+    adapter = FakeAdapter(responses=[
+        {"candidates": [candidate(
+            memory_type="commitment",
+            semantic_key="commitment:send-report",
+            source_message_id="m-classification-retry",
+            evidence_excerpt="Завтра отправлю отчёт",
+        )]},
+        {"candidates": [candidate(
+            memory_type="observation",
+            semantic_key="observation:different-model-key",
+            source_message_id="m-classification-retry",
+            evidence_excerpt="Завтра отправлю отчёт",
+            confidence=0.4,
+        )]},
+    ])
+    mapper = MemoryMapper(store=store, adapter=adapter)
+
+    first = mapper.map_event(source)
+    persisted_before = first.written[0]
+    second = mapper.map_event(source)
+
+    assert second.written == ()
+    assert len(store.cards) == 1
+    assert store.cards[persisted_before.id] == persisted_before
+    assert store.create_calls == 1
+    assert store.update_calls == 0
+
+
+def test_group_person_specific_same_semantic_key_stays_separate_by_author():
+    store = FakeStore()
+    adapter = FakeAdapter(responses=[
+        {"candidates": [candidate(
+            semantic_key="commitment:send-report",
+            subject_keys=["user:u1"],
+            source_message_id="g-msg-1",
+            evidence_excerpt="Завтра отправлю отчёт",
+        )]},
+        {"candidates": [candidate(
+            semantic_key="commitment:send-report",
+            subject_keys=["user:u2"],
+            source_message_id="g-msg-2",
+            evidence_excerpt="Завтра отправлю отчёт",
+        )]},
+    ])
+    mapper = MemoryMapper(store=store, adapter=adapter)
+    first_event = event(
+        "Завтра отправлю отчёт",
+        scope=ScopeType.GROUP,
+        scope_id="g-authors",
+        message_id="g-msg-1",
+        actor_user_id="u1",
+    )
+    second_event = event(
+        "Завтра отправлю отчёт",
+        scope=ScopeType.GROUP,
+        scope_id="g-authors",
+        message_id="g-msg-2",
+        actor_user_id="u2",
+    )
+
+    first = mapper.map_event(first_event)
+    second = mapper.map_event(second_event)
+
+    assert len(store.cards) == 2
+    assert first.written[0].id != second.written[0].id
+    by_author = {
+        card.evidence[0].author_id: card
+        for card in store.cards.values()
+    }
+    assert set(by_author) == {"u1", "u2"}
+    assert by_author["u1"].subject_keys == ["user:u1"]
+    assert by_author["u2"].subject_keys == ["user:u2"]
+    assert all(card.source_count == 1 for card in store.cards.values())
