@@ -945,3 +945,90 @@ def test_rejected_non_edit_candidate_is_partial_postgres() -> None:
             (scope_id,),
         )
         conn.commit()
+
+
+def test_empty_subject_preferences_partition_and_conflicting_subject_is_partial_postgres() -> None:
+    psycopg, database_url = _psycopg_and_url()
+    scope_id = f"it-trusted-subject-{uuid.uuid4().hex}"
+
+    def preference(message_id: str, *, subject_keys: list[str], key: str = "preference:tea") -> dict:
+        return {
+            "memory_type": "preference",
+            "semantic_key": key,
+            "summary": "Участник предпочитает чай.",
+            "subject_keys": subject_keys,
+            "source_message_id": message_id,
+            "evidence_excerpt": "Я предпочитаю чай",
+            "payload": {"claim_kind": "fact"},
+            "importance": 0.6,
+            "confidence": 0.7,
+            "usage_policy": {
+                "assist": True, "callback": True, "roast": False, "proactive": False,
+            },
+        }
+
+    first = EventEnvelope(
+        event_id=f"it:{scope_id}:one",
+        event_type=EventType.GROUP_MESSAGE,
+        occurred_at=NOW,
+        scope_type=ScopeType.GROUP,
+        scope_id=scope_id,
+        actor_user_id="991000001",
+        message_id="880060101",
+        text="Я предпочитаю чай",
+    )
+    second = first.model_copy(update={
+        "event_id": f"it:{scope_id}:two",
+        "occurred_at": NOW + timedelta(minutes=1),
+        "actor_user_id": "991000002",
+        "message_id": "880060102",
+    })
+    mixed = first.model_copy(update={
+        "event_id": f"it:{scope_id}:mixed",
+        "occurred_at": NOW + timedelta(minutes=2),
+        "message_id": "880060103",
+        "text": "Я предпочитаю чай. Синтетический факт",
+    })
+    adapter = _EditAdapter([
+        {"candidates": [preference("880060101", subject_keys=[])]},
+        {"candidates": [preference("880060102", subject_keys=[])]},
+        {"candidates": [
+            preference("880060103", subject_keys=["user:991000001"], key="preference:coffee"),
+            preference("880060103", subject_keys=["user:other"], key="preference:conflict"),
+        ]},
+    ])
+
+    with psycopg.connect(database_url) as conn:
+        mapper = MemoryMapper(store=MemoryMapperStore(MemoryRepository(conn)), adapter=adapter)
+        assert len(mapper.map_event(first).written) == 1
+        assert len(mapper.map_event(second).written) == 1
+        result = mapper.map_event(mixed)
+
+        assert result.failed is True
+        assert len(result.written) == 1
+        receipt = personal_operation_receipts(result)["memory"]
+        assert receipt["status"] == "partial"
+        assert receipt["written_ids"] == [result.written[0].id]
+
+        rows = conn.execute(
+            """
+            SELECT payload ->> 'semantic_key', subject_keys, source_count
+            FROM memory_cards
+            WHERE scope_type='group' AND scope_id=%s
+            ORDER BY id
+            """,
+            (scope_id,),
+        ).fetchall()
+        tea = [row for row in rows if row[0] == "preference:tea"]
+        assert len(tea) == 2
+        assert {tuple(row[1]) for row in tea} == {
+            ("user:991000001",), ("user:991000002",),
+        }
+        assert {row[2] for row in tea} == {1}
+        assert not any(row[0] == "preference:conflict" for row in rows)
+
+        conn.execute(
+            "DELETE FROM memory_cards WHERE scope_type='group' AND scope_id=%s",
+            (scope_id,),
+        )
+        conn.commit()
