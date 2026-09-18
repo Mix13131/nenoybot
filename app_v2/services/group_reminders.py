@@ -38,8 +38,10 @@ _AFTER_INTERVAL_RE = re.compile(
 )
 _CALENDAR_RE = re.compile(
     r"(?P<kind>кажд(?:ый день|ое утро)|по будням|каждую пятницу|сегодня|завтра)"
-    r".*?\bв\s+(?P<hour>[01]?\d|2[0-3])(?::(?P<minute>[0-5]\d))?"
-    r"(?:\s*(?P<period>утра|вечера|дня|ночи))?",
+    r".*?\bв\s+(?P<hour>[01]?\d|2[0-3])"
+    r"(?::(?P<minute>[0-5]\d)|(?!:))"
+    r"(?:\s*(?P<period>утра|утром|вечера|вечером|дня|днём|днем|ночи|ночью))?"
+    r"(?![\d:])",
     flags=re.IGNORECASE,
 )
 _TIMEZONE_TOKEN_RE = re.compile(
@@ -186,6 +188,7 @@ class GroupReminderService:
             calendar = dict(calendar)
             calendar["source_message_id"] = event.message_id
             calendar["message_thread_id"] = event.metadata.get("message_thread_id")
+            calendar["reference_at"] = now.isoformat()
             if not timezone_name:
                 if event.actor_user_id:
                     self.reminder_repo.save_pending_calendar_intent(
@@ -266,7 +269,10 @@ class GroupReminderService:
         timezone_name = validate_timezone(timezone_name)
         one_shot_day = spec.get("one_shot_day")
         if one_shot_day is not None:
-            local_today = now.astimezone(ZoneInfo(timezone_name)).date()
+            reference_at = datetime.fromisoformat(str(spec.get("reference_at") or now.isoformat()))
+            if reference_at.tzinfo is None or reference_at.utcoffset() is None:
+                return GroupReminderAction(status="not_scheduled", reason="invalid_calendar_reference")
+            local_today = reference_at.astimezone(ZoneInfo(timezone_name)).date()
             due_at = resolve_local(local_today + timedelta(days=int(one_shot_day)),
                                    int(spec["hour"]), int(spec["minute"]), timezone_name)
             if due_at <= now:
