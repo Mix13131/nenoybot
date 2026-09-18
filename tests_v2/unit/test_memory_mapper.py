@@ -819,6 +819,7 @@ def test_ambiguous_edited_source_fails_before_any_memory_mutation():
     for card in first.written:
         payload = dict(card.payload)
         payload.pop("source_candidate_index", None)
+        payload.pop("source_candidate_slots", None)
         legacy = card.model_copy(update={"payload": payload})
         store.cards[card.id] = legacy
         snapshots[card.id] = legacy
