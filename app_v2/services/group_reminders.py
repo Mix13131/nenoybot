@@ -44,6 +44,7 @@ _CALENDAR_RE = re.compile(
     r"(?![\d:])",
     flags=re.IGNORECASE,
 )
+_CLOCK_ATTEMPT_RE = re.compile(r"\bв\s+\d{1,2}(?::\d{0,2})?", flags=re.IGNORECASE)
 _TIMEZONE_TOKEN_RE = re.compile(
     r"(?<![A-Za-z0-9_+./-])(UTC|[A-Za-z][A-Za-z0-9_+.-]*/[A-Za-z0-9_+.-]+(?:/[A-Za-z0-9_+.-]+)*)(?![A-Za-z0-9_+./-])"
 )
@@ -183,12 +184,22 @@ class GroupReminderService:
         if not _REMINDER_INTENT_RE.search(text):
             return None
 
+        target_username = self._target_username(text, reply_text)
+        stop_on_reply = bool(
+            re.search(r"\bпока\b.*\bне\s+ответ", text, flags=re.IGNORECASE)
+            or re.search(r"\bдо\s+ответ", text, flags=re.IGNORECASE)
+        )
+        if stop_on_reply and not target_username:
+            return GroupReminderAction(status="not_scheduled", reason="target_required_for_stop_on_reply")
+
         calendar = self._calendar_spec(text, now)
         if calendar is not None:
             calendar = dict(calendar)
             calendar["source_message_id"] = event.message_id
             calendar["message_thread_id"] = event.metadata.get("message_thread_id")
             calendar["reference_at"] = event.occurred_at.isoformat()
+            calendar["target_username"] = target_username
+            calendar["stop_on_reply"] = stop_on_reply
             if not timezone_name:
                 if event.actor_user_id:
                     self.reminder_repo.save_pending_calendar_intent(
@@ -210,14 +221,6 @@ class GroupReminderService:
         one_shot_seconds = None if interval_seconds is not None else self._one_shot_delay_seconds(text)
         if interval_seconds is None and one_shot_seconds is None:
             return GroupReminderAction(status="not_scheduled", reason="unsupported_time_expression")
-
-        target_username = self._target_username(text, reply_text)
-        stop_on_reply = bool(
-            re.search(r"\bпока\b.*\bне\s+ответ", text, flags=re.IGNORECASE)
-            or re.search(r"\bдо\s+ответ", text, flags=re.IGNORECASE)
-        )
-        if stop_on_reply and not target_username:
-            return GroupReminderAction(status="not_scheduled", reason="target_required_for_stop_on_reply")
 
         delay_seconds = interval_seconds if interval_seconds is not None else one_shot_seconds
         assert delay_seconds is not None
@@ -286,10 +289,15 @@ class GroupReminderService:
             due_at = next_calendar_occurrence(schedule, now)
             recurring = True
         subject = " ".join(str(spec.get("subject") or event.text or "").split())[:700]
-        payload = {"text": f"Сделай короткое напоминание участникам чата в характере НеНоя. Контекст договорённости: {subject}",
+        target_username = str(spec.get("target_username") or "").strip().lstrip("@") or None
+        stop_on_reply = bool(spec.get("stop_on_reply"))
+        target_label = f"@{target_username}" if target_username else "участникам чата"
+        payload = {"text": f"Сделай короткое напоминание {target_label} в характере НеНоя. Контекст договорённости: {subject}",
                    "actor_user_id": event.actor_user_id, "source_event_id": source_event_id,
                    "source_message_id": spec.get("source_message_id") or event.message_id,
                    "message_thread_id": spec.get("message_thread_id"),
+                   "target_username": target_username,
+                   "stop_on_reply": stop_on_reply,
                    "reminder_context": subject,
                    "timezone": timezone_name, "fire_count": 0,
                    "max_occurrences": _MAX_GROUP_REMINDER_OCCURRENCES if recurring else 1}
@@ -301,6 +309,7 @@ class GroupReminderService:
         already = bool(getattr(record, "already_existing", False))
         return GroupReminderAction(status="already_scheduled" if already else "scheduled",
                                    reminder_id=record.id, recurring=recurring, due_at=record.due_at,
+                                   target_username=target_username, stop_on_reply=stop_on_reply,
                                    timezone=timezone_name, recurrence_rule=record.recurrence_rule)
 
     @classmethod
@@ -346,6 +355,8 @@ class GroupReminderService:
 
     @staticmethod
     def _calendar_spec(text: str, now: datetime) -> dict[str, Any] | None:
+        if len(_CLOCK_ATTEMPT_RE.findall(text)) != 1:
+            return None
         match = _CALENDAR_RE.search(text)
         if not match:
             return None
