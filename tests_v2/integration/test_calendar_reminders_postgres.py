@@ -300,3 +300,56 @@ def test_expired_pending_calendar_intent_is_not_replayed_postgres():
 
         conn.execute("DELETE FROM pending_calendar_intents WHERE source_event_id=%s", (source_event_id,))
         conn.commit()
+
+
+def test_calendar_target_stop_condition_can_cancel_on_response_postgres():
+    url = os.getenv("NENOY_V2_TEST_DATABASE_URL")
+    if not url:
+        pytest.skip("NENOY_V2_TEST_DATABASE_URL is not configured")
+    psycopg = pytest.importorskip("psycopg")
+    run_migrations(url)
+
+    scope_id = f"calendar-target-{uuid.uuid4().hex}"
+    source_event_id = f"tg:{uuid.uuid4().hex}"
+    now = datetime.now(timezone.utc)
+    event = EventEnvelope(
+        event_id=source_event_id,
+        event_type=EventType.DIRECT_MENTION,
+        occurred_at=now,
+        scope_type=ScopeType.GROUP,
+        scope_id=scope_id,
+        actor_user_id="991234569",
+        message_id="901",
+        reply_to_message_id=None,
+        text="НеНой, напоминай @alice каждый день в 19:00 Europe/Moscow, пока она не ответит",
+        metadata={},
+    )
+
+    with psycopg.connect(url) as conn:
+        repo = ReminderRepository(conn)
+        service = GroupReminderService(repo)
+        action = service.maybe_schedule(event, now=now)
+        assert action.status == "scheduled"
+        assert action.target_username == "alice"
+        assert action.stop_on_reply is True
+
+        row = conn.execute(
+            "SELECT id, payload, status FROM reminders WHERE payload ->> 'source_event_id'=%s",
+            (source_event_id,),
+        ).fetchone()
+        assert row is not None
+        reminder_id = int(row[0])
+        payload = dict(row[1])
+        assert payload["target_username"] == "alice"
+        assert payload["stop_on_reply"] is True
+
+        cancelled = repo.cancel_waiting_for_response(
+            scope_id=scope_id,
+            actor_user_id=None,
+            actor_username="alice",
+        )
+        assert cancelled == 1
+        assert conn.execute("SELECT status FROM reminders WHERE id=%s", (reminder_id,)).fetchone()[0] == "cancelled"
+
+        conn.execute("DELETE FROM reminders WHERE id=%s", (reminder_id,))
+        conn.commit()
