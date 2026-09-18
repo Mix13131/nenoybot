@@ -76,3 +76,157 @@ def test_dst_gap_advances_and_fold_uses_first_occurrence():
     schedule = CalendarSchedule("daily", 9, 0, "Europe/Berlin")
     before = datetime(2026, 3, 28, 8, 30, tzinfo=timezone.utc)
     assert next_calendar_occurrence(schedule, before) == datetime(2026, 3, 29, 7, 0, tzinfo=timezone.utc)
+
+
+def test_pending_timezone_requires_clean_reply_not_direct_mention_or_prose():
+    repo = FakeReminderRepo()
+    service = GroupReminderService(repo)
+    now = datetime(2026, 1, 2, 5, 0, tzinfo=timezone.utc)
+
+    first = service.maybe_schedule(
+        make_event(
+            text="НеНой, напоминай каждый день в 9:00",
+            event_type=EventType.DIRECT_MENTION,
+            metadata={"message_thread_id": 777},
+        ),
+        now=now,
+    )
+    assert first.reason == "timezone_required"
+    assert repo.pending is not None
+
+    unrelated_direct = service.maybe_schedule(
+        make_event(
+            text="Europe/Berlin",
+            event_type=EventType.DIRECT_MENTION,
+            metadata={"message_thread_id": 777},
+        ),
+        now=now,
+    )
+    assert unrelated_direct is None
+    assert repo.pending is not None
+    assert repo.created == []
+
+    unrelated_reply = service.maybe_schedule(
+        make_event(
+            text="расскажи про Europe/Berlin",
+            event_type=EventType.REPLY_TO_BOT,
+            metadata={"message_thread_id": 777},
+        ),
+        now=now,
+    )
+    assert unrelated_reply is None
+    assert repo.pending is not None
+    assert repo.created == []
+
+
+def test_clean_timezone_reply_completes_same_thread_and_preserves_original_provenance():
+    repo = FakeReminderRepo()
+    service = GroupReminderService(repo)
+    now = datetime(2026, 1, 2, 5, 0, tzinfo=timezone.utc)
+
+    service.maybe_schedule(
+        make_event(
+            text="НеНой, напоминай каждый день в 9:00",
+            event_type=EventType.DIRECT_MENTION,
+            metadata={"message_thread_id": 777},
+        ),
+        now=now,
+    )
+    action = service.maybe_schedule(
+        make_event(
+            text="по московскому времени",
+            event_type=EventType.REPLY_TO_BOT,
+            metadata={"message_thread_id": 777},
+        ),
+        now=now,
+    )
+
+    assert action.status == "scheduled"
+    assert repo.pending is None
+    assert len(repo.created) == 1
+    assert repo.created[0]["source_event_id"] == "tg:1"
+    assert repo.created[0]["payload"]["source_message_id"] == "55"
+    assert repo.created[0]["payload"]["message_thread_id"] == 777
+
+
+def test_pending_timezone_reply_from_another_topic_does_not_complete_intent():
+    repo = FakeReminderRepo()
+    service = GroupReminderService(repo)
+    now = datetime(2026, 1, 2, 5, 0, tzinfo=timezone.utc)
+
+    service.maybe_schedule(
+        make_event(
+            text="НеНой, напоминай каждый день в 9:00",
+            event_type=EventType.DIRECT_MENTION,
+            metadata={"message_thread_id": 100},
+        ),
+        now=now,
+    )
+    action = service.maybe_schedule(
+        make_event(
+            text="Europe/Berlin",
+            event_type=EventType.REPLY_TO_BOT,
+            metadata={"message_thread_id": 200},
+        ),
+        now=now,
+    )
+
+    assert action is None
+    assert repo.pending is not None
+    assert repo.created == []
+
+
+def test_direct_calendar_reminder_preserves_forum_topic():
+    repo = FakeReminderRepo()
+    service = GroupReminderService(repo)
+    now = datetime(2026, 1, 2, 5, 0, tzinfo=timezone.utc)
+
+    action = service.maybe_schedule(
+        make_event(
+            text="НеНой, напоминай каждый день в 9:00 Europe/Moscow",
+            event_type=EventType.DIRECT_MENTION,
+            metadata={"message_thread_id": 321},
+        ),
+        now=now,
+    )
+
+    assert action.status == "scheduled"
+    assert repo.created[0]["payload"]["message_thread_id"] == 321
+
+
+def test_moscow_alias_has_boundaries_and_multiple_timezones_fail_closed():
+    service = GroupReminderService(FakeReminderRepo())
+
+    assert service._timezone("каждый день в 9 присылай погоду в Омске") is None
+    assert service._timezone("каждый день в 9 мск") == "Europe/Moscow"
+    assert service._timezone("Europe/Moscow по московскому времени") == "Europe/Moscow"
+    assert service._timezone("Europe/Berlin America/New_York") is None
+    assert service._timezone("Europe/Berlin Invalid/Nowhere") is None
+
+
+def test_unsupported_or_contradictory_day_periods_fail_closed():
+    repo = FakeReminderRepo()
+    service = GroupReminderService(repo)
+    now = datetime(2026, 1, 2, 5, 0, tzinfo=timezone.utc)
+
+    for text in (
+        "НеНой, напоминай каждый день в 9 вечера Europe/Moscow",
+        "НеНой, напоминай каждый день в 9 дня Europe/Moscow",
+        "НеНой, напоминай каждый день в 18 утра Europe/Moscow",
+        "НеНой, напоминай каждое утро в 18 Europe/Moscow",
+    ):
+        action = service.maybe_schedule(
+            make_event(text=text, event_type=EventType.DIRECT_MENTION),
+            now=now,
+        )
+        assert action.status == "not_scheduled"
+        assert repo.created == []
+
+    valid = service.maybe_schedule(
+        make_event(
+            text="НеНой, напоминай каждый день в 9 утра Europe/Moscow",
+            event_type=EventType.DIRECT_MENTION,
+        ),
+        now=now,
+    )
+    assert valid.status == "scheduled"
