@@ -12,10 +12,21 @@ class FakeReminderRepo:
         self.cancel_calls = []
         self.reply_cancel_calls = []
         self.active_cancel_calls = []
+        self.pending = None
 
     def create(self, **kwargs):
         self.created.append(kwargs)
-        return SimpleNamespace(id=17, due_at=kwargs["due_at"])
+        return SimpleNamespace(id=17, due_at=kwargs["due_at"], payload=kwargs["payload"],
+                               recurrence_rule=kwargs["recurrence_rule"], already_existing=False)
+
+    def save_pending_calendar_intent(self, **kwargs):
+        self.pending = {"id": 3, "source_event_id": kwargs["source_event_id"], "payload": kwargs["payload"]}
+
+    def get_pending_calendar_intent(self, **kwargs):
+        return self.pending
+
+    def complete_pending_calendar_intent(self, intent_id):
+        self.pending = None
 
     def cancel_waiting_for_response(self, **kwargs):
         self.cancel_calls.append(kwargs)
