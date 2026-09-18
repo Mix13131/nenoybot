@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
-from types import SimpleNamespace
 
 from app_v2.domain.enums import EventType, ScopeType
 from app_v2.domain.events import EventEnvelope
@@ -59,10 +58,10 @@ def event(*, scope=ScopeType.GROUP, scope_id="-1001", message_id="20", metadata=
     )
 
 
-def test_message_repo_uses_scope_and_pre_event_tie_break() -> None:
+def test_message_repo_uses_scope_and_persisted_event_boundary() -> None:
     rows = [
-        ("19", 456, "предыдущее", NOW - timedelta(seconds=1), None),
-        ("18", 789, "ещё раньше", NOW - timedelta(minutes=1), None),
+        ("19", "456", "предыдущее", NOW - timedelta(seconds=1), None),
+        ("18", "789", "ещё раньше", NOW - timedelta(minutes=1), None),
     ]
     conn = FakeConn(rows)
     repo = MessageRepository(conn)
@@ -72,31 +71,30 @@ def test_message_repo_uses_scope_and_pre_event_tie_break() -> None:
         "-1001",
         before=NOW,
         before_message_id="20",
+        boundary_event_id="evt:20",
         limit=12,
     )
 
     sql, params = conn.calls[0]
-    assert "c.chat_type=%s" in sql
-    assert "c.telegram_chat_id::text=%s" in sql
-    assert "m.created_at < %s" in sql
-    assert "m.telegram_message_id < %s" in sql
-    assert params[0:2] == ("group", "-1001")
-    assert params[-2:] == (20, 12)
+    assert "FROM events" in sql
+    assert "e.scope_type=%s AND e.scope_id=%s" in sql
+    assert "e.telegram_update_id < b.telegram_update_id" in sql
+    assert "ROW_NUMBER() OVER" in sql
+    assert params == ("evt:20", "group", "-1001", "group", "-1001", 12)
     assert [item.message_id for item in result] == ["18", "19"]
 
 
-def test_message_repo_invalid_boundary_id_fails_closed_to_strict_time() -> None:
+def test_message_repo_without_persisted_boundary_fails_closed() -> None:
     conn = FakeConn([])
-    MessageRepository(conn).recent_before_event(
+    result = MessageRepository(conn).recent_before_event(
         ScopeType.PERSONAL,
         "123",
         before=NOW,
-        before_message_id="not-a-telegram-id",
+        before_message_id="20",
+        boundary_event_id=None,
     )
-    sql, params = conn.calls[0]
-    assert "m.telegram_message_id <" not in sql
-    assert params[0:2] == ("private", "123")
-    assert params[2] == NOW
+    assert result == []
+    assert conn.calls == []
 
 
 def test_context_builder_mapper_context_is_bounded_and_keeps_reply_metadata() -> None:
@@ -117,6 +115,21 @@ def test_context_builder_mapper_context_is_bounded_and_keeps_reply_metadata() ->
     assert call[1] == "-1001"
     assert call[2]["before"] == NOW
     assert call[2]["before_message_id"] == "20"
+    assert call[2]["boundary_event_id"] == "evt:20"
+
+
+def test_message_repo_context_uses_immutable_event_payload_not_messages_projection() -> None:
+    conn = FakeConn([])
+    MessageRepository(conn).recent_before_event(
+        ScopeType.GROUP,
+        "-1001",
+        before=NOW,
+        before_message_id="20",
+        boundary_event_id="evt:20",
+    )
+    sql, _ = conn.calls[0]
+    assert "e.payload ->> 'text'" in sql
+    assert "FROM messages" not in sql
 
 
 def test_forum_topic_context_fails_closed_without_persisted_thread_id() -> None:
