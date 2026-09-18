@@ -182,6 +182,11 @@ def test_pending_calendar_intent_ttl_topic_and_source_provenance_postgres():
             now=now,
         )
         assert first.reason == "timezone_required"
+        pending_payload = conn.execute(
+            "SELECT payload FROM pending_calendar_intents WHERE source_event_id=%s",
+            (source_event_id,),
+        ).fetchone()[0]
+        assert datetime.fromisoformat(pending_payload["reference_at"]) == now
 
         wrong_topic = service.maybe_schedule(
             event(
