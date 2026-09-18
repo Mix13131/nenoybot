@@ -799,6 +799,7 @@ class MemoryMapper:
                             str(candidate["memory_type"]),
                             semantic_key,
                             subjects,
+                            explicit=explicit,
                         )
                         destination_is_other_card = (
                             matched is not None
@@ -1066,6 +1067,8 @@ class MemoryMapper:
         evidence: MemoryEvidence,
         requested_memory_type: str,
         trusted_subject_keys: Iterable[str],
+        *,
+        explicit: bool,
     ) -> str | None:
         if not evidence.author_id:
             return None
@@ -1078,6 +1081,13 @@ class MemoryMapper:
         }
         trusted_targets_author = trusted_user in trusted_subjects
 
+        # Explicit remember is an intentional personal-memory operation. Its
+        # subject is assigned from trusted source provenance by construction,
+        # so it remains author-bound even when Russian first-person verb forms
+        # omit an explicit pronoun (for example, ``люблю чай``). Never use the
+        # explicit signal to accept a conflicting model-provided user subject.
+        if explicit and trusted_targets_author:
+            return trusted_user
         if requested_memory_type in _DIRECT_STATEMENT_TYPES:
             return trusted_user
         if requested_memory_type in {"goal", "plan", "preference"} and trusted_targets_author:
@@ -1116,12 +1126,15 @@ class MemoryMapper:
         requested_memory_type: str,
         semantic_key: str,
         trusted_subject_keys: Iterable[str],
+        *,
+        explicit: bool,
     ) -> MemoryCard | None:
         subject_user_key = self._person_specific_subject_key(
             candidate,
             evidence,
             requested_memory_type,
             trusted_subject_keys,
+            explicit=explicit,
         )
         if subject_user_key:
             finder = getattr(self.store, "find_semantic_match_for_subject", None)
@@ -1280,6 +1293,7 @@ class MemoryMapper:
             requested_memory_type,
             semantic_key,
             subject_keys,
+            explicit=explicit,
         )
         existing = semantic_existing
 
