@@ -1051,13 +1051,10 @@ class MemoryMapper:
     ) -> str | None:
         if not evidence.author_id:
             return None
-        model_subjects = [
-            str(item).strip()
-            for item in candidate.get("subject_keys", [])
-            if str(item).strip()
-        ]
-        model_has_user_subject = any(item.startswith("user:") for item in model_subjects)
-        if requested_memory_type in _DIRECT_STATEMENT_TYPES or model_has_user_subject:
+        # Only statement memories whose meaning is inherently tied to
+        # the speaker are author-partitioned. Generic observations may be
+        # corroborated by different participants and must remain mergeable.
+        if requested_memory_type in _DIRECT_STATEMENT_TYPES:
             return f"user:{evidence.author_id}"
         return None
 
