@@ -3,14 +3,18 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass
 from datetime import datetime, timedelta
+from zoneinfo import ZoneInfo
 from typing import Any
 
 from app_v2.domain.enums import EventType, ScopeType
 from app_v2.domain.events import EventEnvelope
+from app_v2.services.calendar_schedule import (
+    CalendarSchedule, next_calendar_occurrence, resolve_local, validate_timezone,
+)
 
 
 _USERNAME_RE = re.compile(r"@([A-Za-z0-9_]{5,32})")
-_REMINDER_INTENT_RE = re.compile(r"\b(?:напоминай|напомни)\b", flags=re.IGNORECASE)
+_REMINDER_INTENT_RE = re.compile(r"\b(?:напоминай|напомни|присылай)\b", flags=re.IGNORECASE)
 _CANCEL_REMINDER_RE = re.compile(
     r"(?:"
     r"\b(?:отмени|отменяй|останови|остановить|хватит|перестань|прекрати|стоп|достаточно)\b.{0,120}\bнапомин\w*"
@@ -32,6 +36,13 @@ _AFTER_INTERVAL_RE = re.compile(
     r"\bчерез\s+(\d{1,3})\s*(минут\w*|час\w*)",
     flags=re.IGNORECASE,
 )
+_CALENDAR_RE = re.compile(
+    r"(?P<kind>кажд(?:ый день|ое утро)|по будням|каждую пятницу|сегодня|завтра)"
+    r".*?\bв\s+(?P<hour>[01]?\d|2[0-3])(?::(?P<minute>[0-5]\d))?(?:\s*(?:утра))?",
+    flags=re.IGNORECASE,
+)
+_IANA_RE = re.compile(r"\b([A-Z][A-Za-z_+-]+/[A-Za-z0-9_+.-]+)\b")
+_TZ_ALIASES = {"по московскому времени": "Europe/Moscow", "мск": "Europe/Moscow"}
 
 _MIN_RECURRING_INTERVAL_SECONDS = 15 * 60
 _MAX_GROUP_REMINDER_OCCURRENCES = 4
@@ -48,6 +59,8 @@ class GroupReminderAction:
     stop_on_reply: bool = False
     cancelled_count: int = 0
     reason: str | None = None
+    timezone: str | None = None
+    recurrence_rule: str | None = None
 
     def as_action_state(self) -> dict[str, Any]:
         return {
@@ -60,6 +73,8 @@ class GroupReminderAction:
             "stop_on_reply": self.stop_on_reply,
             "cancelled_count": self.cancelled_count,
             "reason": self.reason,
+            "timezone": self.timezone,
+            "recurrence_rule": self.recurrence_rule,
         }
 
 
@@ -136,8 +151,30 @@ class GroupReminderService:
                 reason=None if cancelled else "no_active_reminders",
             )
 
+        timezone_name = self._timezone(text)
+        pending = None
+        if timezone_name and event.actor_user_id:
+            pending = self.reminder_repo.get_pending_calendar_intent(
+                scope_id=event.scope_id, actor_user_id=event.actor_user_id)
+        if pending:
+            spec = dict(pending["payload"])
+            return self._persist_calendar(event, now=now, spec=spec, timezone_name=timezone_name,
+                                          source_event_id=pending["source_event_id"], pending_id=pending["id"])
+
         if not _REMINDER_INTENT_RE.search(text):
             return None
+
+        calendar = self._calendar_spec(text, now)
+        if calendar is not None:
+            if not timezone_name:
+                if event.actor_user_id:
+                    self.reminder_repo.save_pending_calendar_intent(
+                        scope_id=event.scope_id, actor_user_id=event.actor_user_id,
+                        source_event_id=event.event_id, payload=calendar,
+                    )
+                return GroupReminderAction(status="not_scheduled", reason="timezone_required")
+            return self._persist_calendar(event, now=now, spec=calendar,
+                                          timezone_name=timezone_name, source_event_id=event.event_id)
 
         interval_seconds = self._recurring_interval_seconds(text)
         one_shot_seconds = None if interval_seconds is not None else self._one_shot_delay_seconds(text)
@@ -182,6 +219,7 @@ class GroupReminderService:
             due_at=due_at,
             recurrence_rule=recurrence_rule,
             payload=payload,
+            source_event_id=event.event_id,
         )
         return GroupReminderAction(
             status="scheduled",
@@ -191,7 +229,72 @@ class GroupReminderService:
             target_username=target_username,
             due_at=record.due_at,
             stop_on_reply=stop_on_reply,
+            recurrence_rule=getattr(record, "recurrence_rule", recurrence_rule),
         )
+
+    def _persist_calendar(self, event: EventEnvelope, *, now: datetime, spec: dict[str, Any],
+                          timezone_name: str, source_event_id: str,
+                          pending_id: int | None = None) -> GroupReminderAction:
+        timezone_name = validate_timezone(timezone_name)
+        one_shot_day = spec.get("one_shot_day")
+        if one_shot_day is not None:
+            local_today = now.astimezone(ZoneInfo(timezone_name)).date()
+            due_at = resolve_local(local_today + timedelta(days=int(one_shot_day)),
+                                   int(spec["hour"]), int(spec["minute"]), timezone_name)
+            if due_at <= now:
+                return GroupReminderAction(status="not_scheduled", reason="calendar_time_in_past")
+            rule = None
+            recurring = False
+        else:
+            schedule = CalendarSchedule(spec["frequency"], int(spec["hour"]), int(spec["minute"]),
+                                        timezone_name, spec.get("weekday"))
+            rule = schedule.encode()
+            due_at = next_calendar_occurrence(schedule, now)
+            recurring = True
+        subject = " ".join(str(spec.get("subject") or event.text or "").split())[:700]
+        payload = {"text": f"Сделай короткое напоминание участникам чата в характере НеНоя. Контекст договорённости: {subject}",
+                   "actor_user_id": event.actor_user_id, "source_event_id": source_event_id,
+                   "source_message_id": event.message_id, "reminder_context": subject,
+                   "timezone": timezone_name, "fire_count": 0,
+                   "max_occurrences": _MAX_GROUP_REMINDER_OCCURRENCES if recurring else 1}
+        record = self.reminder_repo.create(scope_type=ScopeType.GROUP, scope_id=event.scope_id,
+                                           due_at=due_at, recurrence_rule=rule, payload=payload,
+                                           source_event_id=source_event_id)
+        if pending_id is not None:
+            self.reminder_repo.complete_pending_calendar_intent(pending_id)
+        already = bool(getattr(record, "already_existing", False))
+        return GroupReminderAction(status="already_scheduled" if already else "scheduled",
+                                   reminder_id=record.id, recurring=recurring, due_at=record.due_at,
+                                   timezone=timezone_name, recurrence_rule=record.recurrence_rule)
+
+    @staticmethod
+    def _timezone(text: str) -> str | None:
+        lowered = text.lower()
+        for alias, name in _TZ_ALIASES.items():
+            if alias in lowered:
+                return name
+        match = _IANA_RE.search(text)
+        if not match:
+            return None
+        try:
+            return validate_timezone(match.group(1))
+        except ValueError:
+            return None
+
+    @staticmethod
+    def _calendar_spec(text: str, now: datetime) -> dict[str, Any] | None:
+        match = _CALENDAR_RE.search(text)
+        if not match:
+            return None
+        kind = match.group("kind").lower()
+        spec: dict[str, Any] = {"hour": int(match.group("hour")),
+                                "minute": int(match.group("minute") or 0), "subject": text}
+        if kind == "сегодня": spec["one_shot_day"] = 0
+        elif kind == "завтра": spec["one_shot_day"] = 1
+        elif kind == "по будням": spec["frequency"] = "weekdays"
+        elif "пятниц" in kind: spec.update(frequency="weekly", weekday=4)
+        else: spec["frequency"] = "daily"
+        return spec
 
     @staticmethod
     def _target_username(text: str, reply_text: str) -> str | None:
