@@ -1364,3 +1364,93 @@ def test_same_source_retry_is_noop_when_excerpt_and_classification_drift():
     assert store.cards[before.id] == before
     assert store.create_calls == 1
     assert store.update_calls == 0
+
+
+
+def test_multi_source_card_keeps_retry_slot_per_evidence_source():
+    store = FakeStore()
+    source_a = event(
+        "Альфа отдельно. Общий статус готов.",
+        message_id="m-slot-a",
+        actor_user_id="u1",
+    )
+    source_b = event(
+        "Общий статус готов.",
+        message_id="m-slot-b",
+        actor_user_id="u1",
+        occurred_at=NOW + timedelta(minutes=1),
+    )
+    adapter = FakeAdapter(responses=[
+        {"candidates": [
+            candidate(
+                memory_type="observation",
+                semantic_key="alpha:separate",
+                summary="Альфа отдельно.",
+                source_message_id="m-slot-a",
+                evidence_excerpt="Альфа отдельно",
+                confidence=0.5,
+            ),
+            candidate(
+                memory_type="observation",
+                semantic_key="shared:ready",
+                summary="Общий статус готов.",
+                source_message_id="m-slot-a",
+                evidence_excerpt="Общий статус готов",
+                confidence=0.6,
+            ),
+        ]},
+        {"candidates": [
+            candidate(
+                memory_type="observation",
+                semantic_key="shared:ready",
+                summary="Общий статус готов.",
+                source_message_id="m-slot-b",
+                evidence_excerpt="Общий статус готов",
+                confidence=0.6,
+            ),
+        ]},
+        {"candidates": [
+            candidate(
+                memory_type="observation",
+                semantic_key="alpha:separate",
+                summary="Альфа отдельно.",
+                source_message_id="m-slot-a",
+                evidence_excerpt="Альфа отдельно",
+                confidence=0.5,
+            ),
+            candidate(
+                memory_type="plan",
+                semantic_key="shared:drifted",
+                summary="Статус готов.",
+                source_message_id="m-slot-a",
+                evidence_excerpt="статус готов",
+                confidence=0.4,
+            ),
+        ]},
+    ])
+    mapper = MemoryMapper(store=store, adapter=adapter)
+
+    first = mapper.map_event(source_a)
+    assert len(first.written) == 2
+    second = mapper.map_event(source_b)
+    assert len(second.written) == 1
+
+    shared = next(
+        card for card in store.cards.values()
+        if card.payload.get("semantic_key") == "shared:ready"
+    )
+    slots = shared.payload["source_candidate_slots"]
+    assert slots[mapper._source_slot_key(shared.evidence[0])] in {0, 1}
+    by_message = {
+        item.message_id: slots[mapper._source_slot_key(item)]
+        for item in shared.evidence
+    }
+    assert by_message == {"m-slot-a": 1, "m-slot-b": 0}
+
+    before_cards = dict(store.cards)
+    before_updates = store.update_calls
+    retried = mapper.map_event(source_a)
+
+    assert retried.written == ()
+    assert store.cards == before_cards
+    assert store.update_calls == before_updates

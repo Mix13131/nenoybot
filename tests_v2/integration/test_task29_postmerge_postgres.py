@@ -190,3 +190,148 @@ def test_unthreaded_replay_context_excludes_forum_topic_history_postgres() -> No
             (unthreaded_event, threaded_event, boundary_event),
         )
         conn.commit()
+
+
+
+def _generic_candidate(*, source_message_id, semantic_key, excerpt, memory_type="observation"):
+    return {
+        "memory_type": memory_type,
+        "semantic_key": semantic_key,
+        "summary": excerpt,
+        "subject_keys": [],
+        "source_message_id": source_message_id,
+        "evidence_excerpt": excerpt,
+        "payload": {
+            "statement_kind": "none",
+            "status": "unknown",
+            "due_at": None,
+            "verbatim": None,
+            "claim_kind": "fact",
+        },
+        "importance": 0.5,
+        "confidence": 0.6,
+        "usage_policy": {
+            "assist": True,
+            "callback": True,
+            "roast": False,
+            "proactive": False,
+        },
+    }
+
+
+def test_multi_source_retry_uses_source_specific_slot_postgres() -> None:
+    psycopg, database_url = _psycopg_and_url()
+    scope_id = f"it-source-slot-{uuid.uuid4().hex}"
+    source_a = EventEnvelope(
+        event_id=f"{scope_id}:a",
+        event_type=EventType.PRIVATE_MESSAGE,
+        occurred_at=NOW,
+        scope_type=ScopeType.PERSONAL,
+        scope_id=scope_id,
+        actor_user_id="991000001",
+        message_id="880500001",
+        text="Альфа отдельно. Общий статус готов.",
+    )
+    source_b = EventEnvelope(
+        event_id=f"{scope_id}:b",
+        event_type=EventType.PRIVATE_MESSAGE,
+        occurred_at=NOW,
+        scope_type=ScopeType.PERSONAL,
+        scope_id=scope_id,
+        actor_user_id="991000001",
+        message_id="880500002",
+        text="Общий статус готов.",
+    )
+    adapter = _Adapter([
+        {"candidates": [
+            _generic_candidate(
+                source_message_id="880500001",
+                semantic_key="alpha:separate",
+                excerpt="Альфа отдельно",
+            ),
+            _generic_candidate(
+                source_message_id="880500001",
+                semantic_key="shared:ready",
+                excerpt="Общий статус готов",
+            ),
+        ]},
+        {"candidates": [
+            _generic_candidate(
+                source_message_id="880500002",
+                semantic_key="shared:ready",
+                excerpt="Общий статус готов",
+            ),
+        ]},
+        {"candidates": [
+            _generic_candidate(
+                source_message_id="880500001",
+                semantic_key="alpha:separate",
+                excerpt="Альфа отдельно",
+            ),
+            _generic_candidate(
+                source_message_id="880500001",
+                semantic_key="shared:drifted",
+                excerpt="статус готов",
+                memory_type="plan",
+            ),
+        ]},
+    ])
+
+    with psycopg.connect(database_url) as conn:
+        mapper = MemoryMapper(
+            store=MemoryMapperStore(MemoryRepository(conn)),
+            adapter=adapter,
+        )
+        first = mapper.map_event(source_a)
+        assert len(first.written) == 2
+        merged = mapper.map_event(source_b)
+        assert len(merged.written) == 1
+
+        before = conn.execute(
+            """
+            SELECT id, payload, evidence, updated_at
+            FROM memory_cards
+            WHERE scope_type='personal' AND scope_id=%s
+              AND payload ->> 'semantic_key'='shared:ready'
+            """,
+            (scope_id,),
+        ).fetchone()
+        assert before is not None
+        slots = before[1]["source_candidate_slots"]
+        evidence_by_message = {str(item["message_id"]): item for item in before[2]}
+        assert slots[mapper._source_slot_key(
+            mapper._candidate_evidence(source_a, {
+                **_generic_candidate(
+                    source_message_id="880500001",
+                    semantic_key="shared:ready",
+                    excerpt="Общий статус готов",
+                ),
+                "_source_candidate_index": 1,
+            }, ())
+        )] == 1
+        assert len(evidence_by_message) == 2
+
+        retried = mapper.map_event(source_a)
+        assert retried.written == ()
+
+        after = conn.execute(
+            """
+            SELECT id, payload, evidence, updated_at
+            FROM memory_cards
+            WHERE scope_type='personal' AND scope_id=%s
+              AND id=%s
+            """,
+            (scope_id, before[0]),
+        ).fetchone()
+        assert after == before
+        assert conn.execute(
+            """
+            SELECT COUNT(*) FROM memory_cards
+            WHERE scope_type='personal' AND scope_id=%s
+              AND status IN ('candidate','active')
+            """,
+            (scope_id,),
+        ).fetchone()[0] == 2
+
+        conn.execute("DELETE FROM memory_cards WHERE scope_id=%s", (scope_id,))
+        conn.commit()

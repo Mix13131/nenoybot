@@ -589,10 +589,24 @@ class MemoryMapper:
                 "episode_policy": "unique_source_messages_6h_window",
             }
         )
-        # Candidate slot is source-local. Once that source is detached we can no
-        # longer prove the slot for the remaining provenance, so fail closed on
-        # a future ambiguous edit instead of carrying a false mapping.
-        payload.pop("source_candidate_index", None)
+        source_slots = payload.get("source_candidate_slots")
+        if isinstance(source_slots, dict):
+            source_slots = dict(source_slots)
+            source_slots.pop(self._source_slot_key(source_evidence), None)
+            if source_slots:
+                payload["source_candidate_slots"] = source_slots
+            else:
+                payload.pop("source_candidate_slots", None)
+        else:
+            source_slots = {}
+
+        # Keep the card-level field only as a legacy/single-source hint. The
+        # source-specific map above is authoritative for corroborated cards.
+        anchor_slot = source_slots.get(self._source_slot_key(anchor))
+        if isinstance(anchor_slot, int) and not isinstance(anchor_slot, bool):
+            payload["source_candidate_index"] = anchor_slot
+        else:
+            payload.pop("source_candidate_index", None)
 
         memory_type = card.memory_type
         status = card.status
@@ -731,7 +745,7 @@ class MemoryMapper:
                     elif len(prepared) == len(stable_cards) and len(pending) == len(unmatched_stable):
                         by_slot: dict[int, MemoryCard] = {}
                         for card in unmatched_stable:
-                            slot = card.payload.get("source_candidate_index")
+                            slot = self._source_slot_for_card(card, source_evidence)
                             if not isinstance(slot, int) or slot in by_slot:
                                 return MapperResult(
                                     failed=True,
@@ -995,6 +1009,35 @@ class MemoryMapper:
         return (evidence.message_id, evidence.author_id)
 
     @classmethod
+    def _source_slot_key(cls, evidence: MemoryEvidence) -> str:
+        return json.dumps(
+            cls._source_identity(evidence),
+            ensure_ascii=False,
+            separators=(",", ":"),
+        )
+
+    @classmethod
+    def _source_slot_for_card(
+        cls,
+        card: MemoryCard,
+        evidence: MemoryEvidence,
+    ) -> int | None:
+        raw_slots = card.payload.get("source_candidate_slots")
+        if isinstance(raw_slots, dict):
+            slot = raw_slots.get(cls._source_slot_key(evidence))
+            if isinstance(slot, int) and not isinstance(slot, bool):
+                return slot
+
+        # Backward compatibility for cards written before per-source slots.
+        # A single-source card's old card-level slot is unambiguous. On a
+        # multi-source legacy card it is not, so fail closed to excerpt matching.
+        if len(cls._unique_sources(card.evidence)) == 1:
+            legacy_slot = card.payload.get("source_candidate_index")
+            if isinstance(legacy_slot, int) and not isinstance(legacy_slot, bool):
+                return legacy_slot
+        return None
+
+    @classmethod
     def _unique_sources(cls, evidence_items: Iterable[MemoryEvidence]) -> list[MemoryEvidence]:
         result: list[MemoryEvidence] = []
         seen: set[tuple[str | None, str | None]] = set()
@@ -1170,7 +1213,6 @@ class MemoryMapper:
         source_identity = cls._source_identity(evidence)
         candidate_slot = candidate.get("_source_candidate_index")
         for card in stable_source_cards:
-            card_slot = card.payload.get("source_candidate_index")
             source_matches = any(
                 cls._source_identity(item) == source_identity
                 for item in card.evidence
@@ -1178,18 +1220,22 @@ class MemoryMapper:
             if not source_matches:
                 continue
 
-            # For ordinary mapped candidates, source identity + persisted slot
-            # is the replay key. The model may select a different valid
-            # substring from the same unchanged source on retry; excerpt drift
-            # must not create a second logical card.
-            if isinstance(candidate_slot, int) and isinstance(card_slot, int):
-                if candidate_slot == card_slot:
+            # Replay position belongs to this specific source, not to the card:
+            # one semantic card may corroborate several messages whose local
+            # candidate positions differ.
+            source_slot = cls._source_slot_for_card(card, evidence)
+            if (
+                isinstance(candidate_slot, int)
+                and not isinstance(candidate_slot, bool)
+                and isinstance(source_slot, int)
+            ):
+                if candidate_slot == source_slot:
                     return True
                 continue
 
-            # Legacy / explicit cards may not carry a slot. Keep the stricter
-            # excerpt fallback there so one long source cannot collapse into an
-            # arbitrary old card.
+            # Legacy multi-source / explicit evidence may have no provable
+            # source-local slot. Keep exact excerpt matching as a fail-closed
+            # fallback instead of borrowing another source's slot.
             for item in card.evidence:
                 if (
                     cls._source_identity(item) == source_identity
@@ -1410,8 +1456,20 @@ class MemoryMapper:
             }
         )
         source_candidate_index = candidate.get("_source_candidate_index")
-        if isinstance(source_candidate_index, int):
+        source_candidate_slots: dict[str, int] = {}
+        if existing is not None:
+            existing_slots = existing.payload.get("source_candidate_slots")
+            if isinstance(existing_slots, dict):
+                source_candidate_slots = {
+                    str(key): int(value)
+                    for key, value in existing_slots.items()
+                    if isinstance(value, int) and not isinstance(value, bool)
+                }
+        if isinstance(source_candidate_index, int) and not isinstance(source_candidate_index, bool):
             payload["source_candidate_index"] = source_candidate_index
+            source_candidate_slots[self._source_slot_key(evidence)] = source_candidate_index
+        if source_candidate_slots:
+            payload["source_candidate_slots"] = source_candidate_slots
 
         if existing is None:
             card = MemoryCard(
