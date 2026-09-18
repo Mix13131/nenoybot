@@ -80,14 +80,6 @@ class ReminderRepository:
         if due_at.tzinfo is None or due_at.utcoffset() is None:
             raise ValueError("due_at must be timezone-aware")
         self._interval_seconds(recurrence_rule)
-        if source_event_id:
-            existing = self.conn.execute(
-                """SELECT id, scope_type, scope_id, due_at, status, payload, last_fired_at, recurrence_rule
-                   FROM reminders WHERE payload ->> 'source_event_id'=%s""", (source_event_id,),
-            ).fetchone()
-            if existing:
-                record = self._row(existing)
-                return ReminderRecord(**{**record.__dict__, "already_existing": True})
         body = dict(payload or {})
         if source_event_id:
             body["source_event_id"] = source_event_id
@@ -95,6 +87,9 @@ class ReminderRepository:
             """
             INSERT INTO reminders(scope_type, scope_id, due_at, recurrence_rule, status, payload)
             VALUES (%s,%s,%s,%s,'pending',%s::jsonb)
+            ON CONFLICT ((payload ->> 'source_event_id'))
+                WHERE payload ->> 'source_event_id' IS NOT NULL
+                DO NOTHING
             RETURNING id, scope_type, scope_id, due_at, status, payload, last_fired_at, recurrence_rule
             """,
             (
@@ -105,8 +100,20 @@ class ReminderRepository:
                 json.dumps(body, ensure_ascii=False),
             ),
         ).fetchone()
+        already_existing = row is None
+        if already_existing:
+            row = self.conn.execute(
+                """SELECT id, scope_type, scope_id, due_at, status, payload, last_fired_at, recurrence_rule
+                   FROM reminders WHERE payload ->> 'source_event_id'=%s""",
+                (source_event_id,),
+            ).fetchone()
+            if row is None:
+                raise RuntimeError("Source-event conflict did not yield a reminder")
         self.conn.commit()
-        return self._row(row)
+        record = self._row(row)
+        if already_existing:
+            return ReminderRecord(**{**record.__dict__, "already_existing": True})
+        return record
 
     def save_pending_calendar_intent(self, *, scope_id: str, actor_user_id: str,
                                      source_event_id: str, payload: dict[str, Any]) -> None:
@@ -323,7 +330,8 @@ class ReminderRepository:
         """Atomically turn one due reminder into a durable reminder_due event."""
         row = self.conn.execute(
             """
-            SELECT id, scope_type, scope_id, due_at, status, payload, last_fired_at, recurrence_rule
+            SELECT id, scope_type, scope_id, due_at, status, payload, last_fired_at, recurrence_rule,
+                   clock_timestamp()
             FROM reminders
             WHERE status IN ('pending','retry') AND due_at <= CURRENT_TIMESTAMP
             ORDER BY due_at, id
@@ -336,6 +344,7 @@ class ReminderRepository:
             return None
 
         reminder = self._row(row)
+        processing_at = row[8]
         interval_seconds = self._interval_seconds(reminder.recurrence_rule)
         payload = dict(reminder.payload)
         fire_count = int(payload.get("fire_count") or 0) + 1
@@ -395,7 +404,8 @@ class ReminderRepository:
             next_due = reminder.due_at
         else:
             next_status = "pending"
-            next_value = (next_calendar_occurrence(calendar, reminder.due_at)
+            calendar_reference = max(reminder.due_at, processing_at)
+            next_value = (next_calendar_occurrence(calendar, calendar_reference)
                           if calendar else None)
             next_row = self.conn.execute(
                 """
