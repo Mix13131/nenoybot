@@ -38,13 +38,15 @@ _AFTER_INTERVAL_RE = re.compile(
 )
 _CALENDAR_RE = re.compile(
     r"(?P<kind>кажд(?:ый день|ое утро)|по будням|каждую пятницу|сегодня|завтра)"
-    r".*?\bв\s+(?P<hour>[01]?\d|2[0-3])(?::(?P<minute>[0-5]\d))?(?:\s*(?:утра))?",
+    r".*?\bв\s+(?P<hour>[01]?\d|2[0-3])(?::(?P<minute>[0-5]\d))?"
+    r"(?:\s*(?P<period>утра|вечера|дня|ночи))?",
     flags=re.IGNORECASE,
 )
 _TIMEZONE_TOKEN_RE = re.compile(
     r"(?<![A-Za-z0-9_+./-])(UTC|[A-Za-z][A-Za-z0-9_+.-]*/[A-Za-z0-9_+.-]+(?:/[A-Za-z0-9_+.-]+)*)(?![A-Za-z0-9_+./-])"
 )
-_TZ_ALIASES = {"по московскому времени": "Europe/Moscow", "мск": "Europe/Moscow"}
+_TZ_ALIASES = {"по московскому времени": "Europe/Moscow"}
+_MSK_RE = re.compile(r"(?<!\w)мск(?!\w)", flags=re.IGNORECASE)
 
 _MIN_RECURRING_INTERVAL_SECONDS = 15 * 60
 _MAX_GROUP_REMINDER_OCCURRENCES = 4
@@ -155,28 +157,51 @@ class GroupReminderService:
 
         timezone_name = self._timezone(text)
         pending = None
-        if timezone_name and event.actor_user_id:
-            pending = self.reminder_repo.get_pending_calendar_intent(
-                scope_id=event.scope_id, actor_user_id=event.actor_user_id)
+        clarification_timezone = None
+        if event.event_type is EventType.REPLY_TO_BOT and event.actor_user_id:
+            clarification_timezone = self._clarification_timezone(text)
+            if clarification_timezone:
+                pending = self.reminder_repo.get_pending_calendar_intent(
+                    scope_id=event.scope_id,
+                    actor_user_id=event.actor_user_id,
+                    message_thread_id=event.metadata.get("message_thread_id"),
+                    max_age_hours=24,
+                )
         if pending:
             spec = dict(pending["payload"])
-            return self._persist_calendar(event, now=now, spec=spec, timezone_name=timezone_name,
-                                          source_event_id=pending["source_event_id"], pending_id=pending["id"])
+            return self._persist_calendar(
+                event,
+                now=now,
+                spec=spec,
+                timezone_name=clarification_timezone,
+                source_event_id=pending["source_event_id"],
+                pending_id=pending["id"],
+            )
 
         if not _REMINDER_INTENT_RE.search(text):
             return None
 
         calendar = self._calendar_spec(text, now)
         if calendar is not None:
+            calendar = dict(calendar)
+            calendar["source_message_id"] = event.message_id
+            calendar["message_thread_id"] = event.metadata.get("message_thread_id")
             if not timezone_name:
                 if event.actor_user_id:
                     self.reminder_repo.save_pending_calendar_intent(
-                        scope_id=event.scope_id, actor_user_id=event.actor_user_id,
-                        source_event_id=event.event_id, payload=calendar,
+                        scope_id=event.scope_id,
+                        actor_user_id=event.actor_user_id,
+                        source_event_id=event.event_id,
+                        payload=calendar,
                     )
                 return GroupReminderAction(status="not_scheduled", reason="timezone_required")
-            return self._persist_calendar(event, now=now, spec=calendar,
-                                          timezone_name=timezone_name, source_event_id=event.event_id)
+            return self._persist_calendar(
+                event,
+                now=now,
+                spec=calendar,
+                timezone_name=timezone_name,
+                source_event_id=event.event_id,
+            )
 
         interval_seconds = self._recurring_interval_seconds(text)
         one_shot_seconds = None if interval_seconds is not None else self._one_shot_delay_seconds(text)
@@ -257,7 +282,9 @@ class GroupReminderService:
         subject = " ".join(str(spec.get("subject") or event.text or "").split())[:700]
         payload = {"text": f"Сделай короткое напоминание участникам чата в характере НеНоя. Контекст договорённости: {subject}",
                    "actor_user_id": event.actor_user_id, "source_event_id": source_event_id,
-                   "source_message_id": event.message_id, "reminder_context": subject,
+                   "source_message_id": spec.get("source_message_id") or event.message_id,
+                   "message_thread_id": spec.get("message_thread_id"),
+                   "reminder_context": subject,
                    "timezone": timezone_name, "fire_count": 0,
                    "max_occurrences": _MAX_GROUP_REMINDER_OCCURRENCES if recurring else 1}
         record = self.reminder_repo.create(scope_type=ScopeType.GROUP, scope_id=event.scope_id,
@@ -270,17 +297,45 @@ class GroupReminderService:
                                    reminder_id=record.id, recurring=recurring, due_at=record.due_at,
                                    timezone=timezone_name, recurrence_rule=record.recurrence_rule)
 
-    @staticmethod
-    def _timezone(text: str) -> str | None:
+    @classmethod
+    def _timezone(cls, text: str) -> str | None:
         lowered = text.lower()
+        candidates: list[str] = []
         for alias, name in _TZ_ALIASES.items():
             if alias in lowered:
-                return name
+                candidates.append(name)
+        if _MSK_RE.search(text):
+            candidates.append("Europe/Moscow")
+
+        invalid_explicit = False
         for match in _TIMEZONE_TOKEN_RE.finditer(text):
-            try:
-                return validate_timezone(match.group(1))
-            except ValueError:
+            token = match.group(1)
+            if token != "UTC" and "/" not in token:
                 continue
+            try:
+                candidates.append(validate_timezone(token))
+            except ValueError:
+                invalid_explicit = True
+
+        if invalid_explicit:
+            return None
+        distinct = set(candidates)
+        if len(distinct) != 1:
+            return None
+        return next(iter(distinct))
+
+    @classmethod
+    def _clarification_timezone(cls, text: str) -> str | None:
+        compact = " ".join(text.strip().split()).strip(" .!?…")
+        lowered = compact.lower()
+        if lowered == "по московскому времени" or _MSK_RE.fullmatch(compact):
+            return "Europe/Moscow"
+
+        token_text = compact
+        if lowered.startswith("по "):
+            token_text = compact[3:].strip()
+        if token_text == "UTC" or _TIMEZONE_TOKEN_RE.fullmatch(token_text):
+            return cls._timezone(token_text)
         return None
 
     @staticmethod
@@ -289,7 +344,14 @@ class GroupReminderService:
         if not match:
             return None
         kind = match.group("kind").lower()
-        spec: dict[str, Any] = {"hour": int(match.group("hour")),
+        hour = int(match.group("hour"))
+        period = (match.group("period") or "").lower()
+        if period:
+            if period != "утра" or hour > 11:
+                return None
+        if "утро" in kind and hour > 11:
+            return None
+        spec: dict[str, Any] = {"hour": hour,
                                 "minute": int(match.group("minute") or 0), "subject": text}
         if kind == "сегодня": spec["one_shot_day"] = 0
         elif kind == "завтра": spec["one_shot_day"] = 1
