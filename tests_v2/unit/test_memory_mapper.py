@@ -1049,3 +1049,110 @@ def test_group_person_specific_same_semantic_key_stays_separate_by_author():
     assert by_author["u1"].subject_keys == ["user:u1"]
     assert by_author["u2"].subject_keys == ["user:u2"]
     assert all(card.source_count == 1 for card in store.cards.values())
+
+
+
+def test_explicit_first_person_group_memory_is_partitioned_by_author():
+    store = FakeStore()
+    mapper = MemoryMapper(store=store)
+
+    first = mapper.map_event(event(
+        "Запомни: я люблю чай",
+        scope=ScopeType.GROUP,
+        scope_id="g-explicit-authors",
+        message_id="g-explicit-1",
+        actor_user_id="u1",
+    ))
+    second = mapper.map_event(event(
+        "Запомни: я люблю чай",
+        scope=ScopeType.GROUP,
+        scope_id="g-explicit-authors",
+        message_id="g-explicit-2",
+        actor_user_id="u2",
+    ))
+
+    assert len(store.cards) == 2
+    assert first.written[0].id != second.written[0].id
+    assert {tuple(card.subject_keys) for card in store.cards.values()} == {
+        ("user:u1",),
+        ("user:u2",),
+    }
+
+
+def test_user_bound_preference_same_key_is_partitioned_by_author():
+    store = FakeStore()
+    adapter = FakeAdapter(responses=[
+        {"candidates": [candidate(
+            memory_type="preference",
+            semantic_key="preference:tea",
+            subject_keys=["user:u1"],
+            source_message_id="pref-1",
+            evidence_excerpt="Предпочитаю чай",
+            summary="Участник предпочитает чай.",
+        )]},
+        {"candidates": [candidate(
+            memory_type="preference",
+            semantic_key="preference:tea",
+            subject_keys=["user:u2"],
+            source_message_id="pref-2",
+            evidence_excerpt="Предпочитаю чай",
+            summary="Участник предпочитает чай.",
+        )]},
+    ])
+    mapper = MemoryMapper(store=store, adapter=adapter)
+
+    mapper.map_event(event(
+        "Предпочитаю чай",
+        scope=ScopeType.GROUP,
+        scope_id="g-preferences",
+        message_id="pref-1",
+        actor_user_id="u1",
+    ))
+    mapper.map_event(event(
+        "Предпочитаю чай",
+        scope=ScopeType.GROUP,
+        scope_id="g-preferences",
+        message_id="pref-2",
+        actor_user_id="u2",
+    ))
+
+    assert len(store.cards) == 2
+    assert {tuple(card.subject_keys) for card in store.cards.values()} == {
+        ("user:u1",),
+        ("user:u2",),
+    }
+
+
+def test_rejected_non_edit_candidate_reports_partial_receipt():
+    from app_v2.services.operation_receipts import personal_operation_receipts
+
+    store = FakeStore()
+    mapper = MemoryMapper(store=store, adapter=FakeAdapter(responses=[
+        {"candidates": [
+            candidate(
+                semantic_key="valid:one",
+                source_message_id="m-partial",
+                evidence_excerpt="Сохрани первый факт",
+                summary="Первый факт.",
+            ),
+            candidate(
+                semantic_key="invalid:two",
+                source_message_id="m-partial",
+                evidence_excerpt="Этого фрагмента нет",
+                summary="Второй факт.",
+            ),
+        ]}
+    ]))
+
+    result = mapper.map_event(event(
+        "Сохрани первый факт",
+        message_id="m-partial",
+    ))
+
+    assert result.failed is True
+    assert result.reason == "mapper_rejected_candidate_provenance"
+    assert len(result.written) == 1
+    receipt = personal_operation_receipts(result)["memory"]
+    assert receipt["status"] == "partial"
+    assert receipt["changed"] is True
+    assert receipt["written_ids"] == [result.written[0].id]

@@ -473,9 +473,11 @@ class MemoryMapper:
             for candidate in raw_candidates
             if isinstance(candidate, dict) and candidate.get("memory_type") in _ALLOWED_TYPES
         ]
-        if event.event_type is EventType.EDITED_MESSAGE and len(candidates) != len(raw_candidates):
+        rejected_candidate = len(candidates) != len(raw_candidates)
+        if event.event_type is EventType.EDITED_MESSAGE and rejected_candidate:
             return MapperResult(failed=True, reason="edited_source_invalid_candidate")
         positioned_candidates = self._assign_source_candidate_slots(event, candidates, context_items)
+        rejected_candidate = rejected_candidate or len(positioned_candidates) != len(candidates)
         if event.event_type is EventType.EDITED_MESSAGE:
             # A genuinely empty mapper result means the edited source no longer
             # contains a memory candidate. If candidates existed but failed
@@ -505,6 +507,12 @@ class MemoryMapper:
                 )
             if card is not None:
                 written.append(card)
+        if rejected_candidate:
+            return MapperResult(
+                written=tuple(written),
+                failed=True,
+                reason="mapper_rejected_candidate_provenance",
+            )
         return MapperResult(written=tuple(written))
 
     def _assign_source_candidate_slots(
@@ -1051,11 +1059,43 @@ class MemoryMapper:
     ) -> str | None:
         if not evidence.author_id:
             return None
-        # Only statement memories whose meaning is inherently tied to
-        # the speaker are author-partitioned. Generic observations may be
-        # corroborated by different participants and must remain mergeable.
+
+        trusted_user = f"user:{evidence.author_id}"
+        model_subjects = {
+            str(item).strip()
+            for item in candidate.get("subject_keys", [])
+            if str(item).strip()
+        }
+        model_targets_author = trusted_user in model_subjects
+
         if requested_memory_type in _DIRECT_STATEMENT_TYPES:
-            return f"user:{evidence.author_id}"
+            return trusted_user
+        if requested_memory_type in {"goal", "plan", "preference"} and model_targets_author:
+            return trusted_user
+
+        # Explicit remembers and model observations may still be speaker-bound
+        # even though their stored type is "observation". Require both trusted
+        # subject provenance and first-person wording so generic project facts
+        # remain corroboratable across participants.
+        normalized = (
+            (evidence.excerpt or "")
+            .lower()
+            .replace("ё", "е")
+            .replace(",", " ")
+            .replace(".", " ")
+            .replace("!", " ")
+            .replace("?", " ")
+            .replace(":", " ")
+            .replace(";", " ")
+        )
+        tokens = set(normalized.split())
+        first_person_tokens = {
+            "я", "мне", "меня", "мной", "мой", "моя", "мое", "мои",
+            "мою", "моего", "моей", "моем", "моим", "моими",
+            "i", "me", "my", "mine",
+        }
+        if model_targets_author and tokens.intersection(first_person_tokens):
+            return trusted_user
         return None
 
     def _find_semantic_candidate_match(

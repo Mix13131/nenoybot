@@ -813,3 +813,135 @@ def test_group_person_specific_semantic_key_isolated_by_author_postgres() -> Non
             (scope_id,),
         )
         conn.commit()
+
+
+
+def test_explicit_first_person_group_memory_isolated_by_author_postgres() -> None:
+    psycopg, database_url = _psycopg_and_url()
+    scope_id = f"it-explicit-author-{uuid.uuid4().hex}"
+    first = EventEnvelope(
+        event_id=f"it:{scope_id}:u1",
+        event_type=EventType.GROUP_MESSAGE,
+        occurred_at=NOW,
+        scope_type=ScopeType.GROUP,
+        scope_id=scope_id,
+        actor_user_id="991000001",
+        message_id="880050001",
+        text="Запомни: я люблю чай",
+    )
+    second = first.model_copy(update={
+        "event_id": f"it:{scope_id}:u2",
+        "occurred_at": NOW + timedelta(minutes=1),
+        "actor_user_id": "991000002",
+        "message_id": "880050002",
+    })
+
+    with psycopg.connect(database_url) as conn:
+        mapper = MemoryMapper(store=MemoryMapperStore(MemoryRepository(conn)))
+        first_result = mapper.map_event(first)
+        second_result = mapper.map_event(second)
+
+        assert len(first_result.written) == 1
+        assert len(second_result.written) == 1
+        assert first_result.written[0].id != second_result.written[0].id
+
+        rows = conn.execute(
+            """
+            SELECT subject_keys, evidence
+            FROM memory_cards
+            WHERE scope_type='group' AND scope_id=%s
+              AND status IN ('candidate','active')
+            ORDER BY id
+            """,
+            (scope_id,),
+        ).fetchall()
+        assert len(rows) == 2
+        authors = {
+            row[1][0]["author_id"]: row[0]
+            for row in rows
+        }
+        assert authors == {
+            "991000001": ["user:991000001"],
+            "991000002": ["user:991000002"],
+        }
+
+        conn.execute(
+            "DELETE FROM memory_cards WHERE scope_type='group' AND scope_id=%s",
+            (scope_id,),
+        )
+        conn.commit()
+
+
+def test_rejected_non_edit_candidate_is_partial_postgres() -> None:
+    psycopg, database_url = _psycopg_and_url()
+    scope_id = f"it-partial-provenance-{uuid.uuid4().hex}"
+    message_id = "880050101"
+
+    def partial_candidate(key: str, excerpt: str) -> dict:
+        return {
+            "memory_type": "observation",
+            "semantic_key": key,
+            "summary": "Синтетический факт.",
+            "subject_keys": ["user:991000001"],
+            "source_message_id": message_id,
+            "evidence_excerpt": excerpt,
+            "payload": {
+                "statement_kind": "none",
+                "status": "unknown",
+                "due_at": None,
+                "verbatim": excerpt,
+                "claim_kind": "fact",
+            },
+            "importance": 0.6,
+            "confidence": 0.6,
+            "usage_policy": {
+                "assist": True,
+                "callback": False,
+                "roast": False,
+                "proactive": False,
+            },
+        }
+
+    adapter = _EditAdapter([{
+        "candidates": [
+            partial_candidate("fact:valid", "Сохрани первый факт"),
+            partial_candidate("fact:invalid", "Фрагмента нет в сообщении"),
+        ]
+    }])
+    source = EventEnvelope(
+        event_id=f"it:{scope_id}:source",
+        event_type=EventType.PRIVATE_MESSAGE,
+        occurred_at=NOW,
+        scope_type=ScopeType.PERSONAL,
+        scope_id=scope_id,
+        actor_user_id="991000001",
+        message_id=message_id,
+        text="Сохрани первый факт",
+    )
+
+    with psycopg.connect(database_url) as conn:
+        mapper = MemoryMapper(store=MemoryMapperStore(MemoryRepository(conn)), adapter=adapter)
+        result = mapper.map_event(source)
+
+        assert result.failed is True
+        assert result.reason == "mapper_rejected_candidate_provenance"
+        assert len(result.written) == 1
+        receipt = personal_operation_receipts(result)["memory"]
+        assert receipt["status"] == "partial"
+        assert receipt["changed"] is True
+
+        rows = conn.execute(
+            """
+            SELECT id
+            FROM memory_cards
+            WHERE scope_type='personal' AND scope_id=%s
+            """,
+            (scope_id,),
+        ).fetchall()
+        assert len(rows) == 1
+
+        conn.execute(
+            "DELETE FROM memory_cards WHERE scope_type='personal' AND scope_id=%s",
+            (scope_id,),
+        )
+        conn.commit()
