@@ -200,7 +200,11 @@ class GroupPipeline:
         mapped_memory_ids: tuple[str, ...] = ()
         mapper_result: Any | None = None
         memory_attempted = False
-        if self.memory_mapper is not None and _should_map_group_memory(event, scene):
+        should_map_memory = (
+            event.event_type is EventType.EDITED_MESSAGE
+            or _should_map_group_memory(event, scene)
+        )
+        if self.memory_mapper is not None and should_map_memory:
             memory_attempted = True
             mapper_result = self.memory_mapper.map_event(
                 event,
