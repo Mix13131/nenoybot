@@ -71,50 +71,69 @@ class MessageRepository:
         *,
         before: datetime,
         before_message_id: str | None = None,
+        boundary_event_id: str | None = None,
         limit: int = 12,
     ) -> list[HotMessage]:
-        """Return only messages logically before an event in the same scope.
+        """Return immutable message versions from before an event boundary.
 
-        Telegram message ids provide a deterministic tie-break when several
-        messages share the same second. If an id cannot be parsed, fail closed
-        to a strict timestamp cutoff instead of risking future-message leakage.
+        Inbound ``events.payload`` is append-only and therefore preserves the
+        text of every Telegram message/edit version. ``messages.text`` is a
+        mutable projection and must never be used for replayable mapper input.
+        A persisted boundary event is required so Telegram update order can
+        exclude later edits deterministically, including same-second updates.
         """
         if not scope_id.strip():
             raise ValueError("scope_id must not be empty")
         if before.tzinfo is None or before.utcoffset() is None:
             raise ValueError("before must be timezone-aware")
 
-        chat_type = "private" if scope_type is ScopeType.PERSONAL else "group"
         bounded_limit = max(1, min(limit, 50))
-        try:
-            boundary_id = int(before_message_id) if before_message_id is not None else None
-        except (TypeError, ValueError):
-            boundary_id = None
-
-        if boundary_id is None:
-            cutoff_sql = "m.created_at < %s"
-            cutoff_params = (before,)
-        else:
-            cutoff_sql = "(m.created_at < %s OR (m.created_at = %s AND m.telegram_message_id < %s))"
-            cutoff_params = (before, before, boundary_id)
+        if not boundary_event_id:
+            return []
 
         rows = self.conn.execute(
-            f"""
-            SELECT m.telegram_message_id,
-                   u.telegram_user_id,
-                   COALESCE(m.text, ''),
-                   m.created_at,
-                   m.reply_to_message_id
-            FROM messages m
-            JOIN chats c ON c.id = m.chat_id
-            LEFT JOIN users u ON u.id = m.user_id
-            WHERE c.chat_type=%s
-              AND c.telegram_chat_id::text=%s
-              AND m.text IS NOT NULL
-              AND {cutoff_sql}
-            ORDER BY m.created_at DESC, m.telegram_message_id DESC
+            """
+            WITH boundary AS (
+                SELECT telegram_update_id
+                FROM events
+                WHERE event_id=%s AND scope_type=%s AND scope_id=%s
+                  AND telegram_update_id IS NOT NULL
+            ), versions AS (
+                SELECT
+                    e.payload ->> 'message_id' AS message_id,
+                    e.payload ->> 'actor_user_id' AS author_user_id,
+                    e.payload ->> 'text' AS text,
+                    (e.payload ->> 'occurred_at')::timestamptz AS occurred_at,
+                    e.payload ->> 'reply_to_message_id' AS reply_to_message_id,
+                    e.telegram_update_id,
+                    ROW_NUMBER() OVER (
+                        PARTITION BY e.payload ->> 'message_id'
+                        ORDER BY e.telegram_update_id DESC, e.id DESC
+                    ) AS version_rank
+                FROM events e
+                CROSS JOIN boundary b
+                WHERE e.scope_type=%s AND e.scope_id=%s
+                  AND e.telegram_update_id IS NOT NULL
+                  AND e.telegram_update_id < b.telegram_update_id
+                  AND e.payload ->> 'message_id' IS NOT NULL
+                  AND e.payload ->> 'text' IS NOT NULL
+            )
+            SELECT message_id, author_user_id, text, occurred_at, reply_to_message_id
+            FROM versions
+            WHERE version_rank=1
+            ORDER BY occurred_at DESC,
+                     CASE WHEN message_id ~ '^[0-9]+$' THEN message_id::numeric END DESC NULLS LAST,
+                     message_id DESC,
+                     telegram_update_id DESC
             LIMIT %s
             """,
-            (chat_type, scope_id, *cutoff_params, bounded_limit),
+            (
+                boundary_event_id,
+                scope_type.value,
+                scope_id,
+                scope_type.value,
+                scope_id,
+                bounded_limit,
+            ),
         ).fetchall()
         return self._rows_to_messages(rows)
