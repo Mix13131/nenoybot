@@ -886,3 +886,68 @@ def test_removed_plus_identity_changed_candidate_fails_closed_without_guessing()
     assert result.forgotten_ids == ()
     assert store.cards == before
     assert {card.id for card in first.written} == set(store.cards)
+
+
+def test_edited_source_merges_into_existing_semantic_card_and_archives_old_card():
+    from app_v2.services.operation_receipts import personal_operation_receipts
+
+    store = FakeStore()
+    mapper = MemoryMapper(store=store, adapter=FakeAdapter(responses=[
+        {"candidates": [candidate(
+            semantic_key="claim:a",
+            summary="Синтетический проект использует вариант A.",
+            evidence_excerpt="Проект использует вариант A",
+        )]},
+        {"candidates": [candidate(
+            semantic_key="claim:b",
+            summary="Синтетический проект использует вариант B.",
+            evidence_excerpt="Проект использует вариант B",
+        )]},
+        {"candidates": [candidate(
+            semantic_key="claim:b",
+            summary="Синтетический проект использует вариант B.",
+            evidence_excerpt="Теперь проект использует вариант B",
+        )]},
+        {"candidates": [candidate(
+            semantic_key="claim:b",
+            summary="Синтетический проект использует вариант B.",
+            evidence_excerpt="Теперь проект использует вариант B",
+        )]},
+    ]))
+    source_a = event("Проект использует вариант A", message_id="source-a")
+    source_b = event(
+        "Проект использует вариант B",
+        message_id="source-b",
+        occurred_at=NOW + timedelta(hours=7),
+    )
+    old_a = mapper.map_event(source_a).written[0]
+    existing_b = mapper.map_event(source_b).written[0]
+    before_retry = store.cards[existing_b.id]
+
+    edited = source_a.model_copy(update={
+        "event_type": EventType.EDITED_MESSAGE,
+        "text": "Теперь проект использует вариант B",
+        "occurred_at": NOW + timedelta(minutes=5),
+    })
+    corrected = mapper.map_event(edited)
+
+    assert corrected.failed is False
+    assert corrected.forgotten_ids == (old_a.id,)
+    assert len(corrected.written) == 1
+    merged = corrected.written[0]
+    assert merged.id == existing_b.id
+    assert store.cards[old_a.id].status is MemoryStatus.ARCHIVED
+    assert {item.message_id for item in merged.evidence} == {"source-a", "source-b"}
+    assert merged.source_count == 2
+    assert merged.payload["episode_count"] == 2
+    receipt = personal_operation_receipts(corrected)["memory"]
+    assert receipt["changed"] is True
+    assert receipt["written_ids"] == [existing_b.id]
+    assert receipt["forgotten_ids"] == [old_a.id]
+
+    retried = mapper.map_event(edited)
+    assert retried.written == ()
+    assert retried.forgotten_ids == ()
+    assert personal_operation_receipts(retried)["memory"]["changed"] is False
+    assert store.cards[existing_b.id] == merged
+    assert merged.confidence >= before_retry.confidence

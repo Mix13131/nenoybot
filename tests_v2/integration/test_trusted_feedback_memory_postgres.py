@@ -559,3 +559,97 @@ def test_edit_retaining_later_candidate_uses_semantic_identity_postgres() -> Non
         assert beta_row[2][0]["excerpt"] == "Бета стоит 900 USD"
         conn.execute("DELETE FROM memory_cards WHERE scope_type='personal' AND scope_id=%s", (scope_id,))
         conn.commit()
+
+
+def test_edited_source_merges_into_existing_semantic_card_postgres() -> None:
+    psycopg, database_url = _psycopg_and_url()
+    scope_id = f"it-edit-merge-existing-{uuid.uuid4().hex}"
+
+    def sourced_candidate(key: str, summary: str, excerpt: str, message_id: str) -> dict:
+        value = _edit_candidate(key, summary, excerpt)
+        value["source_message_id"] = message_id
+        return value
+
+    adapter = _EditAdapter([
+        {"candidates": [sourced_candidate(
+            "claim:a", "Синтетический проект использует вариант A.",
+            "Проект использует вариант A", "880030001",
+        )]},
+        {"candidates": [sourced_candidate(
+            "claim:b", "Синтетический проект использует вариант B.",
+            "Проект использует вариант B", "880030002",
+        )]},
+        {"candidates": [sourced_candidate(
+            "claim:b", "Синтетический проект использует вариант B.",
+            "Теперь проект использует вариант B", "880030001",
+        )]},
+        {"candidates": [sourced_candidate(
+            "claim:b", "Синтетический проект использует вариант B.",
+            "Теперь проект использует вариант B", "880030001",
+        )]},
+    ])
+    source_a = EventEnvelope(
+        event_id=f"it:{scope_id}:a",
+        event_type=EventType.PRIVATE_MESSAGE,
+        occurred_at=NOW,
+        scope_type=ScopeType.PERSONAL,
+        scope_id=scope_id,
+        actor_user_id="991000001",
+        message_id="880030001",
+        text="Проект использует вариант A",
+    )
+    source_b = source_a.model_copy(update={
+        "event_id": f"it:{scope_id}:b",
+        "occurred_at": NOW + timedelta(hours=7),
+        "message_id": "880030002",
+        "text": "Проект использует вариант B",
+    })
+    edited = source_a.model_copy(update={
+        "event_id": f"it:{scope_id}:edit-a-to-b",
+        "event_type": EventType.EDITED_MESSAGE,
+        "occurred_at": NOW + timedelta(minutes=5),
+        "text": "Теперь проект использует вариант B",
+    })
+
+    with psycopg.connect(database_url) as conn:
+        mapper = MemoryMapper(store=MemoryMapperStore(MemoryRepository(conn)), adapter=adapter)
+        old_a = mapper.map_event(source_a).written[0]
+        existing_b = mapper.map_event(source_b).written[0]
+        corrected = mapper.map_event(edited)
+
+        assert corrected.failed is False
+        assert corrected.forgotten_ids == (old_a.id,)
+        assert [card.id for card in corrected.written] == [existing_b.id]
+        rows = conn.execute(
+            """
+            SELECT id, status, source_count, evidence
+            FROM memory_cards
+            WHERE scope_type='personal' AND scope_id=%s
+            ORDER BY id
+            """,
+            (scope_id,),
+        ).fetchall()
+        assert len(rows) == 2
+        by_id = {row[0]: row for row in rows}
+        assert by_id[old_a.id][1] == "archived"
+        assert by_id[existing_b.id][2] == 2
+        assert {item["message_id"] for item in by_id[existing_b.id][3]} == {
+            "880030001", "880030002",
+        }
+        receipt = personal_operation_receipts(corrected)["memory"]
+        assert receipt["changed"] is True
+        assert receipt["written_ids"] == [existing_b.id]
+        assert receipt["forgotten_ids"] == [old_a.id]
+
+        before_retry = by_id[existing_b.id]
+        retried = mapper.map_event(edited)
+        assert retried.written == ()
+        assert retried.forgotten_ids == ()
+        assert personal_operation_receipts(retried)["memory"]["changed"] is False
+        after_retry = conn.execute(
+            "SELECT id, status, source_count, evidence FROM memory_cards WHERE id=%s",
+            (existing_b.id,),
+        ).fetchone()
+        assert after_retry == before_retry
+        conn.execute("DELETE FROM memory_cards WHERE scope_type='personal' AND scope_id=%s", (scope_id,))
+        conn.commit()

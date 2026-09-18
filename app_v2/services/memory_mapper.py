@@ -731,12 +731,29 @@ class MemoryMapper:
                             if matched is not None else False
                         )
 
-                        # If one source in a corroborated card changes logical
-                        # identity, detach only that source. The old card keeps
-                        # the other independent evidence and the edited source
-                        # becomes/merges into a separate semantic card.
+                        # If the correction changes logical identity, detach
+                        # only the edited source before writing the new claim.
+                        # This is required not only for corroborated cards but
+                        # also when the destination semantic card already
+                        # exists: otherwise _upsert_candidate_locked() refuses
+                        # the cross-card merge and the stale source card is
+                        # incorrectly treated as retained.
                         stable_for_upsert: tuple[MemoryCard, ...] = (matched,) if matched else ()
-                        if matched is not None and shared_sources and old_semantic_key != semantic_key:
+                        semantic_destination = self.store.find_semantic_match(
+                            event.scope_type,
+                            event.scope_id,
+                            semantic_key,
+                        )
+                        destination_is_other_card = (
+                            matched is not None
+                            and semantic_destination is not None
+                            and semantic_destination.id != matched.id
+                        )
+                        if (
+                            matched is not None
+                            and old_semantic_key != semantic_key
+                            and (shared_sources or destination_is_other_card)
+                        ):
                             kept, archived_id = self._detach_source_from_card(event, matched, source_evidence)
                             used_ids.add(matched.id)
                             if kept is not None:
