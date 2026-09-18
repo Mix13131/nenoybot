@@ -1032,3 +1032,53 @@ def test_empty_subject_preferences_partition_and_conflicting_subject_is_partial_
             (scope_id,),
         )
         conn.commit()
+
+
+def test_explicit_pronoun_omitting_remember_is_partitioned_by_author_postgres() -> None:
+    psycopg, database_url = _psycopg_and_url()
+    scope_id = f"it-explicit-author-{uuid.uuid4().hex}"
+
+    def explicit_event(author: str, message_id: str) -> EventEnvelope:
+        return EventEnvelope(
+            event_id=f"it:{scope_id}:{message_id}",
+            event_type=EventType.GROUP_MESSAGE,
+            occurred_at=NOW,
+            scope_type=ScopeType.GROUP,
+            scope_id=scope_id,
+            actor_user_id=author,
+            message_id=message_id,
+            text="запомни: люблю чай",
+        )
+
+    with psycopg.connect(database_url) as conn:
+        mapper = MemoryMapper(store=MemoryMapperStore(MemoryRepository(conn)))
+        first_event = explicit_event("991000001", "880070101")
+        second_event = explicit_event("991000002", "880070102")
+
+        first = mapper.map_event(first_event)
+        second = mapper.map_event(second_event)
+        retry = mapper.map_event(first_event)
+
+        assert len(first.written) == len(second.written) == 1
+        assert retry.written == ()
+        rows = conn.execute(
+            """
+            SELECT subject_keys, source_count, evidence
+            FROM memory_cards
+            WHERE scope_type='group' AND scope_id=%s
+            ORDER BY id
+            """,
+            (scope_id,),
+        ).fetchall()
+        assert len(rows) == 2
+        assert {tuple(row[0]) for row in rows} == {
+            ("user:991000001",), ("user:991000002",),
+        }
+        assert {row[1] for row in rows} == {1}
+        assert {row[2][0]["message_id"] for row in rows} == {"880070101", "880070102"}
+
+        conn.execute(
+            "DELETE FROM memory_cards WHERE scope_type='group' AND scope_id=%s",
+            (scope_id,),
+        )
+        conn.commit()
