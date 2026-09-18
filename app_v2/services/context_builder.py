@@ -93,6 +93,7 @@ class ContextBuilder:
                 event.scope_id,
                 before=event.occurred_at,
                 before_message_id=event.message_id,
+                boundary_event_id=event.event_id,
                 limit=max(1, min(limit, 20)),
             )
         except Exception:
