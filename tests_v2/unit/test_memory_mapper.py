@@ -1123,6 +1123,125 @@ def test_user_bound_preference_same_key_is_partitioned_by_author():
     }
 
 
+def test_author_bound_empty_model_subjects_use_trusted_author_partition():
+    for memory_type in ("preference", "goal"):
+        store = FakeStore()
+        adapter = FakeAdapter(responses=[
+            {"candidates": [candidate(
+                memory_type=memory_type,
+                semantic_key=f"{memory_type}:shared-key",
+                subject_keys=[],
+                source_message_id="empty-subject-1",
+                evidence_excerpt="Я выбираю синтетический проект",
+            )]},
+            {"candidates": [candidate(
+                memory_type=memory_type,
+                semantic_key=f"{memory_type}:shared-key",
+                subject_keys=[],
+                source_message_id="empty-subject-2",
+                evidence_excerpt="Я выбираю синтетический проект",
+            )]},
+        ])
+        mapper = MemoryMapper(store=store, adapter=adapter)
+
+        for author, message_id in (("u1", "empty-subject-1"), ("u2", "empty-subject-2")):
+            result = mapper.map_event(event(
+                "Я выбираю синтетический проект",
+                scope=ScopeType.GROUP,
+                scope_id=f"g-empty-{memory_type}",
+                message_id=message_id,
+                actor_user_id=author,
+            ))
+            assert result.failed is False
+            assert len(result.written) == 1
+
+        assert len(store.cards) == 2
+        assert {tuple(card.subject_keys) for card in store.cards.values()} == {
+            ("user:u1",),
+            ("user:u2",),
+        }
+
+
+def test_generic_observation_with_empty_subjects_still_corroborates_across_authors():
+    store = FakeStore()
+    response = lambda message_id: {"candidates": [candidate(
+        memory_type="observation",
+        semantic_key="project:shared-fact",
+        subject_keys=[],
+        source_message_id=message_id,
+        evidence_excerpt="Синтетический проект использует PostgreSQL",
+    )]}
+    mapper = MemoryMapper(store=store, adapter=FakeAdapter(responses=[
+        response("generic-1"), response("generic-2"),
+    ]))
+
+    for author, message_id in (("u1", "generic-1"), ("u2", "generic-2")):
+        mapper.map_event(event(
+            "Синтетический проект использует PostgreSQL",
+            scope=ScopeType.GROUP,
+            scope_id="g-generic",
+            message_id=message_id,
+            actor_user_id=author,
+        ))
+
+    assert len(store.cards) == 1
+    assert next(iter(store.cards.values())).source_count == 2
+
+
+def test_conflicting_subject_rejection_is_failed_and_mixed_batch_is_partial():
+    from app_v2.services.operation_receipts import personal_operation_receipts
+
+    store = FakeStore()
+    mapper = MemoryMapper(store=store, adapter=FakeAdapter(responses=[{"candidates": [
+        candidate(
+            semantic_key="valid:subject",
+            subject_keys=["user:u1"],
+            source_message_id="subject-conflict",
+            evidence_excerpt="Первый синтетический факт",
+        ),
+        candidate(
+            semantic_key="invalid:subject",
+            subject_keys=["user:other"],
+            source_message_id="subject-conflict",
+            evidence_excerpt="Второй синтетический факт",
+        ),
+    ]}]))
+    source = event(
+        "Первый синтетический факт. Второй синтетический факт.",
+        message_id="subject-conflict",
+        actor_user_id="u1",
+    )
+
+    result = mapper.map_event(source)
+
+    assert result.failed is True
+    assert result.reason == "mapper_rejected_candidate_provenance"
+    assert len(result.written) == 1
+    receipt = personal_operation_receipts(result)["memory"]
+    assert receipt["status"] == "partial"
+    assert receipt["written_ids"] == [result.written[0].id]
+
+
+def test_single_conflicting_subject_rejection_is_failed_not_successful_noop():
+    store = FakeStore()
+    mapper = MemoryMapper(store=store, adapter=FakeAdapter(responses=[{"candidates": [candidate(
+        semantic_key="invalid:subject-only",
+        subject_keys=["user:other"],
+        source_message_id="subject-conflict-only",
+        evidence_excerpt="Синтетический факт",
+    )]}]))
+
+    result = mapper.map_event(event(
+        "Синтетический факт",
+        message_id="subject-conflict-only",
+        actor_user_id="u1",
+    ))
+
+    assert result.failed is True
+    assert result.written == ()
+    assert result.reason == "mapper_rejected_candidate_provenance"
+
+
 def test_rejected_non_edit_candidate_reports_partial_receipt():
     from app_v2.services.operation_receipts import personal_operation_receipts
 
