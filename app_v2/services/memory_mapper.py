@@ -1171,12 +1171,25 @@ class MemoryMapper:
         candidate_slot = candidate.get("_source_candidate_index")
         for card in stable_source_cards:
             card_slot = card.payload.get("source_candidate_index")
-            if (
-                isinstance(candidate_slot, int)
-                and isinstance(card_slot, int)
-                and candidate_slot != card_slot
-            ):
+            source_matches = any(
+                cls._source_identity(item) == source_identity
+                for item in card.evidence
+            )
+            if not source_matches:
                 continue
+
+            # For ordinary mapped candidates, source identity + persisted slot
+            # is the replay key. The model may select a different valid
+            # substring from the same unchanged source on retry; excerpt drift
+            # must not create a second logical card.
+            if isinstance(candidate_slot, int) and isinstance(card_slot, int):
+                if candidate_slot == card_slot:
+                    return True
+                continue
+
+            # Legacy / explicit cards may not carry a slot. Keep the stricter
+            # excerpt fallback there so one long source cannot collapse into an
+            # arbitrary old card.
             for item in card.evidence:
                 if (
                     cls._source_identity(item) == source_identity

@@ -79,6 +79,9 @@ def test_message_repo_uses_scope_and_persisted_event_boundary() -> None:
     assert "FROM events" in sql
     assert "e.scope_type=%s AND e.scope_id=%s" in sql
     assert "e.telegram_update_id < b.telegram_update_id" in sql
+    assert "payload -> 'metadata' ->> 'message_thread_id'" in sql
+    assert "b.message_thread_id IS NULL" in sql
+    assert "b.message_thread_id IS NOT NULL" in sql
     assert "ROW_NUMBER() OVER" in sql
     assert params == ("evt:20", "group", "-1001", "group", "-1001", 12)
     assert [item.message_id for item in result] == ["18", "19"]

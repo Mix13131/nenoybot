@@ -1333,3 +1333,34 @@ def test_rejected_non_edit_candidate_reports_partial_receipt():
     assert receipt["status"] == "partial"
     assert receipt["changed"] is True
     assert receipt["written_ids"] == [result.written[0].id]
+
+
+def test_same_source_retry_is_noop_when_excerpt_and_classification_drift():
+    store = FakeStore()
+    source = event("Завтра отправлю отчёт", message_id="m-excerpt-retry")
+    adapter = FakeAdapter(responses=[
+        {"candidates": [candidate(
+            memory_type="commitment",
+            semantic_key="commitment:send-report",
+            source_message_id="m-excerpt-retry",
+            evidence_excerpt="Завтра отправлю отчёт",
+        )]},
+        {"candidates": [candidate(
+            memory_type="observation",
+            semantic_key="observation:drifted",
+            source_message_id="m-excerpt-retry",
+            evidence_excerpt="отправлю отчёт",
+            confidence=0.4,
+        )]},
+    ])
+    mapper = MemoryMapper(store=store, adapter=adapter)
+
+    first = mapper.map_event(source)
+    before = first.written[0]
+    retried = mapper.map_event(source)
+
+    assert retried.written == ()
+    assert len(store.cards) == 1
+    assert store.cards[before.id] == before
+    assert store.create_calls == 1
+    assert store.update_calls == 0
