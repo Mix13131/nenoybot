@@ -41,6 +41,46 @@ def test_today_tomorrow_and_explicit_timezone():
     assert service._timezone("в 9 Europe/Berlin") == "Europe/Berlin"
 
 
+def test_pending_one_shot_preserves_original_calendar_day_across_midnight():
+    for word, expected_due in (
+        ("сегодня", datetime(2026, 1, 2, 18, 0, tzinfo=timezone.utc)),
+        ("завтра", datetime(2026, 1, 3, 9, 0, tzinfo=timezone.utc)),
+    ):
+        repo = FakeReminderRepo()
+        service = GroupReminderService(repo)
+        original = datetime(2026, 1, 2, 23, 50, tzinfo=timezone.utc)
+        service.maybe_schedule(
+            make_event(text=f"НеНой, напомни {word} в {expected_due:%H:%M}",
+                       event_type=EventType.DIRECT_MENTION),
+            now=original,
+        )
+
+        action = service.maybe_schedule(
+            make_event(text="UTC", event_type=EventType.REPLY_TO_BOT),
+            now=datetime(2026, 1, 3, 8, 0, tzinfo=timezone.utc),
+        )
+
+        if word == "сегодня":
+            assert action.status == "not_scheduled"
+            assert action.reason == "calendar_time_in_past"
+            assert repo.created == []
+            assert repo.pending is not None
+        else:
+            assert action.status == "scheduled"
+            assert action.due_at == expected_due
+
+
+def test_direct_one_shot_with_timezone_is_unchanged():
+    repo = FakeReminderRepo()
+    action = GroupReminderService(repo).maybe_schedule(
+        make_event(text="НеНой, напомни завтра в 09:00 UTC",
+                   event_type=EventType.DIRECT_MENTION),
+        now=datetime(2026, 1, 2, 23, 50, tzinfo=timezone.utc),
+    )
+    assert action.status == "scheduled"
+    assert action.due_at == datetime(2026, 1, 3, 9, 0, tzinfo=timezone.utc)
+
+
 def test_complete_valid_iana_timezone_identifiers():
     service = GroupReminderService(FakeReminderRepo())
     assert service._timezone("в 9 America/Argentina/Buenos_Aires") == "America/Argentina/Buenos_Aires"
@@ -230,3 +270,31 @@ def test_unsupported_or_contradictory_day_periods_fail_closed():
         now=now,
     )
     assert valid.status == "scheduled"
+
+
+def test_malformed_time_tails_fail_closed_while_valid_forms_remain_supported():
+    now = datetime(2026, 1, 2, 5, 0, tzinfo=timezone.utc)
+    for time_expression in ("9:99", "9:3", "09:0", "9 вечером"):
+        repo = FakeReminderRepo()
+        action = GroupReminderService(repo).maybe_schedule(
+            make_event(
+                text=f"НеНой, напоминай каждый день в {time_expression} Europe/Moscow",
+                event_type=EventType.DIRECT_MENTION,
+            ),
+            now=now,
+        )
+        assert action.status == "not_scheduled"
+        assert action.reason == "unsupported_time_expression"
+        assert repo.created == []
+
+    for phrase in (
+        "НеНой, напоминай каждый день в 9 Europe/Moscow",
+        "НеНой, напоминай каждый день в 9:00 Europe/Moscow",
+        "НеНой, напоминай каждый день в 09:00 Europe/Moscow",
+        "НеНой, напоминай каждый день в 9 утра Europe/Moscow",
+        "НеНой, напоминай каждое утро в 9 Europe/Moscow",
+    ):
+        repo = FakeReminderRepo()
+        assert GroupReminderService(repo).maybe_schedule(
+            make_event(text=phrase, event_type=EventType.DIRECT_MENTION), now=now,
+        ).status == "scheduled"
