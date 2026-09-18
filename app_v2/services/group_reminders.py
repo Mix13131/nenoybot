@@ -188,7 +188,7 @@ class GroupReminderService:
             calendar = dict(calendar)
             calendar["source_message_id"] = event.message_id
             calendar["message_thread_id"] = event.metadata.get("message_thread_id")
-            calendar["reference_at"] = now.isoformat()
+            calendar["reference_at"] = event.occurred_at.isoformat()
             if not timezone_name:
                 if event.actor_user_id:
                     self.reminder_repo.save_pending_calendar_intent(
