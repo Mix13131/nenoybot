@@ -14,6 +14,24 @@ CREATE INDEX IF NOT EXISTS idx_pending_calendar_intents_lookup
     ON pending_calendar_intents(scope_type, scope_id, actor_user_id, created_at DESC)
     WHERE status='pending';
 
+-- 0001/0002 allowed repeated source provenance. Keep the oldest reminder as
+-- the canonical owner and remove the identity from later legacy copies before
+-- enforcing uniqueness; inventing replacement identities would break dedupe.
+WITH duplicate_sources AS (
+    SELECT id,
+           row_number() OVER (
+               PARTITION BY payload ->> 'source_event_id'
+               ORDER BY id
+           ) AS occurrence
+    FROM reminders
+    WHERE payload ->> 'source_event_id' IS NOT NULL
+)
+UPDATE reminders AS reminder
+SET payload = reminder.payload - 'source_event_id'
+FROM duplicate_sources
+WHERE reminder.id = duplicate_sources.id
+  AND duplicate_sources.occurrence > 1;
+
 CREATE UNIQUE INDEX IF NOT EXISTS idx_reminders_source_event
     ON reminders((payload ->> 'source_event_id'))
     WHERE payload ->> 'source_event_id' IS NOT NULL;
