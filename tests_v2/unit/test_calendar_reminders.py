@@ -47,6 +47,25 @@ def test_complete_valid_iana_timezone_identifiers():
     assert service._timezone("в 9 America/Indiana/Indianapolis") == "America/Indiana/Indianapolis"
     assert service._timezone("в 9 UTC") == "UTC"
     assert service._timezone("в 9 Invalid/Nowhere") is None
+    assert service._timezone("каждый день в 9 присылай отчёт Factory") is None
+
+
+def test_slashless_tzdb_word_requires_timezone_clarification():
+    repo = FakeReminderRepo()
+    service = GroupReminderService(repo)
+    now = datetime(2026, 1, 2, 5, 0, tzinfo=timezone.utc)
+    action = service.maybe_schedule(
+        make_event(
+            text="НеНой, каждый день в 9 присылай отчёт Factory",
+            event_type=EventType.DIRECT_MENTION,
+        ),
+        now=now,
+    )
+
+    assert action.status == "not_scheduled"
+    assert action.reason == "timezone_required"
+    assert repo.created == []
+    assert repo.pending is not None
 
 
 def test_dst_gap_advances_and_fold_uses_first_occurrence():
