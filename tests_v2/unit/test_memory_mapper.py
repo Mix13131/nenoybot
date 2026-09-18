@@ -1188,6 +1188,64 @@ def test_generic_observation_with_empty_subjects_still_corroborates_across_autho
     assert next(iter(store.cards.values())).source_count == 2
 
 
+def test_explicit_remember_without_pronoun_is_partitioned_by_trusted_author():
+    store = FakeStore()
+    mapper = MemoryMapper(store=store)
+
+    first = mapper.map_event(event(
+        "запомни: люблю чай",
+        scope=ScopeType.GROUP,
+        scope_id="g-explicit-tea",
+        message_id="explicit-tea-1",
+        actor_user_id="u1",
+    ))
+    second = mapper.map_event(event(
+        "запомни: люблю чай",
+        scope=ScopeType.GROUP,
+        scope_id="g-explicit-tea",
+        message_id="explicit-tea-2",
+        actor_user_id="u2",
+    ))
+
+    assert len(first.written) == len(second.written) == 1
+    assert len(store.cards) == 2
+    assert {tuple(card.subject_keys) for card in store.cards.values()} == {
+        ("user:u1",),
+        ("user:u2",),
+    }
+
+    retry = mapper.map_event(event(
+        "запомни: люблю чай",
+        scope=ScopeType.GROUP,
+        scope_id="g-explicit-tea",
+        message_id="explicit-tea-1",
+        actor_user_id="u1",
+    ))
+    assert retry.written == ()
+    assert len(store.cards) == 2
+
+
+def test_explicit_generic_fact_is_still_partitioned_by_trusted_author():
+    store = FakeStore()
+    mapper = MemoryMapper(store=store)
+
+    for author, message_id in (("u1", "explicit-project-1"), ("u2", "explicit-project-2")):
+        result = mapper.map_event(event(
+            "запомни: проект использует PostgreSQL",
+            scope=ScopeType.GROUP,
+            scope_id="g-explicit-project",
+            message_id=message_id,
+            actor_user_id=author,
+        ))
+        assert len(result.written) == 1
+
+    assert len(store.cards) == 2
+    assert {tuple(card.subject_keys) for card in store.cards.values()} == {
+        ("user:u1",),
+        ("user:u2",),
+    }
+
+
 def test_conflicting_subject_rejection_is_failed_and_mixed_batch_is_partial():
     from app_v2.services.operation_receipts import personal_operation_receipts
 
