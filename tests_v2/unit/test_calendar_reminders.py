@@ -298,3 +298,29 @@ def test_malformed_time_tails_fail_closed_while_valid_forms_remain_supported():
         assert GroupReminderService(repo).maybe_schedule(
             make_event(text=phrase, event_type=EventType.DIRECT_MENTION), now=now,
         ).status == "scheduled"
+
+
+def test_one_shot_reference_uses_event_time_not_delayed_worker_time():
+    repo = FakeReminderRepo()
+    service = GroupReminderService(repo)
+    event_time = datetime(2026, 1, 2, 23, 50, tzinfo=timezone.utc)
+    processing_time = datetime(2026, 1, 3, 0, 10, tzinfo=timezone.utc)
+    original = make_event(
+        text="НеНой, напомни завтра в 09:00",
+        event_type=EventType.DIRECT_MENTION,
+    ).model_copy(update={"occurred_at": event_time})
+
+    first = service.maybe_schedule(original, now=processing_time)
+    assert first.status == "not_scheduled"
+    assert first.reason == "timezone_required"
+    assert repo.pending["payload"]["reference_at"] == event_time.isoformat()
+
+    clarification_time = datetime(2026, 1, 3, 8, 0, tzinfo=timezone.utc)
+    reply = make_event(
+        text="UTC",
+        event_type=EventType.REPLY_TO_BOT,
+    ).model_copy(update={"occurred_at": clarification_time})
+    completed = service.maybe_schedule(reply, now=clarification_time)
+
+    assert completed.status == "scheduled"
+    assert completed.due_at == datetime(2026, 1, 3, 9, 0, tzinfo=timezone.utc)
