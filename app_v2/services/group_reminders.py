@@ -41,7 +41,7 @@ _CALENDAR_RE = re.compile(
     r".*?\bв\s+(?P<hour>[01]?\d|2[0-3])(?::(?P<minute>[0-5]\d))?(?:\s*(?:утра))?",
     flags=re.IGNORECASE,
 )
-_IANA_RE = re.compile(r"\b([A-Z][A-Za-z_+-]+/[A-Za-z0-9_+.-]+)\b")
+_TIMEZONE_TOKEN_RE = re.compile(r"(?<![A-Za-z0-9_+./-])([A-Za-z][A-Za-z0-9_+.-]*(?:/[A-Za-z0-9_+.-]+)*)(?![A-Za-z0-9_+./-])")
 _TZ_ALIASES = {"по московскому времени": "Europe/Moscow", "мск": "Europe/Moscow"}
 
 _MIN_RECURRING_INTERVAL_SECONDS = 15 * 60
@@ -221,8 +221,9 @@ class GroupReminderService:
             payload=payload,
             source_event_id=event.event_id,
         )
+        already = bool(getattr(record, "already_existing", False))
         return GroupReminderAction(
-            status="scheduled",
+            status="already_scheduled" if already else "scheduled",
             reminder_id=record.id,
             recurring=interval_seconds is not None,
             interval_seconds=interval_seconds,
@@ -273,13 +274,12 @@ class GroupReminderService:
         for alias, name in _TZ_ALIASES.items():
             if alias in lowered:
                 return name
-        match = _IANA_RE.search(text)
-        if not match:
-            return None
-        try:
-            return validate_timezone(match.group(1))
-        except ValueError:
-            return None
+        for match in _TIMEZONE_TOKEN_RE.finditer(text):
+            try:
+                return validate_timezone(match.group(1))
+            except ValueError:
+                continue
+        return None
 
     @staticmethod
     def _calendar_spec(text: str, now: datetime) -> dict[str, Any] | None:
