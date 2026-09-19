@@ -1287,25 +1287,43 @@ class MemoryMapper:
                 continue
 
             source_slot = cls._source_slot_for_card(card, evidence)
+            source_count = cls._source_candidate_count_for_card(card, evidence)
             comparable_slots = (
                 isinstance(candidate_slot, int)
                 and not isinstance(candidate_slot, bool)
                 and isinstance(source_slot, int)
             )
+            comparable_counts = (
+                isinstance(candidate_count, int)
+                and not isinstance(candidate_count, bool)
+                and isinstance(source_count, int)
+            )
+            exact_excerpt = any(
+                item.excerpt == evidence.excerpt
+                for item in matching_evidence
+            )
+
+            if exact_excerpt:
+                # Exact persisted evidence can identify a completed candidate
+                # even if a later nondeterministic replay returns only that
+                # candidate and renumbers it. During an initial stable batch,
+                # however, equal candidate counts plus different slots prove
+                # that two candidates are intentionally distinct.
+                if (
+                    comparable_slots
+                    and comparable_counts
+                    and candidate_count == source_count
+                    and candidate_slot != source_slot
+                ):
+                    continue
+                return "retry"
+
             if comparable_slots:
                 # Different source-local candidate positions are different
                 # candidates even when their validated evidence spans overlap.
-                # This matters during the very first batch: candidate 0 may be
-                # committed before candidate 1 is processed.
                 if candidate_slot != source_slot:
                     continue
 
-                source_count = cls._source_candidate_count_for_card(card, evidence)
-                comparable_counts = (
-                    isinstance(candidate_count, int)
-                    and not isinstance(candidate_count, bool)
-                    and isinstance(source_count, int)
-                )
                 if comparable_counts:
                     if candidate_count == source_count:
                         return "retry"

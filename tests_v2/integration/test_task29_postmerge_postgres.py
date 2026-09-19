@@ -468,3 +468,76 @@ def test_overlapping_evidence_candidates_remain_distinct_postgres() -> None:
 
         conn.execute("DELETE FROM memory_cards WHERE scope_id=%s", (scope_id,))
         conn.commit()
+
+
+
+def test_completed_candidate_retry_exact_evidence_survives_renumbering_postgres() -> None:
+    psycopg, database_url = _psycopg_and_url()
+    scope_id = f"it-completed-renumber-{uuid.uuid4().hex}"
+    source = EventEnvelope(
+        event_id=f"{scope_id}:event",
+        event_type=EventType.PRIVATE_MESSAGE,
+        occurred_at=NOW,
+        scope_type=ScopeType.PERSONAL,
+        scope_id=scope_id,
+        actor_user_id="991000001",
+        message_id="880800001",
+        text="Первый факт. Второй факт.",
+    )
+    first_candidate = _generic_candidate(
+        source_message_id="880800001",
+        semantic_key="completed:first",
+        excerpt="Первый факт",
+    )
+    second_candidate = _generic_candidate(
+        source_message_id="880800001",
+        semantic_key="completed:second",
+        excerpt="Второй факт",
+        memory_type="plan",
+    )
+    replay_second = _generic_candidate(
+        source_message_id="880800001",
+        semantic_key="completed:second:drifted",
+        excerpt="Второй факт",
+        memory_type="observation",
+    )
+
+    with psycopg.connect(database_url) as conn:
+        mapper = MemoryMapper(
+            store=MemoryMapperStore(MemoryRepository(conn)),
+            adapter=_Adapter([
+                {"candidates": [first_candidate, second_candidate]},
+                {"candidates": [replay_second]},
+            ]),
+        )
+        first = mapper.map_event(source)
+        assert len(first.written) == 2
+
+        before = conn.execute(
+            """
+            SELECT id, payload, evidence, updated_at
+            FROM memory_cards
+            WHERE scope_type='personal' AND scope_id=%s
+            ORDER BY id
+            """,
+            (scope_id,),
+        ).fetchall()
+        assert len(before) == 2
+
+        replay = mapper.map_event(source)
+        assert replay.failed is False
+        assert replay.written == ()
+
+        after = conn.execute(
+            """
+            SELECT id, payload, evidence, updated_at
+            FROM memory_cards
+            WHERE scope_type='personal' AND scope_id=%s
+            ORDER BY id
+            """,
+            (scope_id,),
+        ).fetchall()
+        assert after == before
+
+        conn.execute("DELETE FROM memory_cards WHERE scope_id=%s", (scope_id,))
+        conn.commit()

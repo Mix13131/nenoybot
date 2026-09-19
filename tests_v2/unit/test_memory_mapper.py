@@ -1658,3 +1658,55 @@ def test_overlapping_evidence_candidates_with_distinct_slots_are_both_written():
         card.payload["source_candidate_index"]
         for card in result.written
     } == {0, 1}
+
+
+
+def test_completed_second_candidate_retry_survives_slot_renumbering_with_exact_evidence():
+    store = FakeStore()
+    source = event(
+        "Первый факт. Второй факт.",
+        message_id="completed-renumber",
+    )
+    first_candidate = candidate(
+        memory_type="observation",
+        semantic_key="completed:first",
+        summary="Первый факт.",
+        source_message_id="completed-renumber",
+        evidence_excerpt="Первый факт",
+        subject_keys=[],
+    )
+    second_candidate = candidate(
+        memory_type="plan",
+        semantic_key="completed:second",
+        summary="Второй факт.",
+        source_message_id="completed-renumber",
+        evidence_excerpt="Второй факт",
+        subject_keys=[],
+    )
+    replay_second = candidate(
+        memory_type="observation",
+        semantic_key="completed:second:drifted",
+        summary="Второй факт.",
+        source_message_id="completed-renumber",
+        evidence_excerpt="Второй факт",
+        subject_keys=[],
+        confidence=0.4,
+    )
+    mapper = MemoryMapper(
+        store=store,
+        adapter=FakeAdapter(responses=[
+            {"candidates": [first_candidate, second_candidate]},
+            {"candidates": [replay_second]},
+        ]),
+    )
+
+    first = mapper.map_event(source)
+    assert len(first.written) == 2
+    snapshots = dict(store.cards)
+
+    replay = mapper.map_event(source)
+
+    assert replay.failed is False
+    assert replay.written == ()
+    assert len(store.cards) == 2
+    assert store.cards == snapshots
