@@ -45,8 +45,8 @@ _CALENDAR_RE = re.compile(
     flags=re.IGNORECASE,
 )
 _CLOCK_ATTEMPT_RE = re.compile(
-    r"(?:(?<!\\w)в\\s+|(?<!\\w)(?:или|либо)\\s+)"
-    r"(?:[01]?\\d|2[0-3])(?::[0-5]\\d)?(?![\\d:])",
+    r"(?:(?<!\w)в\s+|(?<!\w)(?:или|либо)\s+)"
+    r"(?:[01]?\d|2[0-3])(?::[0-5]\d)?(?![\d:])",
     flags=re.IGNORECASE,
 )
 _TIMEZONE_TOKEN_RE = re.compile(
