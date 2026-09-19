@@ -390,3 +390,134 @@ def test_markdown_list_third_party_action_facts_are_not_rewritten(text):
         _context(action_state=receipts(memory_changed=False))
     )
     assert result.text == text
+
+
+
+def _semantic_action_state(reminder):
+    state = receipts(reminder=reminder)
+    state["scheduled_action_interpretation"] = {
+        "is_scheduled_action": True,
+        "execution_kind": "generate_text",
+        "instruction": "Удиви пользователя",
+        "confidence": 0.97,
+    }
+    return state
+
+
+@pytest.mark.parametrize(
+    "model_text",
+    [
+        "Буду удивлять тебя каждый вечер.",
+        "Буду писать тебе каждую минуту.",
+        "Буду сообщать актуальный курс каждый день.",
+    ],
+)
+def test_semantic_scheduled_action_false_promises_are_blocked_without_persistence(model_text):
+    reminder = {
+        "status": "failed",
+        "changed": False,
+        "entity_ids": [],
+        "operation": "create",
+        "reason": "unsupported_scheduled_capability",
+    }
+
+    result = ResponseGenerator(adapter=FakeAdapter(text=model_text)).generate(
+        _context(
+            ScopeType.GROUP,
+            ResponseMode.GROUP_DIRECT_REPLY,
+            action_state=_semantic_action_state(reminder),
+        )
+    )
+
+    assert result.text != model_text
+    assert "внешний источник данных пока не подключён" in result.text
+
+
+def test_semantic_scheduled_action_timezone_clarification_is_deterministic():
+    reminder = {
+        "status": "needs_clarification",
+        "changed": False,
+        "entity_ids": [],
+        "operation": "create",
+        "reason": "timezone_required",
+    }
+
+    result = ResponseGenerator(adapter=FakeAdapter(text="Буду удивлять тебя каждый вечер.")).generate(
+        _context(
+            ScopeType.GROUP,
+            ResponseMode.GROUP_DIRECT_REPLY,
+            action_state=_semantic_action_state(reminder),
+        )
+    )
+
+    assert "нужен часовой пояс" in result.text
+    assert "Буду удивлять" not in result.text
+
+
+def test_semantic_scheduled_action_promise_is_allowed_after_real_persistence():
+    reminder = {
+        "status": "succeeded",
+        "changed": True,
+        "entity_ids": ["42"],
+        "operation": "create",
+        "reason": "interpreted_scheduled_action",
+    }
+    model_text = "Буду удивлять тебя по расписанию."
+
+    result = ResponseGenerator(adapter=FakeAdapter(text=model_text)).generate(
+        _context(
+            ScopeType.GROUP,
+            ResponseMode.GROUP_DIRECT_REPLY,
+            action_state=_semantic_action_state(reminder),
+        )
+    )
+
+    assert result.text == model_text
+
+
+
+def test_semantic_interpretation_does_not_override_confirmed_cancellation():
+    reminder = {
+        "status": "succeeded",
+        "changed": True,
+        "entity_ids": [],
+        "operation": "cancel",
+        "cancelled_count": 1,
+        "reason": None,
+    }
+    state = _semantic_action_state(reminder)
+    model_text = "Остановил ежедневные сюрпризы."
+
+    result = ResponseGenerator(adapter=FakeAdapter(text=model_text)).generate(
+        _context(
+            ScopeType.GROUP,
+            ResponseMode.GROUP_DIRECT_REPLY,
+            action_state=state,
+        )
+    )
+
+    assert result.text == model_text
+
+
+def test_semantic_interpretation_preserves_zero_cancel_truth_guard():
+    reminder = {
+        "status": "succeeded",
+        "changed": False,
+        "entity_ids": [],
+        "operation": "cancel",
+        "cancelled_count": 0,
+        "reason": "no_active_reminders",
+    }
+    state = _semantic_action_state(reminder)
+    model_text = "Остановил напоминание."
+
+    result = ResponseGenerator(adapter=FakeAdapter(text=model_text)).generate(
+        _context(
+            ScopeType.GROUP,
+            ResponseMode.GROUP_DIRECT_REPLY,
+            action_state=state,
+        )
+    )
+
+    assert result.text != model_text
+    assert "Активное напоминание не остановлено" in result.text
