@@ -26,6 +26,10 @@ class ReminderRepository:
     def __init__(self, conn) -> None:
         self.conn = conn
 
+    def rollback(self) -> None:
+        """Reset the shared connection after a caught reminder SQL failure."""
+        self.conn.rollback()
+
     @staticmethod
     def _interval_seconds(recurrence_rule: str | None) -> int | None:
         if not recurrence_rule:
