@@ -10,13 +10,11 @@
 - **TASK 30 / #94 — calendar/timezone reminders**: PR #96 → `9462912...`, затем два post-merge P2 закрыты PR #98 → `16739b9...`;
 - последняя полная CI на follow-up TASK 30: **468 passed, 0 skipped, 1 warning** на isolated PostgreSQL 16.
 
-После этих изменений новый production deploy / live Telegram acceptance **не выполнялся**. Поэтому кодовый checkpoint закрыт, а runtime acceptance — следующий gate.
+После этих изменений новый production deploy / live Telegram acceptance **не выполнялся**. Implementation + CI checkpoint merged; автоматический review последнего follow-up на момент фиксации ещё может быть незавершён. Runtime acceptance — следующий gate.
 
 Полный Friends Test не объявлен завершённым. **Кнопку «🛑 Стоп» под напоминаниями не добавляем**: решение пользователя D-046 остаётся в силе.
 
 Источник текущего состояния и границ проверки: [LIVE_TEST_STATUS.md](LIVE_TEST_STATUS.md). Принятые решения: [DECISIONS.md](DECISIONS.md), D-046–D-048.
-
----
 
 ---
 
@@ -168,9 +166,9 @@ Telegram
 
 ## Phase 6 — Group MVP
 
-**Статус: BUILT — CONTROLLED LIVE TEST ПО ПРЕДЫДУЩЕЙ СЕССИИ**
+**Статус: BUILT IN CODE — CONTROLLED LIVE HISTORY; LATEST DEPLOY PENDING**
 
-Group runtime уже умеет:
+Group-код уже умеет:
 
 - explicit whitelist;
 - participant context;
