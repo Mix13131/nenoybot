@@ -37,8 +37,61 @@ def test_today_tomorrow_and_explicit_timezone():
     service = GroupReminderService(FakeReminderRepo())
     today = service._calendar_spec("напомни сегодня в 18:00", datetime.now(timezone.utc))
     tomorrow = service._calendar_spec("напомни завтра в 09:00", datetime.now(timezone.utc))
+    inverted_today = service._calendar_spec("напомни о себе в 20:40 сегодня", datetime.now(timezone.utc))
+    inverted_tomorrow = service._calendar_spec("напомни о себе в 09:15 завтра", datetime.now(timezone.utc))
     assert today["one_shot_day"] == 0 and tomorrow["one_shot_day"] == 1
+    assert (inverted_today["one_shot_day"], inverted_today["hour"], inverted_today["minute"]) == (0, 20, 40)
+    assert (inverted_tomorrow["one_shot_day"], inverted_tomorrow["hour"], inverted_tomorrow["minute"]) == (1, 9, 15)
     assert service._timezone("в 9 Europe/Berlin") == "Europe/Berlin"
+
+
+def test_live_one_shot_timezone_clarification_flow_accepts_po_moskve_only_on_reply():
+    repo = FakeReminderRepo()
+    service = GroupReminderService(repo)
+    request_time = datetime(2026, 9, 19, 17, 36, tzinfo=timezone.utc)
+
+    original = make_event(
+        text="НеНой, напомни о себе в 20:40 сегодня",
+        event_type=EventType.DIRECT_MENTION,
+    ).model_copy(update={"occurred_at": request_time})
+    first = service.maybe_schedule(original, now=request_time)
+
+    assert first.status == "not_scheduled"
+    assert first.reason == "timezone_required"
+    assert repo.pending is not None
+    assert repo.pending["payload"]["one_shot_day"] == 0
+    assert repo.pending["payload"]["hour"] == 20
+    assert repo.pending["payload"]["minute"] == 40
+    assert repo.created == []
+
+    plain = service.maybe_schedule(
+        make_event(text="По Москве", event_type=EventType.GROUP_MESSAGE),
+        now=datetime(2026, 9, 19, 17, 36, 30, tzinfo=timezone.utc),
+    )
+    assert plain is None
+    assert repo.pending is not None
+    assert repo.created == []
+
+    reply_time = datetime(2026, 9, 19, 17, 37, tzinfo=timezone.utc)
+    reply = make_event(
+        text="По Москве",
+        event_type=EventType.REPLY_TO_BOT,
+    ).model_copy(update={"occurred_at": reply_time})
+    action = service.maybe_schedule(reply, now=reply_time)
+
+    assert action.status == "scheduled"
+    assert action.timezone == "Europe/Moscow"
+    assert action.due_at == datetime(2026, 9, 19, 17, 40, tzinfo=timezone.utc)
+    assert repo.pending is None
+    assert len(repo.created) == 1
+    assert repo.created[0]["source_event_id"] == "tg:1"
+
+
+def test_moscow_timezone_clarification_natural_aliases():
+    service = GroupReminderService(FakeReminderRepo())
+    for text in ("По Москве", "по мск", "мск", "Москва", "московское время", "по московскому", "по московскому времени"):
+        assert service._clarification_timezone(text) == "Europe/Moscow"
+    assert service._clarification_timezone("расскажи про Москву") is None
 
 
 def test_pending_one_shot_preserves_original_calendar_day_across_midnight():
