@@ -51,7 +51,7 @@ _CALENDAR_KIND_RE = re.compile(
 _CALENDAR_ALT_BRIDGE_RE = re.compile(
     r"^\s*[,;:/—–-]?\s*(?:"
     r"(?:или|либо)(?:\s+(?:лучше|вс[её][ -]?таки|может(?:\s+быть)?|точнее|вернее))?"
-    r"|а\s+(?:лучше|может(?:\s+быть)?|точнее|вернее|не)"
+    r"|а(?:\s+(?:лучше|может(?:\s+быть)?|точнее|вернее|не))?"
     r"|(?:точнее|вернее)"
     r")\s*[,;:/—–-]?\s*$",
     flags=re.IGNORECASE,
@@ -374,19 +374,30 @@ class GroupReminderService:
 
     @staticmethod
     def _calendar_spec(text: str, now: datetime) -> dict[str, Any] | None:
-        if len(_CLOCK_ATTEMPT_RE.findall(text)) != 1:
+        clock_attempts = list(_CLOCK_ATTEMPT_RE.finditer(text))
+        if len(clock_attempts) != 1:
             return None
-        match = _CALENDAR_RE.search(text)
-        if not match:
+        clock_match = clock_attempts[0]
+        kinds_before_clock = [
+            kind_match
+            for kind_match in _CALENDAR_KIND_RE.finditer(text)
+            if kind_match.end() <= clock_match.start()
+        ]
+        if not kinds_before_clock:
             return None
-        selected_start, selected_end = match.span("kind")
+        selected_kind = kinds_before_clock[-1]
+        selected_start, selected_end = selected_kind.span()
+        schedule_match = _CALENDAR_RE.match(text[selected_start:])
+        if not schedule_match:
+            return None
+        schedule_end = selected_start + schedule_match.end()
         for kind_match in _CALENDAR_KIND_RE.finditer(text):
             if kind_match.span() == (selected_start, selected_end):
                 continue
             if kind_match.end() <= selected_start:
                 bridge = text[kind_match.end():selected_start]
-            elif kind_match.start() >= match.end():
-                bridge = text[match.end():kind_match.start()]
+            elif kind_match.start() >= schedule_end:
+                bridge = text[schedule_end:kind_match.start()]
             else:
                 bridge = text[selected_end:kind_match.start()]
             normalized_bridge = _TIMEZONE_TOKEN_RE.sub("", bridge)
@@ -400,16 +411,16 @@ class GroupReminderService:
                 )
             if _CALENDAR_ALT_BRIDGE_RE.fullmatch(normalized_bridge):
                 return None
-        kind = match.group("kind").lower()
-        hour = int(match.group("hour"))
-        period = (match.group("period") or "").lower()
+        kind = schedule_match.group("kind").lower()
+        hour = int(schedule_match.group("hour"))
+        period = (schedule_match.group("period") or "").lower()
         if period:
             if period != "утра" or hour > 11:
                 return None
         if "утро" in kind and hour > 11:
             return None
         spec: dict[str, Any] = {"hour": hour,
-                                "minute": int(match.group("minute") or 0), "subject": text}
+                                "minute": int(schedule_match.group("minute") or 0), "subject": text}
         if kind == "сегодня": spec["one_shot_day"] = 0
         elif kind == "завтра": spec["one_shot_day"] = 1
         elif kind == "по будням": spec["frequency"] = "weekdays"
