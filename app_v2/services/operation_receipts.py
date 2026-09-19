@@ -151,8 +151,9 @@ def group_reminder_receipt(action_state: dict[str, Any] | None) -> dict[str, Any
         }
 
     if raw_status == "not_scheduled":
+        unsupported_capability = reason == "unsupported_scheduled_capability"
         return {
-            "status": "needs_clarification",
+            "status": "failed" if unsupported_capability else "needs_clarification",
             "changed": False,
             "entity_ids": [],
             "operation": "create",
