@@ -312,15 +312,16 @@ class GroupReminderService:
             and _EVERY_INTERVAL_RE.search(text)
         )
         canonical_intent = bool(_REMINDER_INTENT_RE.search(text))
-        if not canonical_intent and not semantic_intent:
+        legacy_burst_intent = bool(
+            bounded_burst is not None and _BURST_ACTION_RE.search(text)
+        )
+        if not canonical_intent and not semantic_intent and not legacy_burst_intent:
             # Legacy bounded-burst fallback stays narrow. New action verbs are
             # understood by ScheduledActionInterpreter, not added to this list.
             if burst_candidate and _BURST_ACTION_RE.search(text):
                 return GroupReminderAction(
                     status="not_scheduled",
-                    reason="bounded_burst_out_of_bounds"
-                    if bounded_burst is None
-                    else "scheduled_action_interpreter_unavailable",
+                    reason="bounded_burst_out_of_bounds",
                 )
             if natural_open_short_repeat:
                 return GroupReminderAction(
