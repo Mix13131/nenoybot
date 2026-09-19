@@ -115,7 +115,13 @@ def test_live_postgres_migrations_are_repeat_safe() -> None:
     second = run_migrations(database_url)
 
     assert second == []
-    assert first in ([1, 2, 3], [2, 3], [3], [])
+    assert first in (
+        [1, 2, 3, 4],
+        [2, 3, 4],
+        [3, 4],
+        [4],
+        [],
+    )
 
 
 def test_live_postgres_schema_constraints_and_indexes() -> None:
