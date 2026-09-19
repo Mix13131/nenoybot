@@ -15,6 +15,14 @@ from app_v2.services.calendar_schedule import (
 
 _USERNAME_RE = re.compile(r"@([A-Za-z0-9_]{5,32})")
 _REMINDER_INTENT_RE = re.compile(r"\b(?:напоминай|напомни|присылай)\b", flags=re.IGNORECASE)
+_BURST_ACTION_RE = re.compile(r"\b(?:пиши|пишите|присылай|напоминай|напомни)\b", flags=re.IGNORECASE)
+_BOUNDED_BURST_RE = re.compile(
+    r"\bв\s+течение\s+(?:следующ\w*\s+)?"
+    r"(?P<duration>\d{1,2}|одн\w*|двух|тр[её]х|четыр[её]х|пяти)\s+минут\w*"
+    r".*?\bкажд\w*\s+"
+    r"(?:(?P<interval>\d{1,2}|одн\w*|двух|тр[её]х|четыр[её]х|пяти)\s+)?минут\w*",
+    flags=re.IGNORECASE | re.DOTALL,
+)
 _CANCEL_REMINDER_RE = re.compile(
     r"(?:"
     r"\b(?:отмени|отменяй|останови|остановить|хватит|перестань|прекрати|стоп|достаточно)\b.{0,120}\bнапомин\w*"
@@ -92,6 +100,26 @@ _MOSCOW_CLARIFICATION_RE = re.compile(
 
 _MIN_RECURRING_INTERVAL_SECONDS = 15 * 60
 _MAX_GROUP_REMINDER_OCCURRENCES = 4
+_MIN_BOUNDED_BURST_INTERVAL_SECONDS = 60
+_MAX_BOUNDED_BURST_OCCURRENCES = 5
+
+_RU_SMALL_NUMBERS = {
+    "одна": 1,
+    "одну": 1,
+    "одной": 1,
+    "один": 1,
+    "две": 2,
+    "два": 2,
+    "двух": 2,
+    "три": 3,
+    "трех": 3,
+    "трёх": 3,
+    "четыре": 4,
+    "четырех": 4,
+    "четырёх": 4,
+    "пять": 5,
+    "пяти": 5,
+}
 
 
 def _calendar_bridge_is_alternative(bridge: str) -> bool:
@@ -257,7 +285,20 @@ class GroupReminderService:
                 pending_id=pending["id"],
             )
 
-        if not _REMINDER_INTENT_RE.search(text):
+        bounded_burst = self._bounded_burst_spec(text)
+        burst_candidate = bool(_BURST_ACTION_RE.search(text) and _BOUNDED_BURST_RE.search(text))
+        natural_open_short_repeat = bool(
+            re.search(r"\b(?:пиши|пишите)\b", text, flags=re.IGNORECASE)
+            and _EVERY_INTERVAL_RE.search(text)
+        )
+        if not _REMINDER_INTENT_RE.search(text) and bounded_burst is None:
+            if burst_candidate or natural_open_short_repeat:
+                return GroupReminderAction(
+                    status="not_scheduled",
+                    reason="bounded_burst_out_of_bounds"
+                    if burst_candidate
+                    else "bounded_burst_required",
+                )
             return None
 
         target_username = self._target_username(text, reply_text)
@@ -293,8 +334,14 @@ class GroupReminderService:
                 source_event_id=event.event_id,
             )
 
-        interval_seconds = self._recurring_interval_seconds(text)
-        one_shot_seconds = None if interval_seconds is not None else self._one_shot_delay_seconds(text)
+        burst_occurrences = None
+        if bounded_burst is not None:
+            interval_seconds, burst_occurrences = bounded_burst
+            one_shot_seconds = None
+        else:
+            interval_seconds = self._recurring_interval_seconds(text)
+            one_shot_seconds = None if interval_seconds is not None else self._one_shot_delay_seconds(text)
+
         if interval_seconds is None and one_shot_seconds is None:
             return GroupReminderAction(status="not_scheduled", reason="unsupported_time_expression")
 
@@ -320,7 +367,11 @@ class GroupReminderService:
             "source_message_id": event.message_id,
             "reminder_context": subject,
             "fire_count": 0,
-            "max_occurrences": _MAX_GROUP_REMINDER_OCCURRENCES if interval_seconds is not None else 1,
+            "max_occurrences": (
+                burst_occurrences
+                if burst_occurrences is not None
+                else (_MAX_GROUP_REMINDER_OCCURRENCES if interval_seconds is not None else 1)
+            ),
         }
         record = self.reminder_repo.create(
             scope_type=ScopeType.GROUP,
@@ -339,6 +390,7 @@ class GroupReminderService:
             target_username=target_username,
             due_at=record.due_at,
             stop_on_reply=stop_on_reply,
+            reason="bounded_burst" if burst_occurrences is not None else None,
             recurrence_rule=getattr(record, "recurrence_rule", recurrence_rule),
         )
 
@@ -519,6 +571,38 @@ class GroupReminderService:
         elif "пятниц" in kind: spec.update(frequency="weekly", weekday=4)
         else: spec["frequency"] = "daily"
         return spec
+
+    @staticmethod
+    def _small_number(value: str | None) -> int | None:
+        if value is None:
+            return None
+        compact = value.strip().lower()
+        if compact.isdigit():
+            return int(compact)
+        return _RU_SMALL_NUMBERS.get(compact)
+
+    @classmethod
+    def _bounded_burst_spec(cls, text: str) -> tuple[int, int] | None:
+        if not _BURST_ACTION_RE.search(text):
+            return None
+        match = _BOUNDED_BURST_RE.search(text)
+        if not match:
+            return None
+
+        duration_minutes = cls._small_number(match.group("duration"))
+        interval_minutes = cls._small_number(match.group("interval")) or 1
+        if duration_minutes is None or interval_minutes is None:
+            return None
+        if duration_minutes <= 0 or interval_minutes <= 0:
+            return None
+
+        interval_seconds = interval_minutes * 60
+        occurrences = duration_minutes // interval_minutes
+        if interval_seconds < _MIN_BOUNDED_BURST_INTERVAL_SECONDS:
+            return None
+        if occurrences < 1 or occurrences > _MAX_BOUNDED_BURST_OCCURRENCES:
+            return None
+        return interval_seconds, occurrences
 
     @staticmethod
     def _target_username(text: str, reply_text: str) -> str | None:
