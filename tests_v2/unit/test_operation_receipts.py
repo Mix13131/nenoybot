@@ -135,3 +135,17 @@ def test_ambiguous_forget_receipt_needs_clarification():
     receipt = memory_receipt(MapperResult(reason="forget_target_ambiguous"), attempted=True)
     assert receipt["status"] == "needs_clarification"
     assert receipt["changed"] is False
+
+
+
+def test_unsupported_scheduled_capability_is_failure_not_clarification() -> None:
+    receipt = group_reminder_receipt({
+        "status": "not_scheduled",
+        "reason": "unsupported_scheduled_capability",
+        "execution_kind": "external_data",
+    })
+
+    assert receipt["status"] == "failed"
+    assert receipt["changed"] is False
+    assert receipt["operation"] == "create"
+    assert receipt["reason"] == "unsupported_scheduled_capability"
