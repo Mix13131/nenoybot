@@ -266,8 +266,10 @@ class ResponseGenerator:
         # succeed, do not attempt to enumerate every possible Russian action
         # verb the generator might use to falsely promise execution: replace
         # the entire generated response with a receipt-grounded status.
+        reminder_receipt = cls._receipt(action_state, "reminder")
         if (
             cls._semantic_schedule_requested(action_state)
+            and reminder_receipt.get("operation") != "cancel"
             and not cls._semantic_schedule_exists(action_state)
         ):
             return cls._truthful_receipt_fallback(
