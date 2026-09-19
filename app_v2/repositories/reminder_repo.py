@@ -362,12 +362,28 @@ class ReminderRepository:
         reminder = self._row(row)
         processing_at = row[8]
         interval_seconds = self._interval_seconds(reminder.recurrence_rule)
+        calendar = (
+            CalendarSchedule.decode(reminder.recurrence_rule)
+            if reminder.recurrence_rule and reminder.recurrence_rule.startswith("calendar:")
+            else None
+        )
         payload = dict(reminder.payload)
         fire_count = int(payload.get("fire_count") or 0) + 1
-        max_occurrences = int(payload.get("max_occurrences") or (4 if interval_seconds is not None else 1))
-        max_occurrences = max(1, min(max_occurrences, 100))
         payload["fire_count"] = fire_count
-        payload["max_occurrences"] = max_occurrences
+
+        if calendar is not None:
+            # Calendar recurrence means the natural-language promise "every
+            # day / weekday / Friday": keep the local-wall-clock chain alive
+            # until an explicit existing cancellation control stops it.
+            payload.pop("max_occurrences", None)
+            payload["recurrence_policy"] = "until_cancelled"
+            max_occurrences = None
+        else:
+            max_occurrences = int(
+                payload.get("max_occurrences") or (4 if interval_seconds is not None else 1)
+            )
+            max_occurrences = max(1, min(max_occurrences, 100))
+            payload["max_occurrences"] = max_occurrences
 
         actor_user_id = payload.get("actor_user_id")
         text = payload.get("text") or payload.get("title") or "Напоминание"
@@ -403,8 +419,14 @@ class ReminderRepository:
             ),
         )
 
-        calendar = CalendarSchedule.decode(reminder.recurrence_rule) if reminder.recurrence_rule and reminder.recurrence_rule.startswith("calendar:") else None
-        stop_after_this_fire = (interval_seconds is None and calendar is None) or fire_count >= max_occurrences
+        if calendar is not None:
+            stop_after_this_fire = False
+        elif interval_seconds is None:
+            stop_after_this_fire = True
+        else:
+            assert max_occurrences is not None
+            stop_after_this_fire = fire_count >= max_occurrences
+
         if stop_after_this_fire:
             next_status = "sent"
             self.conn.execute(

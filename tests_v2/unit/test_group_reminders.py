@@ -202,3 +202,19 @@ def test_natural_gorshochek_phrase_stops_target_reminder():
     assert result.status == "cancelled"
     assert result.target_username == "toroikin"
     assert result.cancelled_count == 1
+
+
+
+def test_interval_recurring_still_has_four_occurrence_safety_cap():
+    repo = FakeReminderRepo()
+    action = GroupReminderService(repo).maybe_schedule(
+        make_event(
+            text="НеНой, напоминай каждые 30 минут проверить баню",
+            event_type=EventType.DIRECT_MENTION,
+        ),
+        now=datetime(2026, 9, 14, 15, 10, tzinfo=timezone.utc),
+    )
+
+    assert action.status == "scheduled"
+    assert repo.created[0]["payload"]["max_occurrences"] == 4
+    assert "recurrence_policy" not in repo.created[0]["payload"]

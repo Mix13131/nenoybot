@@ -44,7 +44,11 @@ _CALENDAR_RE = re.compile(
     r"(?![\d:])",
     flags=re.IGNORECASE,
 )
-_CLOCK_ATTEMPT_RE = re.compile(r"\bв\s+\d{1,2}(?::\d{0,2})?", flags=re.IGNORECASE)
+_CLOCK_ATTEMPT_RE = re.compile(
+    r"(?:(?<!\\w)в\\s+|(?<!\\w)(?:или|либо)\\s+)"
+    r"(?:[01]?\\d|2[0-3])(?::[0-5]\\d)?(?![\\d:])",
+    flags=re.IGNORECASE,
+)
 _TIMEZONE_TOKEN_RE = re.compile(
     r"(?<![A-Za-z0-9_+./-])(UTC|[A-Za-z][A-Za-z0-9_+.-]*/[A-Za-z0-9_+.-]+(?:/[A-Za-z0-9_+.-]+)*)(?![A-Za-z0-9_+./-])"
 )
@@ -299,8 +303,11 @@ class GroupReminderService:
                    "target_username": target_username,
                    "stop_on_reply": stop_on_reply,
                    "reminder_context": subject,
-                   "timezone": timezone_name, "fire_count": 0,
-                   "max_occurrences": _MAX_GROUP_REMINDER_OCCURRENCES if recurring else 1}
+                   "timezone": timezone_name, "fire_count": 0}
+        if recurring:
+            payload["recurrence_policy"] = "until_cancelled"
+        else:
+            payload["max_occurrences"] = 1
         record = self.reminder_repo.create(scope_type=ScopeType.GROUP, scope_id=event.scope_id,
                                            due_at=due_at, recurrence_rule=rule, payload=payload,
                                            source_event_id=source_event_id)

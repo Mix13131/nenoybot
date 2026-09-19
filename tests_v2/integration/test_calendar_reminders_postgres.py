@@ -353,3 +353,58 @@ def test_calendar_target_stop_condition_can_cancel_on_response_postgres():
 
         conn.execute("DELETE FROM reminders WHERE id=%s", (reminder_id,))
         conn.commit()
+
+
+
+def test_calendar_recurring_continues_past_four_until_cancelled_postgres():
+    url = os.getenv("NENOY_V2_TEST_DATABASE_URL")
+    if not url:
+        pytest.skip("NENOY_V2_TEST_DATABASE_URL is not configured")
+    psycopg = pytest.importorskip("psycopg")
+    run_migrations(url)
+
+    source = f"test:calendar:unbounded:{uuid.uuid4()}"
+    with psycopg.connect(url) as conn:
+        repo = ReminderRepository(conn)
+        due = datetime.now(timezone.utc) - timedelta(minutes=1)
+        reminder = repo.create(
+            scope_type=ScopeType.GROUP,
+            scope_id="calendar-unbounded",
+            due_at=due,
+            recurrence_rule=CalendarSchedule("daily", 9, 0, "Europe/Moscow").encode(),
+            source_event_id=source,
+            # Simulate a calendar chain persisted by the earlier capped code.
+            payload={
+                "text": "synthetic",
+                "fire_count": 3,
+                "max_occurrences": 4,
+            },
+        )
+
+        fourth = repo.fire_due_once()
+        assert fourth is not None and fourth.id == reminder.id
+        assert fourth.status == "pending"
+        assert fourth.payload["fire_count"] == 4
+        assert fourth.payload["recurrence_policy"] == "until_cancelled"
+        assert "max_occurrences" not in fourth.payload
+
+        conn.execute(
+            "UPDATE reminders SET due_at=CURRENT_TIMESTAMP - INTERVAL '1 minute' WHERE id=%s",
+            (reminder.id,),
+        )
+        conn.commit()
+
+        fifth = repo.fire_due_once()
+        assert fifth is not None and fifth.id == reminder.id
+        assert fifth.status == "pending"
+        assert fifth.payload["fire_count"] == 5
+
+        assert repo.cancel(reminder.id) is True
+        assert conn.execute(
+            "SELECT status FROM reminders WHERE id=%s",
+            (reminder.id,),
+        ).fetchone()[0] == "cancelled"
+
+        conn.execute("DELETE FROM events WHERE event_id LIKE %s", (f"reminder:{reminder.id}:%",))
+        conn.execute("DELETE FROM reminders WHERE id=%s", (reminder.id,))
+        conn.commit()

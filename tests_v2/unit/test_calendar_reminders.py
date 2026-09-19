@@ -399,3 +399,48 @@ def test_multiple_calendar_times_fail_closed():
     assert action.status == "not_scheduled"
     assert action.reason == "unsupported_time_expression"
     assert repo.created == []
+
+
+
+def test_clock_alternative_without_repeated_preposition_is_ambiguous_but_year_prose_is_not():
+    now = datetime(2026, 1, 2, 5, 0, tzinfo=timezone.utc)
+
+    ambiguous_repo = FakeReminderRepo()
+    ambiguous = GroupReminderService(ambiguous_repo).maybe_schedule(
+        make_event(
+            text="НеНой, напоминай каждый день в 9:00 или 10:00 Europe/Moscow",
+            event_type=EventType.DIRECT_MENTION,
+        ),
+        now=now,
+    )
+    assert ambiguous.status == "not_scheduled"
+    assert ambiguous.reason == "unsupported_time_expression"
+    assert ambiguous_repo.created == []
+
+    valid_repo = FakeReminderRepo()
+    valid = GroupReminderService(valid_repo).maybe_schedule(
+        make_event(
+            text="НеНой, напоминай каждый день в 9:00, что дедлайн в 2026 году Europe/Moscow",
+            event_type=EventType.DIRECT_MENTION,
+        ),
+        now=now,
+    )
+    assert valid.status == "scheduled"
+    assert valid_repo.created
+    assert CalendarSchedule.decode(valid.recurrence_rule).hour == 9
+
+
+def test_calendar_recurring_payload_is_until_cancelled_not_four_occurrences():
+    repo = FakeReminderRepo()
+    action = GroupReminderService(repo).maybe_schedule(
+        make_event(
+            text="НеНой, напоминай каждый день в 9:00 Europe/Moscow",
+            event_type=EventType.DIRECT_MENTION,
+        ),
+        now=datetime(2026, 1, 2, 5, 0, tzinfo=timezone.utc),
+    )
+
+    assert action.status == "scheduled"
+    payload = repo.created[0]["payload"]
+    assert payload["recurrence_policy"] == "until_cancelled"
+    assert "max_occurrences" not in payload

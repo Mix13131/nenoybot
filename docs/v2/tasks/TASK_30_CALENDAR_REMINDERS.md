@@ -121,3 +121,10 @@ Run:
 For persistence/dedupe/worker behavior, PostgreSQL tests must actually execute; skips are not acceptance.
 
 Finish with exactly the seven AGENTS.md report sections. Leave the PR Draft/open. No merge or deploy.
+
+
+## Calendar recurrence policy
+
+- Calendar recurrence from phrases such as `каждый день`, `по будням` and `каждую пятницу` continues until an explicit existing cancellation control stops the chain.
+- The legacy safety cap of 4 occurrences remains only for frequent interval reminders such as `каждые 30 минут` / `каждый час`.
+- Calendar recurrence must not silently stop after four successful fires.
