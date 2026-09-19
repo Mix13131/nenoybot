@@ -48,14 +48,19 @@ _CALENDAR_KIND_RE = re.compile(
     r"\b(каждый день|каждое утро|по будням|каждую пятницу|сегодня|завтра)\b",
     flags=re.IGNORECASE,
 )
-_CALENDAR_ALT_MARKER_RE = re.compile(
-    r"\b(?:или|либо|а|но|зато|вместо|лучше|точнее|вернее|скорее|предпочтительнее|хотя|впрочем)\b",
+_CALENDAR_HARD_ALT_CONNECTOR_RE = re.compile(
+    r"\b(?:или|либо|а|но|зато|вместо|хотя|впрочем)\b",
+    flags=re.IGNORECASE,
+)
+_CALENDAR_SOFT_ALT_MARKER_RE = re.compile(
+    r"\b(?:лучше|точнее|вернее|скорее|предпочтительнее)\b",
     flags=re.IGNORECASE,
 )
 _CALENDAR_ALT_BRIDGE_WORDS = frozenset({
     "или", "либо", "а", "но", "зато", "вместо", "лучше", "точнее",
     "вернее", "скорее", "предпочтительнее", "хотя", "впрочем", "же",
     "всё-таки", "все-таки", "вообще-то", "вообще", "то", "всё", "все", "таки",
+    "на", "по",
 })
 _CALENDAR_SUBJECT_LINK_RE = re.compile(r"\b(?:на|про)\s*$", flags=re.IGNORECASE)
 _CALENDAR_BRIDGE_WORD_RE = re.compile(
@@ -90,7 +95,19 @@ def _calendar_bridge_is_alternative(bridge: str) -> bool:
         match.group(0).lower()
         for match in _CALENDAR_BRIDGE_WORD_RE.finditer(normalized)
     ]
-    if not words or not _CALENDAR_ALT_MARKER_RE.search(normalized):
+    if not words:
+        return False
+
+    # A hard conjunction between two calendar kinds is enough evidence of an
+    # alternative/correction. Qualifier words around it are intentionally not
+    # enumerated ("или, пожалуй", "или, может быть", etc.).
+    if _CALENDAR_HARD_ALT_CONNECTOR_RE.search(normalized):
+        return True
+
+    # Softer correction markers are only trusted when the whole bridge is
+    # structural syntax. This keeps subject prose such as "что лучше сделать"
+    # from turning into a schedule correction.
+    if not _CALENDAR_SOFT_ALT_MARKER_RE.search(normalized):
         return False
     return all(word in _CALENDAR_ALT_BRIDGE_WORDS for word in words)
 
@@ -414,12 +431,14 @@ class GroupReminderService:
         # the schedule: "каждый день сверять задачи на сегодня в 9:00".
         # Only demote it when an earlier calendar kind exists, so a normal
         # one-shot "напомни на завтра в 9:00" remains supported.
-        while (
-            len(kinds_before_clock) > 1
-            and _CALENDAR_SUBJECT_LINK_RE.search(
-                text[:kinds_before_clock[-1].start()]
-            )
-        ):
+        while len(kinds_before_clock) > 1:
+            current_kind = kinds_before_clock[-1]
+            previous_kind = kinds_before_clock[-2]
+            if not _CALENDAR_SUBJECT_LINK_RE.search(text[:current_kind.start()]):
+                break
+            bridge = text[previous_kind.end():current_kind.start()]
+            if _calendar_bridge_is_alternative(bridge):
+                break
             kinds_before_clock.pop()
 
         selected_kind = kinds_before_clock[-1]
