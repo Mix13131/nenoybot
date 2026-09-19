@@ -232,3 +232,62 @@ def test_group_reminder_service_can_recover_failed_repository_transaction():
     service.recover_failed_transaction()
 
     assert repo.rollback_calls == 1
+
+
+
+def test_bounded_burst_natural_write_command_schedules_five_one_minute_fires():
+    repo = FakeReminderRepo()
+    service = GroupReminderService(repo)
+    now = datetime(2026, 9, 19, 18, 29, tzinfo=timezone.utc)
+
+    action = service.maybe_schedule(
+        make_event(
+            text="НеНой в течение следующих пяти минут каждую минуту пиши свой разъеб",
+            event_type=EventType.DIRECT_MENTION,
+        ),
+        now=now,
+    )
+
+    assert action.status == "scheduled"
+    assert action.reason == "bounded_burst"
+    assert action.interval_seconds == 60
+    assert action.due_at == now + timedelta(minutes=1)
+    assert repo.created[0]["recurrence_rule"] == "interval:60"
+    assert repo.created[0]["payload"]["max_occurrences"] == 5
+    assert repo.created[0]["payload"]["fire_count"] == 0
+
+
+def test_bounded_burst_keeps_open_ended_one_minute_write_blocked():
+    repo = FakeReminderRepo()
+    service = GroupReminderService(repo)
+    now = datetime(2026, 9, 19, 18, 29, tzinfo=timezone.utc)
+
+    action = service.maybe_schedule(
+        make_event(
+            text="НеНой, каждую минуту пиши свой разъеб",
+            event_type=EventType.DIRECT_MENTION,
+        ),
+        now=now,
+    )
+
+    assert action.status == "not_scheduled"
+    assert action.reason == "bounded_burst_required"
+    assert repo.created == []
+
+
+def test_bounded_burst_rejects_more_than_five_occurrences():
+    repo = FakeReminderRepo()
+    service = GroupReminderService(repo)
+    now = datetime(2026, 9, 19, 18, 29, tzinfo=timezone.utc)
+
+    action = service.maybe_schedule(
+        make_event(
+            text="НеНой в течение следующих 10 минут каждую минуту пиши свой разъеб",
+            event_type=EventType.DIRECT_MENTION,
+        ),
+        now=now,
+    )
+
+    assert action.status == "not_scheduled"
+    assert action.reason == "bounded_burst_out_of_bounds"
+    assert repo.created == []
