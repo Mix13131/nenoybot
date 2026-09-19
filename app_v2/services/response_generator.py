@@ -238,7 +238,43 @@ class ResponseGenerator:
         return False
 
     @classmethod
+    def _semantic_schedule_requested(cls, action_state: dict[str, Any]) -> bool:
+        interpretation = action_state.get("scheduled_action_interpretation")
+        return bool(
+            isinstance(interpretation, dict)
+            and interpretation.get("is_scheduled_action") is True
+        )
+
+    @classmethod
+    def _semantic_schedule_exists(cls, action_state: dict[str, Any]) -> bool:
+        receipt = cls._receipt(action_state, "reminder")
+        if receipt.get("status") != "succeeded":
+            return False
+        if receipt.get("operation") != "create":
+            return False
+        if not receipt.get("entity_ids"):
+            return False
+        return bool(
+            receipt.get("changed") is True
+            or receipt.get("reason") == "already_scheduled"
+        )
+
+    @classmethod
     def _enforce_operation_receipts(cls, text: str, action_state: dict[str, Any]) -> str:
+        # For semantic scheduled actions we already know the model interpreted
+        # the user's message as a future operation. If persistence did not
+        # succeed, do not attempt to enumerate every possible Russian action
+        # verb the generator might use to falsely promise execution: replace
+        # the entire generated response with a receipt-grounded status.
+        if (
+            cls._semantic_schedule_requested(action_state)
+            and not cls._semantic_schedule_exists(action_state)
+        ):
+            return cls._truthful_receipt_fallback(
+                action_state,
+                ["scheduled_action_create"],
+            )
+
         claim_text = cls._claim_scan_text(text)
         violations: list[str] = []
         if cls._has_bot_action_claim(_MEMORY_SAVE_RE, claim_text) and not cls._memory_save_confirmed(action_state):
@@ -297,6 +333,21 @@ class ResponseGenerator:
                 parts.append("Задачу создать не удалось.")
             else:
                 parts.append("Задачу не создавал.")
+
+        if "scheduled_action_create" in violations:
+            reason = str(reminder.get("reason") or "")
+            if reason == "timezone_required":
+                parts.append("Запланированное действие не поставил — нужен часовой пояс.")
+            elif reason == "target_required_for_stop_on_reply":
+                parts.append("Запланированное действие не поставил — нужен адресат.")
+            elif reason == "unsupported_time_expression":
+                parts.append("Запланированное действие не поставил — расписание не удалось надёжно понять.")
+            elif reason in {"bounded_burst_out_of_bounds", "bounded_burst_required"}:
+                parts.append("Серию не запустил — такой частый режим нужен в явно ограниченном безопасном окне.")
+            elif reason == "unsupported_scheduled_capability":
+                parts.append("По расписанию это не запустил — нужный внешний источник данных пока не подключён.")
+            else:
+                parts.append("Запланированное действие не создано.")
 
         if "reminder_create" in violations:
             status = reminder.get("status")
