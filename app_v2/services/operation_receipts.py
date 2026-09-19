@@ -113,8 +113,17 @@ def group_reminder_receipt(action_state: dict[str, Any] | None) -> dict[str, Any
             "interval_seconds": action_state.get("interval_seconds"),
             "target_username": action_state.get("target_username"),
             "stop_on_reply": bool(action_state.get("stop_on_reply")),
+            "timezone": action_state.get("timezone"),
+            "recurrence_rule": action_state.get("recurrence_rule"),
             "reason": reason,
         }
+
+    if raw_status == "already_scheduled":
+        return {"status": "succeeded", "changed": False, "entity_ids": entity_ids,
+                "operation": "create", "due_at": action_state.get("due_at"),
+                "timezone": action_state.get("timezone"),
+                "recurrence_rule": action_state.get("recurrence_rule"),
+                "reason": "already_scheduled"}
 
     if raw_status in {"cancelled", "cancelled_on_response"}:
         changed = cancelled_count > 0

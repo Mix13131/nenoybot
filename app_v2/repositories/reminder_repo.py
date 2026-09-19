@@ -6,6 +6,7 @@ from datetime import datetime
 from typing import Any
 
 from app_v2.domain.enums import ScopeType
+from app_v2.services.calendar_schedule import CalendarSchedule, next_calendar_occurrence
 
 
 @dataclass(frozen=True)
@@ -18,6 +19,7 @@ class ReminderRecord:
     payload: dict[str, Any]
     last_fired_at: datetime | None
     recurrence_rule: str | None = None
+    already_existing: bool = False
 
 
 class ReminderRepository:
@@ -29,6 +31,9 @@ class ReminderRepository:
         if not recurrence_rule:
             return None
         prefix = "interval:"
+        if recurrence_rule.startswith("calendar:"):
+            CalendarSchedule.decode(recurrence_rule)
+            return None
         if not recurrence_rule.startswith(prefix):
             raise ValueError("Unsupported recurrence_rule")
         try:
@@ -70,14 +75,21 @@ class ReminderRepository:
         due_at: datetime,
         payload: dict[str, Any] | None = None,
         recurrence_rule: str | None = None,
+        source_event_id: str | None = None,
     ) -> ReminderRecord:
         if due_at.tzinfo is None or due_at.utcoffset() is None:
             raise ValueError("due_at must be timezone-aware")
         self._interval_seconds(recurrence_rule)
+        body = dict(payload or {})
+        if source_event_id:
+            body["source_event_id"] = source_event_id
         row = self.conn.execute(
             """
             INSERT INTO reminders(scope_type, scope_id, due_at, recurrence_rule, status, payload)
             VALUES (%s,%s,%s,%s,'pending',%s::jsonb)
+            ON CONFLICT ((payload ->> 'source_event_id'))
+                WHERE payload ->> 'source_event_id' IS NOT NULL
+                DO NOTHING
             RETURNING id, scope_type, scope_id, due_at, status, payload, last_fired_at, recurrence_rule
             """,
             (
@@ -85,11 +97,60 @@ class ReminderRepository:
                 scope_id,
                 due_at,
                 recurrence_rule,
-                json.dumps(payload or {}, ensure_ascii=False),
+                json.dumps(body, ensure_ascii=False),
             ),
         ).fetchone()
+        already_existing = row is None
+        if already_existing:
+            row = self.conn.execute(
+                """SELECT id, scope_type, scope_id, due_at, status, payload, last_fired_at, recurrence_rule
+                   FROM reminders WHERE payload ->> 'source_event_id'=%s""",
+                (source_event_id,),
+            ).fetchone()
+            if row is None:
+                raise RuntimeError("Source-event conflict did not yield a reminder")
         self.conn.commit()
-        return self._row(row)
+        record = self._row(row)
+        if already_existing:
+            return ReminderRecord(**{**record.__dict__, "already_existing": True})
+        return record
+
+    def save_pending_calendar_intent(self, *, scope_id: str, actor_user_id: str,
+                                     source_event_id: str, payload: dict[str, Any]) -> None:
+        self.conn.execute(
+            """INSERT INTO pending_calendar_intents(scope_type,scope_id,actor_user_id,source_event_id,payload)
+               VALUES ('group',%s,%s,%s,%s::jsonb) ON CONFLICT (source_event_id) DO NOTHING""",
+            (scope_id, actor_user_id, source_event_id, json.dumps(payload, ensure_ascii=False)),
+        )
+        self.conn.commit()
+
+    def get_pending_calendar_intent(
+        self,
+        *,
+        scope_id: str,
+        actor_user_id: str,
+        message_thread_id: str | int | None = None,
+        max_age_hours: int = 24,
+    ):
+        if max_age_hours <= 0:
+            return None
+        thread_id = None if message_thread_id is None else str(message_thread_id)
+        row = self.conn.execute(
+            """SELECT id, source_event_id, payload FROM pending_calendar_intents
+               WHERE scope_type='group'
+                 AND scope_id=%s
+                 AND actor_user_id=%s
+                 AND status='pending'
+                 AND created_at >= CURRENT_TIMESTAMP - (%s * INTERVAL '1 hour')
+                 AND (payload ->> 'message_thread_id') IS NOT DISTINCT FROM %s
+               ORDER BY created_at DESC LIMIT 1""",
+            (scope_id, actor_user_id, max_age_hours, thread_id),
+        ).fetchone()
+        return None if row is None else {"id": int(row[0]), "source_event_id": row[1], "payload": dict(row[2])}
+
+    def complete_pending_calendar_intent(self, intent_id: int) -> None:
+        self.conn.execute("UPDATE pending_calendar_intents SET status='completed', updated_at=CURRENT_TIMESTAMP WHERE id=%s", (intent_id,))
+        self.conn.commit()
 
     def cancel(self, reminder_id: int) -> bool:
         row = self.conn.execute(
@@ -285,7 +346,8 @@ class ReminderRepository:
         """Atomically turn one due reminder into a durable reminder_due event."""
         row = self.conn.execute(
             """
-            SELECT id, scope_type, scope_id, due_at, status, payload, last_fired_at, recurrence_rule
+            SELECT id, scope_type, scope_id, due_at, status, payload, last_fired_at, recurrence_rule,
+                   clock_timestamp()
             FROM reminders
             WHERE status IN ('pending','retry') AND due_at <= CURRENT_TIMESTAMP
             ORDER BY due_at, id
@@ -298,13 +360,30 @@ class ReminderRepository:
             return None
 
         reminder = self._row(row)
+        processing_at = row[8]
         interval_seconds = self._interval_seconds(reminder.recurrence_rule)
+        calendar = (
+            CalendarSchedule.decode(reminder.recurrence_rule)
+            if reminder.recurrence_rule and reminder.recurrence_rule.startswith("calendar:")
+            else None
+        )
         payload = dict(reminder.payload)
         fire_count = int(payload.get("fire_count") or 0) + 1
-        max_occurrences = int(payload.get("max_occurrences") or (4 if interval_seconds is not None else 1))
-        max_occurrences = max(1, min(max_occurrences, 100))
         payload["fire_count"] = fire_count
-        payload["max_occurrences"] = max_occurrences
+
+        if calendar is not None:
+            # Calendar recurrence means the natural-language promise "every
+            # day / weekday / Friday": keep the local-wall-clock chain alive
+            # until an explicit existing cancellation control stops it.
+            payload.pop("max_occurrences", None)
+            payload["recurrence_policy"] = "until_cancelled"
+            max_occurrences = None
+        else:
+            max_occurrences = int(
+                payload.get("max_occurrences") or (4 if interval_seconds is not None else 1)
+            )
+            max_occurrences = max(1, min(max_occurrences, 100))
+            payload["max_occurrences"] = max_occurrences
 
         actor_user_id = payload.get("actor_user_id")
         text = payload.get("text") or payload.get("title") or "Напоминание"
@@ -340,7 +419,14 @@ class ReminderRepository:
             ),
         )
 
-        stop_after_this_fire = interval_seconds is None or fire_count >= max_occurrences
+        if calendar is not None:
+            stop_after_this_fire = False
+        elif interval_seconds is None:
+            stop_after_this_fire = True
+        else:
+            assert max_occurrences is not None
+            stop_after_this_fire = fire_count >= max_occurrences
+
         if stop_after_this_fire:
             next_status = "sent"
             self.conn.execute(
@@ -356,11 +442,15 @@ class ReminderRepository:
             next_due = reminder.due_at
         else:
             next_status = "pending"
+            calendar_reference = max(reminder.due_at, processing_at)
+            next_value = (next_calendar_occurrence(calendar, calendar_reference)
+                          if calendar else None)
             next_row = self.conn.execute(
                 """
                 UPDATE reminders
                 SET status='pending',
-                    due_at=GREATEST(due_at, CURRENT_TIMESTAMP) + (%s * INTERVAL '1 second'),
+                    due_at=CASE WHEN %s::timestamptz IS NOT NULL THEN %s::timestamptz
+                                ELSE GREATEST(due_at, CURRENT_TIMESTAMP) + (%s * INTERVAL '1 second') END,
                     payload=%s::jsonb,
                     last_fired_at=CURRENT_TIMESTAMP,
                     updated_at=CURRENT_TIMESTAMP,
@@ -368,7 +458,7 @@ class ReminderRepository:
                 WHERE id=%s
                 RETURNING due_at
                 """,
-                (interval_seconds, json.dumps(payload, ensure_ascii=False), reminder.id),
+                (next_value, next_value, interval_seconds, json.dumps(payload, ensure_ascii=False), reminder.id),
             ).fetchone()
             next_due = next_row[0] if next_row else reminder.due_at
 

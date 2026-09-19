@@ -3,14 +3,18 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass
 from datetime import datetime, timedelta
+from zoneinfo import ZoneInfo
 from typing import Any
 
 from app_v2.domain.enums import EventType, ScopeType
 from app_v2.domain.events import EventEnvelope
+from app_v2.services.calendar_schedule import (
+    CalendarSchedule, next_calendar_occurrence, resolve_local, validate_timezone,
+)
 
 
 _USERNAME_RE = re.compile(r"@([A-Za-z0-9_]{5,32})")
-_REMINDER_INTENT_RE = re.compile(r"\b(?:напоминай|напомни)\b", flags=re.IGNORECASE)
+_REMINDER_INTENT_RE = re.compile(r"\b(?:напоминай|напомни|присылай)\b", flags=re.IGNORECASE)
 _CANCEL_REMINDER_RE = re.compile(
     r"(?:"
     r"\b(?:отмени|отменяй|останови|остановить|хватит|перестань|прекрати|стоп|достаточно)\b.{0,120}\bнапомин\w*"
@@ -32,6 +36,24 @@ _AFTER_INTERVAL_RE = re.compile(
     r"\bчерез\s+(\d{1,3})\s*(минут\w*|час\w*)",
     flags=re.IGNORECASE,
 )
+_CALENDAR_RE = re.compile(
+    r"(?P<kind>кажд(?:ый день|ое утро)|по будням|каждую пятницу|сегодня|завтра)"
+    r".*?\bв\s+(?P<hour>[01]?\d|2[0-3])"
+    r"(?::(?P<minute>[0-5]\d)|(?!:))"
+    r"(?:\s*(?P<period>утра|утром|вечера|вечером|дня|днём|днем|ночи|ночью))?"
+    r"(?![\d:])",
+    flags=re.IGNORECASE,
+)
+_CLOCK_ATTEMPT_RE = re.compile(
+    r"(?:(?<!\w)в\s+|(?<!\w)(?:или|либо)\s+)"
+    r"(?:[01]?\d|2[0-3])(?::[0-5]\d)?(?![\d:])",
+    flags=re.IGNORECASE,
+)
+_TIMEZONE_TOKEN_RE = re.compile(
+    r"(?<![A-Za-z0-9_+./-])(UTC|[A-Za-z][A-Za-z0-9_+.-]*/[A-Za-z0-9_+.-]+(?:/[A-Za-z0-9_+.-]+)*)(?![A-Za-z0-9_+./-])"
+)
+_TZ_ALIASES = {"по московскому времени": "Europe/Moscow"}
+_MSK_RE = re.compile(r"(?<!\w)мск(?!\w)", flags=re.IGNORECASE)
 
 _MIN_RECURRING_INTERVAL_SECONDS = 15 * 60
 _MAX_GROUP_REMINDER_OCCURRENCES = 4
@@ -48,6 +70,8 @@ class GroupReminderAction:
     stop_on_reply: bool = False
     cancelled_count: int = 0
     reason: str | None = None
+    timezone: str | None = None
+    recurrence_rule: str | None = None
 
     def as_action_state(self) -> dict[str, Any]:
         return {
@@ -60,6 +84,8 @@ class GroupReminderAction:
             "stop_on_reply": self.stop_on_reply,
             "cancelled_count": self.cancelled_count,
             "reason": self.reason,
+            "timezone": self.timezone,
+            "recurrence_rule": self.recurrence_rule,
         }
 
 
@@ -136,13 +162,31 @@ class GroupReminderService:
                 reason=None if cancelled else "no_active_reminders",
             )
 
+        timezone_name = self._timezone(text)
+        pending = None
+        clarification_timezone = None
+        if event.event_type is EventType.REPLY_TO_BOT and event.actor_user_id:
+            clarification_timezone = self._clarification_timezone(text)
+            if clarification_timezone:
+                pending = self.reminder_repo.get_pending_calendar_intent(
+                    scope_id=event.scope_id,
+                    actor_user_id=event.actor_user_id,
+                    message_thread_id=event.metadata.get("message_thread_id"),
+                    max_age_hours=24,
+                )
+        if pending:
+            spec = dict(pending["payload"])
+            return self._persist_calendar(
+                event,
+                now=now,
+                spec=spec,
+                timezone_name=clarification_timezone,
+                source_event_id=pending["source_event_id"],
+                pending_id=pending["id"],
+            )
+
         if not _REMINDER_INTENT_RE.search(text):
             return None
-
-        interval_seconds = self._recurring_interval_seconds(text)
-        one_shot_seconds = None if interval_seconds is not None else self._one_shot_delay_seconds(text)
-        if interval_seconds is None and one_shot_seconds is None:
-            return GroupReminderAction(status="not_scheduled", reason="unsupported_time_expression")
 
         target_username = self._target_username(text, reply_text)
         stop_on_reply = bool(
@@ -151,6 +195,36 @@ class GroupReminderService:
         )
         if stop_on_reply and not target_username:
             return GroupReminderAction(status="not_scheduled", reason="target_required_for_stop_on_reply")
+
+        calendar = self._calendar_spec(text, now)
+        if calendar is not None:
+            calendar = dict(calendar)
+            calendar["source_message_id"] = event.message_id
+            calendar["message_thread_id"] = event.metadata.get("message_thread_id")
+            calendar["reference_at"] = event.occurred_at.isoformat()
+            calendar["target_username"] = target_username
+            calendar["stop_on_reply"] = stop_on_reply
+            if not timezone_name:
+                if event.actor_user_id:
+                    self.reminder_repo.save_pending_calendar_intent(
+                        scope_id=event.scope_id,
+                        actor_user_id=event.actor_user_id,
+                        source_event_id=event.event_id,
+                        payload=calendar,
+                    )
+                return GroupReminderAction(status="not_scheduled", reason="timezone_required")
+            return self._persist_calendar(
+                event,
+                now=now,
+                spec=calendar,
+                timezone_name=timezone_name,
+                source_event_id=event.event_id,
+            )
+
+        interval_seconds = self._recurring_interval_seconds(text)
+        one_shot_seconds = None if interval_seconds is not None else self._one_shot_delay_seconds(text)
+        if interval_seconds is None and one_shot_seconds is None:
+            return GroupReminderAction(status="not_scheduled", reason="unsupported_time_expression")
 
         delay_seconds = interval_seconds if interval_seconds is not None else one_shot_seconds
         assert delay_seconds is not None
@@ -182,16 +256,133 @@ class GroupReminderService:
             due_at=due_at,
             recurrence_rule=recurrence_rule,
             payload=payload,
+            source_event_id=event.event_id,
         )
+        already = bool(getattr(record, "already_existing", False))
         return GroupReminderAction(
-            status="scheduled",
+            status="already_scheduled" if already else "scheduled",
             reminder_id=record.id,
             recurring=interval_seconds is not None,
             interval_seconds=interval_seconds,
             target_username=target_username,
             due_at=record.due_at,
             stop_on_reply=stop_on_reply,
+            recurrence_rule=getattr(record, "recurrence_rule", recurrence_rule),
         )
+
+    def _persist_calendar(self, event: EventEnvelope, *, now: datetime, spec: dict[str, Any],
+                          timezone_name: str, source_event_id: str,
+                          pending_id: int | None = None) -> GroupReminderAction:
+        timezone_name = validate_timezone(timezone_name)
+        one_shot_day = spec.get("one_shot_day")
+        if one_shot_day is not None:
+            reference_at = datetime.fromisoformat(str(spec.get("reference_at") or now.isoformat()))
+            if reference_at.tzinfo is None or reference_at.utcoffset() is None:
+                return GroupReminderAction(status="not_scheduled", reason="invalid_calendar_reference")
+            local_today = reference_at.astimezone(ZoneInfo(timezone_name)).date()
+            due_at = resolve_local(local_today + timedelta(days=int(one_shot_day)),
+                                   int(spec["hour"]), int(spec["minute"]), timezone_name)
+            if due_at <= now:
+                return GroupReminderAction(status="not_scheduled", reason="calendar_time_in_past")
+            rule = None
+            recurring = False
+        else:
+            schedule = CalendarSchedule(spec["frequency"], int(spec["hour"]), int(spec["minute"]),
+                                        timezone_name, spec.get("weekday"))
+            rule = schedule.encode()
+            due_at = next_calendar_occurrence(schedule, now)
+            recurring = True
+        subject = " ".join(str(spec.get("subject") or event.text or "").split())[:700]
+        target_username = str(spec.get("target_username") or "").strip().lstrip("@") or None
+        stop_on_reply = bool(spec.get("stop_on_reply"))
+        target_label = f"@{target_username}" if target_username else "участникам чата"
+        payload = {"text": f"Сделай короткое напоминание {target_label} в характере НеНоя. Контекст договорённости: {subject}",
+                   "actor_user_id": event.actor_user_id, "source_event_id": source_event_id,
+                   "source_message_id": spec.get("source_message_id") or event.message_id,
+                   "message_thread_id": spec.get("message_thread_id"),
+                   "target_username": target_username,
+                   "stop_on_reply": stop_on_reply,
+                   "reminder_context": subject,
+                   "timezone": timezone_name, "fire_count": 0}
+        if recurring:
+            payload["recurrence_policy"] = "until_cancelled"
+        else:
+            payload["max_occurrences"] = 1
+        record = self.reminder_repo.create(scope_type=ScopeType.GROUP, scope_id=event.scope_id,
+                                           due_at=due_at, recurrence_rule=rule, payload=payload,
+                                           source_event_id=source_event_id)
+        if pending_id is not None:
+            self.reminder_repo.complete_pending_calendar_intent(pending_id)
+        already = bool(getattr(record, "already_existing", False))
+        return GroupReminderAction(status="already_scheduled" if already else "scheduled",
+                                   reminder_id=record.id, recurring=recurring, due_at=record.due_at,
+                                   target_username=target_username, stop_on_reply=stop_on_reply,
+                                   timezone=timezone_name, recurrence_rule=record.recurrence_rule)
+
+    @classmethod
+    def _timezone(cls, text: str) -> str | None:
+        lowered = text.lower()
+        candidates: list[str] = []
+        for alias, name in _TZ_ALIASES.items():
+            if alias in lowered:
+                candidates.append(name)
+        if _MSK_RE.search(text):
+            candidates.append("Europe/Moscow")
+
+        invalid_explicit = False
+        for match in _TIMEZONE_TOKEN_RE.finditer(text):
+            token = match.group(1)
+            if token != "UTC" and "/" not in token:
+                continue
+            try:
+                candidates.append(validate_timezone(token))
+            except ValueError:
+                invalid_explicit = True
+
+        if invalid_explicit:
+            return None
+        distinct = set(candidates)
+        if len(distinct) != 1:
+            return None
+        return next(iter(distinct))
+
+    @classmethod
+    def _clarification_timezone(cls, text: str) -> str | None:
+        compact = " ".join(text.strip().split()).strip(" .!?…")
+        lowered = compact.lower()
+        if lowered == "по московскому времени" or _MSK_RE.fullmatch(compact):
+            return "Europe/Moscow"
+
+        token_text = compact
+        if lowered.startswith("по "):
+            token_text = compact[3:].strip()
+        if token_text == "UTC" or _TIMEZONE_TOKEN_RE.fullmatch(token_text):
+            return cls._timezone(token_text)
+        return None
+
+    @staticmethod
+    def _calendar_spec(text: str, now: datetime) -> dict[str, Any] | None:
+        if len(_CLOCK_ATTEMPT_RE.findall(text)) != 1:
+            return None
+        match = _CALENDAR_RE.search(text)
+        if not match:
+            return None
+        kind = match.group("kind").lower()
+        hour = int(match.group("hour"))
+        period = (match.group("period") or "").lower()
+        if period:
+            if period != "утра" or hour > 11:
+                return None
+        if "утро" in kind and hour > 11:
+            return None
+        spec: dict[str, Any] = {"hour": hour,
+                                "minute": int(match.group("minute") or 0), "subject": text}
+        if kind == "сегодня": spec["one_shot_day"] = 0
+        elif kind == "завтра": spec["one_shot_day"] = 1
+        elif kind == "по будням": spec["frequency"] = "weekdays"
+        elif "пятниц" in kind: spec.update(frequency="weekly", weekday=4)
+        else: spec["frequency"] = "daily"
+        return spec
 
     @staticmethod
     def _target_username(text: str, reply_text: str) -> str | None:

@@ -12,10 +12,29 @@ class FakeReminderRepo:
         self.cancel_calls = []
         self.reply_cancel_calls = []
         self.active_cancel_calls = []
+        self.pending = None
+        self.already_existing = False
 
     def create(self, **kwargs):
         self.created.append(kwargs)
-        return SimpleNamespace(id=17, due_at=kwargs["due_at"])
+        return SimpleNamespace(id=17, due_at=kwargs["due_at"], payload=kwargs["payload"],
+                               recurrence_rule=kwargs["recurrence_rule"],
+                               already_existing=self.already_existing)
+
+    def save_pending_calendar_intent(self, **kwargs):
+        self.pending = {"id": 3, "source_event_id": kwargs["source_event_id"], "payload": kwargs["payload"]}
+
+    def get_pending_calendar_intent(self, **kwargs):
+        if self.pending is None:
+            return None
+        expected = self.pending["payload"].get("message_thread_id")
+        actual = kwargs.get("message_thread_id")
+        if (None if expected is None else str(expected)) != (None if actual is None else str(actual)):
+            return None
+        return self.pending
+
+    def complete_pending_calendar_intent(self, intent_id):
+        self.pending = None
 
     def cancel_waiting_for_response(self, **kwargs):
         self.cancel_calls.append(kwargs)
@@ -106,6 +125,22 @@ def test_one_shot_relative_reminder():
     assert repo.created[0]["payload"]["max_occurrences"] == 1
 
 
+def test_interval_and_relative_retries_report_honest_no_change():
+    now = datetime(2026, 9, 14, 15, 10, tzinfo=timezone.utc)
+    for text in (
+        "НеНой, напоминай каждые 30 минут проверить баню",
+        "НеНой, напомни через 15 минут проверить баню",
+    ):
+        repo = FakeReminderRepo()
+        repo.already_existing = True
+        action = GroupReminderService(repo).maybe_schedule(
+            make_event(text=text, event_type=EventType.DIRECT_MENTION), now=now
+        )
+        assert action.status == "already_scheduled"
+        assert action.reminder_id == 17
+        assert action.due_at == repo.created[0]["due_at"]
+
+
 def test_reply_stop_cancels_exact_bot_reminder_chain():
     repo = FakeReminderRepo()
     service = GroupReminderService(repo)
@@ -167,3 +202,19 @@ def test_natural_gorshochek_phrase_stops_target_reminder():
     assert result.status == "cancelled"
     assert result.target_username == "toroikin"
     assert result.cancelled_count == 1
+
+
+
+def test_interval_recurring_still_has_four_occurrence_safety_cap():
+    repo = FakeReminderRepo()
+    action = GroupReminderService(repo).maybe_schedule(
+        make_event(
+            text="НеНой, напоминай каждые 30 минут проверить баню",
+            event_type=EventType.DIRECT_MENTION,
+        ),
+        now=datetime(2026, 9, 14, 15, 10, tzinfo=timezone.utc),
+    )
+
+    assert action.status == "scheduled"
+    assert repo.created[0]["payload"]["max_occurrences"] == 4
+    assert "recurrence_policy" not in repo.created[0]["payload"]
