@@ -41,6 +41,10 @@ class EventWorker:
         try:
             self.handler(event)
         except Exception as exc:
+            # A handler may fail after PostgreSQL has marked the shared
+            # connection transaction as aborted. Retry bookkeeping itself then
+            # cannot run until that transaction is rolled back.
+            self.repo.rollback()
             self.repo.retry(
                 event.event_id,
                 str(exc),

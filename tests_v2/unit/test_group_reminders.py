@@ -14,6 +14,10 @@ class FakeReminderRepo:
         self.active_cancel_calls = []
         self.pending = None
         self.already_existing = False
+        self.rollback_calls = 0
+
+    def rollback(self):
+        self.rollback_calls += 1
 
     def create(self, **kwargs):
         self.created.append(kwargs)
@@ -218,3 +222,13 @@ def test_interval_recurring_still_has_four_occurrence_safety_cap():
     assert action.status == "scheduled"
     assert repo.created[0]["payload"]["max_occurrences"] == 4
     assert "recurrence_policy" not in repo.created[0]["payload"]
+
+
+
+def test_group_reminder_service_can_recover_failed_repository_transaction():
+    repo = FakeReminderRepo()
+    service = GroupReminderService(repo)
+
+    service.recover_failed_transaction()
+
+    assert repo.rollback_calls == 1

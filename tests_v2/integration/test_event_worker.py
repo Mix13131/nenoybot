@@ -29,6 +29,7 @@ class FakeRepo:
         self.retried: list[tuple[str, str]] = []
         self.recover_calls = 0
         self.claim_calls = 0
+        self.rollback_calls = 0
 
     def recover_stale(self, **kwargs) -> int:
         self.recover_calls += 1
@@ -42,6 +43,9 @@ class FakeRepo:
     def complete(self, event_id: str) -> bool:
         self.completed.append(event_id)
         return True
+
+    def rollback(self) -> None:
+        self.rollback_calls += 1
 
     def retry(self, event_id: str, error: str, **kwargs):
         self.retried.append((event_id, error))
@@ -70,6 +74,7 @@ def test_worker_retries_failed_event() -> None:
 
     assert worker.run_once() is True
     assert repo.completed == []
+    assert repo.rollback_calls == 1
     assert repo.retried == [("evt-1", "boom")]
 
 

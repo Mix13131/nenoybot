@@ -167,6 +167,12 @@ class GroupReminderService:
     def __init__(self, reminder_repo: Any) -> None:
         self.reminder_repo = reminder_repo
 
+    def recover_failed_transaction(self) -> None:
+        """Rollback repository state before the pipeline continues after an error."""
+        rollback = getattr(self.reminder_repo, "rollback", None)
+        if callable(rollback):
+            rollback()
+
     def cancel_on_response(self, event: EventEnvelope) -> int:
         if event.scope_type is not ScopeType.GROUP:
             return 0

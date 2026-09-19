@@ -9,6 +9,7 @@ from typing import Any
 
 from app_v2.adapters.postgres import connect
 from app_v2.config import load_config
+from app_v2.db.migrations import run_migrations
 from app_v2.group_admin import FRIENDS_DAY1_PROFILE
 from app_v2.repositories.group_context_repo import GroupContextRepository
 from app_v2.runtime import RuntimeEventHandler, build_runtime
@@ -211,6 +212,12 @@ def run_forever() -> None:
     _configure_logging()
     config = load_config()
     poll_interval = _float_env("NENOY_V2_WORKER_IDLE_SLEEP", 0.5)
+
+    applied_migrations = run_migrations(config.database_url)
+    logger.info(
+        "database migrations ready applied=%s",
+        ",".join(f"{version:04d}" for version in applied_migrations) or "none",
+    )
 
     with connect(config.database_url) as conn:
         _bootstrap_group_from_env(conn)

@@ -33,6 +33,10 @@ class EventRepository:
     def __init__(self, conn) -> None:
         self.conn = conn
 
+    def rollback(self) -> None:
+        """Reset an aborted transaction before durable retry bookkeeping."""
+        self.conn.rollback()
+
     def claim_next(self, *, processing_timeout_seconds: float = 120.0) -> ClaimedEvent | None:
         row = self.conn.execute(
             """
