@@ -166,6 +166,8 @@ class GroupReminderAction:
     reason: str | None = None
     timezone: str | None = None
     recurrence_rule: str | None = None
+    execution_kind: str | None = None
+    action_instruction: str | None = None
 
     def as_action_state(self) -> dict[str, Any]:
         return {
@@ -180,6 +182,8 @@ class GroupReminderAction:
             "reason": self.reason,
             "timezone": self.timezone,
             "recurrence_rule": self.recurrence_rule,
+            "execution_kind": self.execution_kind,
+            "action_instruction": self.action_instruction,
         }
 
 
@@ -224,6 +228,7 @@ class GroupReminderService:
         event: EventEnvelope,
         *,
         now: datetime,
+        interpreted_action: Any | None = None,
     ) -> GroupReminderAction | None:
         if event.scope_type is not ScopeType.GROUP:
             return None
@@ -285,21 +290,59 @@ class GroupReminderService:
                 pending_id=pending["id"],
             )
 
+        semantic_intent = bool(
+            interpreted_action is not None
+            and getattr(interpreted_action, "is_scheduled_action", False)
+        )
+        execution_kind = (
+            str(getattr(interpreted_action, "execution_kind", "") or "")
+            if semantic_intent
+            else "reminder"
+        )
+        action_instruction = (
+            " ".join(str(getattr(interpreted_action, "instruction", "") or "").split())[:700]
+            if semantic_intent
+            else ""
+        )
+
         bounded_burst = self._bounded_burst_spec(text)
-        burst_candidate = bool(_BURST_ACTION_RE.search(text) and _BOUNDED_BURST_RE.search(text))
+        burst_candidate = bool(_BOUNDED_BURST_RE.search(text))
         natural_open_short_repeat = bool(
             re.search(r"\b(?:пиши|пишите)\b", text, flags=re.IGNORECASE)
             and _EVERY_INTERVAL_RE.search(text)
         )
-        if not _REMINDER_INTENT_RE.search(text) and bounded_burst is None:
-            if burst_candidate or natural_open_short_repeat:
+        canonical_intent = bool(_REMINDER_INTENT_RE.search(text))
+        if not canonical_intent and not semantic_intent:
+            # Legacy bounded-burst fallback stays narrow. New action verbs are
+            # understood by ScheduledActionInterpreter, not added to this list.
+            if burst_candidate and _BURST_ACTION_RE.search(text):
                 return GroupReminderAction(
                     status="not_scheduled",
                     reason="bounded_burst_out_of_bounds"
-                    if burst_candidate
-                    else "bounded_burst_required",
+                    if bounded_burst is None
+                    else "scheduled_action_interpreter_unavailable",
+                )
+            if natural_open_short_repeat:
+                return GroupReminderAction(
+                    status="not_scheduled",
+                    reason="bounded_burst_required",
                 )
             return None
+
+        if semantic_intent and execution_kind == "external_data":
+            return GroupReminderAction(
+                status="not_scheduled",
+                reason="unsupported_scheduled_capability",
+                execution_kind=execution_kind,
+                action_instruction=action_instruction,
+            )
+        if semantic_intent and burst_candidate and bounded_burst is None:
+            return GroupReminderAction(
+                status="not_scheduled",
+                reason="bounded_burst_out_of_bounds",
+                execution_kind=execution_kind,
+                action_instruction=action_instruction,
+            )
 
         target_username = self._target_username(text, reply_text)
         stop_on_reply = bool(
@@ -317,6 +360,8 @@ class GroupReminderService:
             calendar["reference_at"] = event.occurred_at.isoformat()
             calendar["target_username"] = target_username
             calendar["stop_on_reply"] = stop_on_reply
+            calendar["execution_kind"] = execution_kind
+            calendar["action_instruction"] = action_instruction or text
             if not timezone_name:
                 if event.actor_user_id:
                     self.reminder_repo.save_pending_calendar_intent(
@@ -352,13 +397,18 @@ class GroupReminderService:
 
         subject = reply_text or text
         subject = " ".join(subject.split())[:700]
+        instruction = action_instruction or subject
         target_label = f"@{target_username}" if target_username else "участникам чата"
-        reminder_text = (
-            f"Сделай короткое напоминание {target_label} в характере НеНоя. "
-            f"Не объясняй механику таймера. Контекст договорённости: {subject}"
+        reminder_text = self._execution_prompt(
+            execution_kind=execution_kind,
+            instruction=instruction,
+            target_label=target_label,
+            context=subject,
         )
         payload = {
             "text": reminder_text,
+            "execution_kind": execution_kind,
+            "action_instruction": instruction,
             "actor_user_id": event.actor_user_id,
             "target_username": target_username,
             "stop_on_reply": stop_on_reply,
@@ -390,8 +440,10 @@ class GroupReminderService:
             target_username=target_username,
             due_at=record.due_at,
             stop_on_reply=stop_on_reply,
-            reason="bounded_burst" if burst_occurrences is not None else None,
+            reason="bounded_burst" if burst_occurrences is not None else ("interpreted_scheduled_action" if semantic_intent else None),
             recurrence_rule=getattr(record, "recurrence_rule", recurrence_rule),
+            execution_kind=execution_kind,
+            action_instruction=instruction,
         )
 
     def _persist_calendar(self, event: EventEnvelope, *, now: datetime, spec: dict[str, Any],
@@ -420,7 +472,16 @@ class GroupReminderService:
         target_username = str(spec.get("target_username") or "").strip().lstrip("@") or None
         stop_on_reply = bool(spec.get("stop_on_reply"))
         target_label = f"@{target_username}" if target_username else "участникам чата"
-        payload = {"text": f"Сделай короткое напоминание {target_label} в характере НеНоя. Контекст договорённости: {subject}",
+        execution_kind = str(spec.get("execution_kind") or "reminder")
+        instruction = " ".join(str(spec.get("action_instruction") or subject).split())[:700]
+        payload = {"text": self._execution_prompt(
+                       execution_kind=execution_kind,
+                       instruction=instruction,
+                       target_label=target_label,
+                       context=subject,
+                   ),
+                   "execution_kind": execution_kind,
+                   "action_instruction": instruction,
                    "actor_user_id": event.actor_user_id, "source_event_id": source_event_id,
                    "source_message_id": spec.get("source_message_id") or event.message_id,
                    "message_thread_id": spec.get("message_thread_id"),
@@ -441,7 +502,9 @@ class GroupReminderService:
         return GroupReminderAction(status="already_scheduled" if already else "scheduled",
                                    reminder_id=record.id, recurring=recurring, due_at=record.due_at,
                                    target_username=target_username, stop_on_reply=stop_on_reply,
-                                   timezone=timezone_name, recurrence_rule=record.recurrence_rule)
+                                   timezone=timezone_name, recurrence_rule=record.recurrence_rule,
+                                   execution_kind=execution_kind,
+                                   action_instruction=instruction)
 
     @classmethod
     def _timezone(cls, text: str) -> str | None:
@@ -571,6 +634,25 @@ class GroupReminderService:
         elif "пятниц" in kind: spec.update(frequency="weekly", weekday=4)
         else: spec["frequency"] = "daily"
         return spec
+
+    @staticmethod
+    def _execution_prompt(
+        *,
+        execution_kind: str,
+        instruction: str,
+        target_label: str,
+        context: str,
+    ) -> str:
+        if execution_kind == "generate_text":
+            return (
+                f"Выполни запланированное действие для {target_label} в характере НеНоя. "
+                f"Инструкция пользователя: {instruction}. "
+                f"Не объясняй механику планировщика. Исходный контекст: {context}"
+            )
+        return (
+            f"Сделай короткое напоминание {target_label} в характере НеНоя. "
+            f"Не объясняй механику таймера. Контекст договорённости: {context}"
+        )
 
     @staticmethod
     def _small_number(value: str | None) -> int | None:
