@@ -473,3 +473,51 @@ def test_semantic_scheduled_action_promise_is_allowed_after_real_persistence():
     )
 
     assert result.text == model_text
+
+
+
+def test_semantic_interpretation_does_not_override_confirmed_cancellation():
+    reminder = {
+        "status": "succeeded",
+        "changed": True,
+        "entity_ids": [],
+        "operation": "cancel",
+        "cancelled_count": 1,
+        "reason": None,
+    }
+    state = _semantic_action_state(reminder)
+    model_text = "Остановил ежедневные сюрпризы."
+
+    result = ResponseGenerator(adapter=FakeAdapter(text=model_text)).generate(
+        _context(
+            ScopeType.GROUP,
+            ResponseMode.GROUP_DIRECT_REPLY,
+            action_state=state,
+        )
+    )
+
+    assert result.text == model_text
+
+
+def test_semantic_interpretation_preserves_zero_cancel_truth_guard():
+    reminder = {
+        "status": "succeeded",
+        "changed": False,
+        "entity_ids": [],
+        "operation": "cancel",
+        "cancelled_count": 0,
+        "reason": "no_active_reminders",
+    }
+    state = _semantic_action_state(reminder)
+    model_text = "Остановил напоминание."
+
+    result = ResponseGenerator(adapter=FakeAdapter(text=model_text)).generate(
+        _context(
+            ScopeType.GROUP,
+            ResponseMode.GROUP_DIRECT_REPLY,
+            action_state=state,
+        )
+    )
+
+    assert result.text != model_text
+    assert "Активное напоминание не остановлено" in result.text
