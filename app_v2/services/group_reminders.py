@@ -48,6 +48,10 @@ _CALENDAR_KIND_RE = re.compile(
     r"\b(каждый день|каждое утро|по будням|каждую пятницу|сегодня|завтра)\b",
     flags=re.IGNORECASE,
 )
+_CALENDAR_ALT_BRIDGE_RE = re.compile(
+    r"^\s*[,;/]?\s*(?:или|либо)\s*$",
+    flags=re.IGNORECASE,
+)
 _CLOCK_ATTEMPT_RE = re.compile(
     r"(?:(?<!\w)в\s+|(?<!\w)(?:или|либо)\s+)"
     r"(?:[01]?\d|2[0-3])(?::[0-5]\d)?(?![\d:])",
@@ -371,12 +375,18 @@ class GroupReminderService:
         match = _CALENDAR_RE.search(text)
         if not match:
             return None
-        kinds = {
-            kind_match.group(1).lower()
-            for kind_match in _CALENDAR_KIND_RE.finditer(match.group(0))
-        }
-        if len(kinds) != 1:
-            return None
+        selected_start, selected_end = match.span("kind")
+        for kind_match in _CALENDAR_KIND_RE.finditer(text):
+            if kind_match.span() == (selected_start, selected_end):
+                continue
+            if kind_match.end() <= selected_start:
+                bridge = text[kind_match.end():selected_start]
+            elif kind_match.start() >= match.end():
+                bridge = text[match.end():kind_match.start()]
+            else:
+                bridge = text[selected_end:kind_match.start()]
+            if _CALENDAR_ALT_BRIDGE_RE.fullmatch(bridge):
+                return None
         kind = match.group("kind").lower()
         hour = int(match.group("hour"))
         period = (match.group("period") or "").lower()
