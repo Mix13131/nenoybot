@@ -94,7 +94,9 @@ class MessageRepository:
         rows = self.conn.execute(
             """
             WITH boundary AS (
-                SELECT telegram_update_id
+                SELECT
+                    telegram_update_id,
+                    payload -> 'metadata' ->> 'message_thread_id' AS message_thread_id
                 FROM events
                 WHERE event_id=%s AND scope_type=%s AND scope_id=%s
                   AND telegram_update_id IS NOT NULL
@@ -115,6 +117,16 @@ class MessageRepository:
                 WHERE e.scope_type=%s AND e.scope_id=%s
                   AND e.telegram_update_id IS NOT NULL
                   AND e.telegram_update_id < b.telegram_update_id
+                  AND (
+                      (
+                          b.message_thread_id IS NULL
+                          AND e.payload -> 'metadata' ->> 'message_thread_id' IS NULL
+                      )
+                      OR (
+                          b.message_thread_id IS NOT NULL
+                          AND e.payload -> 'metadata' ->> 'message_thread_id' = b.message_thread_id
+                      )
+                  )
                   AND e.payload ->> 'message_id' IS NOT NULL
                   AND e.payload ->> 'text' IS NOT NULL
             )

@@ -545,14 +545,19 @@ class MemoryMapper:
         grouped: dict[str, list[tuple[int, int, dict[str, Any]]]] = {}
         for source_id, offset, order, candidate in positioned:
             grouped.setdefault(source_id, []).append((offset, order, candidate))
+        counts: dict[int, int] = {}
         for items in grouped.values():
-            for slot, (_, order, _) in enumerate(sorted(items, key=lambda item: (item[0], item[1]))):
+            ordered = sorted(items, key=lambda item: (item[0], item[1]))
+            candidate_count = len(ordered)
+            for slot, (_, order, _) in enumerate(ordered):
                 slots[order] = slot
+                counts[order] = candidate_count
 
         result: list[dict[str, Any]] = []
         for _, _, order, candidate in positioned:
             value = dict(candidate)
             value["_source_candidate_index"] = slots[order]
+            value["_source_candidate_count"] = counts[order]
             result.append(value)
         return result
 
@@ -589,10 +594,45 @@ class MemoryMapper:
                 "episode_policy": "unique_source_messages_6h_window",
             }
         )
-        # Candidate slot is source-local. Once that source is detached we can no
-        # longer prove the slot for the remaining provenance, so fail closed on
-        # a future ambiguous edit instead of carrying a false mapping.
-        payload.pop("source_candidate_index", None)
+        source_slots = payload.get("source_candidate_slots")
+        if isinstance(source_slots, dict):
+            source_slots = dict(source_slots)
+            source_slots.pop(self._source_slot_key(source_evidence), None)
+            if source_slots:
+                payload["source_candidate_slots"] = source_slots
+            else:
+                payload.pop("source_candidate_slots", None)
+        else:
+            source_slots = {}
+
+        source_counts = payload.get("source_candidate_counts")
+        if isinstance(source_counts, dict):
+            source_counts = dict(source_counts)
+            source_counts.pop(self._source_slot_key(source_evidence), None)
+            if source_counts:
+                payload["source_candidate_counts"] = source_counts
+            else:
+                payload.pop("source_candidate_counts", None)
+        else:
+            source_counts = {}
+
+        # Keep card-level fields only as single-source compatibility hints. The
+        # source-specific maps above are authoritative for corroborated cards.
+        anchor_key = self._source_slot_key(anchor)
+        anchor_slot = source_slots.get(anchor_key)
+        if isinstance(anchor_slot, int) and not isinstance(anchor_slot, bool):
+            payload["source_candidate_index"] = anchor_slot
+        else:
+            payload.pop("source_candidate_index", None)
+        anchor_count = source_counts.get(anchor_key)
+        if (
+            isinstance(anchor_count, int)
+            and not isinstance(anchor_count, bool)
+            and anchor_count > 0
+        ):
+            payload["source_candidate_count"] = anchor_count
+        else:
+            payload.pop("source_candidate_count", None)
 
         memory_type = card.memory_type
         status = card.status
@@ -731,7 +771,7 @@ class MemoryMapper:
                     elif len(prepared) == len(stable_cards) and len(pending) == len(unmatched_stable):
                         by_slot: dict[int, MemoryCard] = {}
                         for card in unmatched_stable:
-                            slot = card.payload.get("source_candidate_index")
+                            slot = self._source_slot_for_card(card, source_evidence)
                             if not isinstance(slot, int) or slot in by_slot:
                                 return MapperResult(
                                     failed=True,
@@ -995,6 +1035,71 @@ class MemoryMapper:
         return (evidence.message_id, evidence.author_id)
 
     @classmethod
+    def _source_slot_key(cls, evidence: MemoryEvidence) -> str:
+        return json.dumps(
+            cls._source_identity(evidence),
+            ensure_ascii=False,
+            separators=(",", ":"),
+        )
+
+    @classmethod
+    def _source_slot_for_card(
+        cls,
+        card: MemoryCard,
+        evidence: MemoryEvidence,
+    ) -> int | None:
+        raw_slots = card.payload.get("source_candidate_slots")
+        if isinstance(raw_slots, dict):
+            slot = raw_slots.get(cls._source_slot_key(evidence))
+            if isinstance(slot, int) and not isinstance(slot, bool):
+                return slot
+
+        # Backward compatibility for cards written before per-source slots.
+        # A single-source card's old card-level slot is unambiguous. On a
+        # multi-source legacy card it is not, so fail closed.
+        if len(cls._unique_sources(card.evidence)) == 1:
+            legacy_slot = card.payload.get("source_candidate_index")
+            if isinstance(legacy_slot, int) and not isinstance(legacy_slot, bool):
+                return legacy_slot
+        return None
+
+    @classmethod
+    def _source_candidate_count_for_card(
+        cls,
+        card: MemoryCard,
+        evidence: MemoryEvidence,
+    ) -> int | None:
+        raw_counts = card.payload.get("source_candidate_counts")
+        if isinstance(raw_counts, dict):
+            count = raw_counts.get(cls._source_slot_key(evidence))
+            if isinstance(count, int) and not isinstance(count, bool) and count > 0:
+                return count
+
+        if len(cls._unique_sources(card.evidence)) == 1:
+            legacy_count = card.payload.get("source_candidate_count")
+            if (
+                isinstance(legacy_count, int)
+                and not isinstance(legacy_count, bool)
+                and legacy_count > 0
+            ):
+                return legacy_count
+        return None
+
+    @staticmethod
+    def _excerpt_is_same_region(left: str, right: str) -> bool:
+        a = " ".join((left or "").casefold().split())
+        b = " ".join((right or "").casefold().split())
+        if not a or not b:
+            return False
+        if a == b:
+            return True
+        shorter, longer = (a, b) if len(a) <= len(b) else (b, a)
+        # A shorter valid span selected from the same statement is common model
+        # drift. Requiring a meaningful contained span avoids treating a shared
+        # short token as proof that two different candidates are identical.
+        return len(shorter) >= 8 and shorter in longer
+
+    @classmethod
     def _unique_sources(cls, evidence_items: Iterable[MemoryEvidence]) -> list[MemoryEvidence]:
         result: list[MemoryEvidence] = []
         seen: set[tuple[str | None, str | None]] = set()
@@ -1159,31 +1264,143 @@ class MemoryMapper:
         return existing
 
     @classmethod
-    def _is_exact_source_retry(
+    def _source_retry_state(
         cls,
         candidate: dict[str, Any],
         evidence: MemoryEvidence,
         stable_source_cards: Iterable[MemoryCard],
-    ) -> bool:
-        """Prove a replay from trusted provenance before model classification."""
+    ) -> str:
+        """Return retry / distinct / ambiguous from trusted source provenance."""
 
         source_identity = cls._source_identity(evidence)
         candidate_slot = candidate.get("_source_candidate_index")
+        candidate_count = candidate.get("_source_candidate_count")
+        candidate_semantic_key = str(candidate.get("semantic_key") or "").strip()
+        ambiguous_legacy_slot = False
+
+        source_cards: list[MemoryCard] = []
         for card in stable_source_cards:
-            card_slot = card.payload.get("source_candidate_index")
-            if (
-                isinstance(candidate_slot, int)
-                and isinstance(card_slot, int)
-                and candidate_slot != card_slot
+            if any(
+                cls._source_identity(item) == source_identity
+                for item in card.evidence
             ):
-                continue
-            for item in card.evidence:
+                source_cards.append(card)
+
+        persisted_counts = {
+            count
+            for card in source_cards
+            for count in (cls._source_candidate_count_for_card(card, evidence),)
+            if isinstance(count, int) and not isinstance(count, bool) and count > 0
+        }
+        expected_source_count = (
+            next(iter(persisted_counts))
+            if len(persisted_counts) == 1
+            else None
+        )
+        source_batch_complete = (
+            isinstance(expected_source_count, int)
+            and len(source_cards) >= expected_source_count
+        )
+
+        exact_cards = [
+            card
+            for card in source_cards
+            if any(
+                cls._source_identity(item) == source_identity
+                and item.excerpt == evidence.excerpt
+                for item in card.evidence
+            )
+        ]
+        exact_semantic_cards = [
+            card
+            for card in exact_cards
+            if str(card.payload.get("semantic_key") or "").strip()
+            == candidate_semantic_key
+        ]
+
+        # When a replay returns only a subset of a previously larger candidate
+        # batch, slots may be renumbered. Exact evidence is sufficient only if
+        # we can also prove which completed candidate it refers to:
+        # - same semantic identity, or
+        # - the original batch is fully persisted and this evidence identifies
+        #   exactly one completed card.
+        if (
+            isinstance(candidate_count, int)
+            and not isinstance(candidate_count, bool)
+            and isinstance(expected_source_count, int)
+            and candidate_count != expected_source_count
+            and exact_cards
+        ):
+            if len(exact_semantic_cards) == 1:
+                return "retry"
+            if source_batch_complete and len(exact_cards) == 1:
+                return "retry"
+            # In an incomplete original batch, identical evidence may belong to
+            # the missing candidate. Never turn that into a successful no-op.
+            if not source_batch_complete:
+                return "distinct"
+            # Fully persisted but multiple exact-evidence candidates and no
+            # semantic identity is genuinely ambiguous under model drift.
+            return "ambiguous"
+
+        for card in source_cards:
+            matching_evidence = [
+                item
+                for item in card.evidence
+                if cls._source_identity(item) == source_identity
+            ]
+            source_slot = cls._source_slot_for_card(card, evidence)
+            source_count = cls._source_candidate_count_for_card(card, evidence)
+            comparable_slots = (
+                isinstance(candidate_slot, int)
+                and not isinstance(candidate_slot, bool)
+                and isinstance(source_slot, int)
+            )
+            comparable_counts = (
+                isinstance(candidate_count, int)
+                and not isinstance(candidate_count, bool)
+                and isinstance(source_count, int)
+            )
+            exact_excerpt = any(
+                item.excerpt == evidence.excerpt
+                for item in matching_evidence
+            )
+
+            if exact_excerpt:
                 if (
-                    cls._source_identity(item) == source_identity
-                    and item.excerpt == evidence.excerpt
+                    comparable_slots
+                    and comparable_counts
+                    and candidate_count == source_count
+                    and candidate_slot != source_slot
                 ):
-                    return True
-        return False
+                    continue
+                return "retry"
+
+            if comparable_slots:
+                if candidate_slot != source_slot:
+                    continue
+
+                if comparable_counts:
+                    if candidate_count == source_count:
+                        return "retry"
+                    continue
+
+                if any(
+                    cls._excerpt_is_same_region(item.excerpt, evidence.excerpt)
+                    for item in matching_evidence
+                ):
+                    return "retry"
+
+                ambiguous_legacy_slot = True
+                continue
+
+            if any(
+                cls._excerpt_is_same_region(item.excerpt, evidence.excerpt)
+                for item in matching_evidence
+            ):
+                return "retry"
+
+        return "ambiguous" if ambiguous_legacy_slot else "distinct"
 
     def _source_identity_matches(
         self,
@@ -1279,12 +1496,12 @@ class MemoryMapper:
         now = datetime.now(timezone.utc)
         raw_confidence = float(candidate.get("confidence", 0.5))
 
-        if (
-            event.event_type is not EventType.EDITED_MESSAGE
-            and stable_source_cards
-            and self._is_exact_source_retry(candidate, evidence, stable_source_cards)
-        ):
-            return None
+        if event.event_type is not EventType.EDITED_MESSAGE and stable_source_cards:
+            retry_state = self._source_retry_state(candidate, evidence, stable_source_cards)
+            if retry_state == "retry":
+                return None
+            if retry_state == "ambiguous":
+                raise RuntimeError("ambiguous_source_retry")
 
         semantic_existing = self._find_semantic_candidate_match(
             event,
@@ -1397,8 +1614,66 @@ class MemoryMapper:
             }
         )
         source_candidate_index = candidate.get("_source_candidate_index")
-        if isinstance(source_candidate_index, int):
+        source_candidate_count = candidate.get("_source_candidate_count")
+        source_candidate_slots: dict[str, int] = {}
+        source_candidate_counts: dict[str, int] = {}
+        if existing is not None:
+            existing_slots = existing.payload.get("source_candidate_slots")
+            if isinstance(existing_slots, dict):
+                source_candidate_slots = {
+                    str(key): int(value)
+                    for key, value in existing_slots.items()
+                    if isinstance(value, int) and not isinstance(value, bool)
+                }
+            existing_counts = existing.payload.get("source_candidate_counts")
+            if isinstance(existing_counts, dict):
+                source_candidate_counts = {
+                    str(key): int(value)
+                    for key, value in existing_counts.items()
+                    if (
+                        isinstance(value, int)
+                        and not isinstance(value, bool)
+                        and value > 0
+                    )
+                }
+
+            # Before adding corroboration, migrate a single-source legacy card's
+            # old card-level slot into the source-specific map. The candidate
+            # count remains unknown unless it was explicitly persisted.
+            old_sources = self._unique_sources(existing.evidence)
+            if len(old_sources) == 1:
+                old_source = old_sources[0]
+                old_key = self._source_slot_key(old_source)
+                legacy_slot = existing.payload.get("source_candidate_index")
+                if (
+                    old_key not in source_candidate_slots
+                    and isinstance(legacy_slot, int)
+                    and not isinstance(legacy_slot, bool)
+                ):
+                    source_candidate_slots[old_key] = legacy_slot
+                legacy_count = existing.payload.get("source_candidate_count")
+                if (
+                    old_key not in source_candidate_counts
+                    and isinstance(legacy_count, int)
+                    and not isinstance(legacy_count, bool)
+                    and legacy_count > 0
+                ):
+                    source_candidate_counts[old_key] = legacy_count
+
+        if isinstance(source_candidate_index, int) and not isinstance(source_candidate_index, bool):
             payload["source_candidate_index"] = source_candidate_index
+            source_candidate_slots[self._source_slot_key(evidence)] = source_candidate_index
+        if (
+            isinstance(source_candidate_count, int)
+            and not isinstance(source_candidate_count, bool)
+            and source_candidate_count > 0
+        ):
+            payload["source_candidate_count"] = source_candidate_count
+            source_candidate_counts[self._source_slot_key(evidence)] = source_candidate_count
+        if source_candidate_slots:
+            payload["source_candidate_slots"] = source_candidate_slots
+        if source_candidate_counts:
+            payload["source_candidate_counts"] = source_candidate_counts
 
         if existing is None:
             card = MemoryCard(
