@@ -13,7 +13,7 @@ Updated: 2026-09-19
 | Scope | Основной merge | Follow-up | Что зафиксировано |
 | --- | --- | --- | --- |
 | TASK 29 / #92 | PR #93 → `7d8b184a4f4072e3c9035b60af2ec376b07135d8` | `aa43b5dd4872decbf749875f504145bf58a3f3c8` | trusted memory/evidence, scoped episode context, feedback/reactions, replay/idempotency и честные operation receipts |
-| TASK 30 / #94 | PR #96 → `9462912515bdba808f9e057a908ab34ebcb4174d` | PR #98 → `aae85beccda6598fcdeb39225298f9232859e109`; PR #101 → `aae85beccda6598fcdeb39225298f9232859e109` | calendar/timezone reminders, persisted schedule, honest schedule receipt, DST-safe recurrence, source-event retry и bounded calendar-parser hardening |
+| TASK 30 / #94 | PR #96 → `9462912515bdba808f9e057a908ab34ebcb4174d` | PR #98 → `16739b91e8fc6874fb948bd5f415be39566b7b20`; PR #101 → `aae85beccda6598fcdeb39225298f9232859e109` | calendar/timezone reminders, persisted schedule, honest schedule receipt, DST-safe recurrence, source-event retry и bounded calendar-parser hardening |
 
 Последняя подтверждённая полная CI-проверка TASK 30: GitHub Actions run #253 на head `5273f5a3bbddf717adf56d2630bf1f82894ac555` — **469 passed, 1 warning** на isolated PostgreSQL 16. Этот head был squash-merged PR #101 в `v2` как `aae85beccda6598fcdeb39225298f9232859e109`.
 
@@ -58,7 +58,7 @@ Updated: 2026-09-19
 
 Отмена также подавляет связанные `events` и `outbox` в состояниях `pending`/`retry`. Это не доказательство отсутствия гонки с уже обрабатываемой или отправляемой записью: обещание «после отмены невозможен ни один пинг» не давать без отдельной проверки такого сценария.
 
-**Решение пользователя от 2026-09-15: кнопку «🛑 Стоп» под напоминаниями не добавлять.** Это отклонённое предложение, не незавершённая задача и не отложенная функция. Не возвращать его в roadmap без нового прямого запроса пользователя. См. [DECISIONS.md](DECISIONS.md), D-046–D-048.
+**Решение пользователя от 2026-09-15: кнопку «🛑 Стоп» под напоминаниями не добавлять.** Это отклонённое предложение, не незавершённая задача и не отложенная функция. Не возвращать его в roadmap без нового прямого запроса пользователя. См. [DECISIONS.md](DECISIONS.md), D-046–D-049.
 
 ## Prior operational report — historical, not rechecked here
 
@@ -89,7 +89,7 @@ Observed real path:
 
 Следующий gate — **отдельно согласованный deploy + bounded live acceptance актуального `v2`**, а не новая функциональность.
 
-До live-test сначала проверить фактический Railway deployment/health и убедиться, что разворачивается именно `v2@16739b91e8fc6874fb948bd5f415be39566b7b20` или более новый осознанно принятый commit. Не считать исторические статусы Railway текущими.
+До live-test сначала проверить фактический Railway deployment/health и убедиться, что разворачивается именно `v2@aae85beccda6598fcdeb39225298f9232859e109` или более новый осознанно принятый commit. Не считать исторические статусы Railway текущими.
 
 Минимальный acceptance после deploy:
 
