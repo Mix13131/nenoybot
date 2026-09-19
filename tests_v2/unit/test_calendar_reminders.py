@@ -449,12 +449,15 @@ def test_calendar_recurring_payload_is_until_cancelled_not_four_occurrences():
 
 def test_calendar_words_in_reminder_subject_do_not_create_false_ambiguity():
     now = datetime(2026, 1, 2, 5, 0, tzinfo=timezone.utc)
-    for text in (
-        "НеНой, напоминай каждый день в 9:00 присылать прогноз на завтра Europe/Moscow",
-        "НеНой, напоминай каждую пятницу в 18:00, что завтра выходной Europe/Moscow",
-        "НеНой, напоминай каждый день в 9:00 спросить, выбрать сегодня или завтра Europe/Moscow",
-        "НеНой, напоминай каждый день в 9:00 сказать, что завтра лучше отдохнуть Europe/Moscow",
-        "НеНой, напоминай про прогноз на завтра каждый день в 9:00 Europe/Moscow",
+    for text, expected_frequency in (
+        ("НеНой, напоминай каждый день в 9:00 присылать прогноз на завтра Europe/Moscow", "daily"),
+        ("НеНой, напоминай каждую пятницу в 18:00, что завтра выходной Europe/Moscow", "weekly"),
+        ("НеНой, напоминай каждый день в 9:00 спросить, выбрать сегодня или завтра Europe/Moscow", "daily"),
+        ("НеНой, напоминай каждый день в 9:00 сказать, что завтра лучше отдохнуть Europe/Moscow", "daily"),
+        ("НеНой, напоминай про прогноз на завтра каждый день в 9:00 Europe/Moscow", "daily"),
+        ("НеНой, напоминай каждый день сверять задачи на сегодня в 9:00 Europe/Moscow", "daily"),
+        ("НеНой, напоминай каждый день смотреть прогноз на завтра в 9:00 Europe/Moscow", "daily"),
+        ("НеНой, напоминай каждый день в 9:00, что лучше сделать сегодня Europe/Moscow", "daily"),
     ):
         repo = FakeReminderRepo()
         action = GroupReminderService(repo).maybe_schedule(
@@ -463,6 +466,8 @@ def test_calendar_words_in_reminder_subject_do_not_create_false_ambiguity():
         )
         assert action.status == "scheduled"
         assert repo.created
+        assert action.recurring
+        assert CalendarSchedule.decode(action.recurrence_rule).frequency == expected_frequency
 
 
 def test_competing_calendar_kinds_fail_closed():
