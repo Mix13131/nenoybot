@@ -2,7 +2,7 @@
 
 Issue: #94
 Base: `v2`
-Starting base SHA: `7d8b184a4f4072e3c9035b60af2ec376b07135d8`
+Starting base SHA after TASK 29 completion: `aa43b5dd4872decbf749875f504145bf58a3f3c8`
 
 ## Goal
 
@@ -128,3 +128,8 @@ Finish with exactly the seven AGENTS.md report sections. Leave the PR Draft/open
 - Calendar recurrence from phrases such as `каждый день`, `по будням` and `каждую пятницу` continues until an explicit existing cancellation control stops the chain.
 - The legacy safety cap of 4 occurrences remains only for frequent interval reminders such as `каждые 30 минут` / `каждый час`.
 - Calendar recurrence must not silently stop after four successful fires.
+
+
+## TASK 29 completion gate
+
+TASK 29 / issue #92 is completed in `v2` at `aa43b5dd4872decbf749875f504145bf58a3f3c8`. Final TASK 30 acceptance CI must run against this updated base before merge.
