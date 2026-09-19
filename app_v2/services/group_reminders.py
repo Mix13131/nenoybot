@@ -48,6 +48,24 @@ _CALENDAR_KIND_RE = re.compile(
     r"\b(каждый день|каждое утро|по будням|каждую пятницу|сегодня|завтра)\b",
     flags=re.IGNORECASE,
 )
+_CALENDAR_HARD_ALT_CONNECTOR_RE = re.compile(
+    r"\b(?:или|либо|а|но|зато|вместо|хотя|впрочем)\b",
+    flags=re.IGNORECASE,
+)
+_CALENDAR_SOFT_ALT_MARKER_RE = re.compile(
+    r"\b(?:лучше|точнее|вернее|скорее|предпочтительнее)\b",
+    flags=re.IGNORECASE,
+)
+_CALENDAR_ALT_BRIDGE_WORDS = frozenset({
+    "или", "либо", "а", "но", "зато", "вместо", "лучше", "точнее",
+    "вернее", "скорее", "предпочтительнее", "хотя", "впрочем", "же",
+    "всё-таки", "все-таки", "вообще-то", "вообще", "то", "всё", "все", "таки",
+    "на", "по",
+})
+_CALENDAR_SUBJECT_LINK_RE = re.compile(r"\b(?:на|про)\s*$", flags=re.IGNORECASE)
+_CALENDAR_BRIDGE_WORD_RE = re.compile(
+    r"[A-Za-zА-Яа-яЁё]+(?:-[A-Za-zА-Яа-яЁё]+)*"
+)
 _CLOCK_ATTEMPT_RE = re.compile(
     r"(?:(?<!\w)в\s+|(?<!\w)(?:или|либо)\s+)"
     r"(?:[01]?\d|2[0-3])(?::[0-5]\d)?(?![\d:])",
@@ -61,6 +79,37 @@ _MSK_RE = re.compile(r"(?<!\w)мск(?!\w)", flags=re.IGNORECASE)
 
 _MIN_RECURRING_INTERVAL_SECONDS = 15 * 60
 _MAX_GROUP_REMINDER_OCCURRENCES = 4
+
+
+def _calendar_bridge_is_alternative(bridge: str) -> bool:
+    normalized = _TIMEZONE_TOKEN_RE.sub("", bridge)
+    normalized = _MSK_RE.sub("", normalized)
+    for timezone_alias in _TZ_ALIASES:
+        normalized = re.sub(
+            re.escape(timezone_alias),
+            "",
+            normalized,
+            flags=re.IGNORECASE,
+        )
+    words = [
+        match.group(0).lower()
+        for match in _CALENDAR_BRIDGE_WORD_RE.finditer(normalized)
+    ]
+    if not words:
+        return False
+
+    # A hard conjunction between two calendar kinds is enough evidence of an
+    # alternative/correction. Qualifier words around it are intentionally not
+    # enumerated ("или, пожалуй", "или, может быть", etc.).
+    if _CALENDAR_HARD_ALT_CONNECTOR_RE.search(normalized):
+        return True
+
+    # Softer correction markers are only trusted when the whole bridge is
+    # structural syntax. This keeps subject prose such as "что лучше сделать"
+    # from turning into a schedule correction.
+    if not _CALENDAR_SOFT_ALT_MARKER_RE.search(normalized):
+        return False
+    return all(word in _CALENDAR_ALT_BRIDGE_WORDS for word in words)
 
 
 @dataclass(frozen=True)
@@ -366,27 +415,68 @@ class GroupReminderService:
 
     @staticmethod
     def _calendar_spec(text: str, now: datetime) -> dict[str, Any] | None:
-        kinds = {
-            match.group(1).lower()
-            for match in _CALENDAR_KIND_RE.finditer(text)
-        }
-        if len(kinds) != 1:
+        clock_attempts = list(_CLOCK_ATTEMPT_RE.finditer(text))
+        if len(clock_attempts) != 1:
             return None
-        if len(_CLOCK_ATTEMPT_RE.findall(text)) != 1:
+        clock_match = clock_attempts[0]
+        kinds_before_clock = [
+            kind_match
+            for kind_match in _CALENDAR_KIND_RE.finditer(text)
+            if kind_match.end() <= clock_match.start()
+        ]
+        if not kinds_before_clock:
             return None
-        match = _CALENDAR_RE.search(text)
-        if not match:
+
+        # A trailing date word can belong to the reminder subject rather than
+        # the schedule: "каждый день сверять задачи на сегодня в 9:00".
+        # Only demote it when an earlier calendar kind exists, so a normal
+        # one-shot "напомни на завтра в 9:00" remains supported.
+        while len(kinds_before_clock) > 1:
+            current_kind = kinds_before_clock[-1]
+            previous_kind = kinds_before_clock[-2]
+            if not _CALENDAR_SUBJECT_LINK_RE.search(text[:current_kind.start()]):
+                break
+            bridge = text[previous_kind.end():current_kind.start()]
+            if _calendar_bridge_is_alternative(bridge):
+                break
+            kinds_before_clock.pop()
+
+        selected_kind = kinds_before_clock[-1]
+        selected_start, selected_end = selected_kind.span()
+        schedule_match = _CALENDAR_RE.match(text[selected_start:])
+        if not schedule_match:
             return None
-        kind = match.group("kind").lower()
-        hour = int(match.group("hour"))
-        period = (match.group("period") or "").lower()
+        schedule_end = selected_start + schedule_match.end()
+        kind_matches = list(_CALENDAR_KIND_RE.finditer(text))
+        selected_index = next(
+            index
+            for index, kind_match in enumerate(kind_matches)
+            if kind_match.span() == (selected_start, selected_end)
+        )
+        adjacent_bridges: list[str] = []
+        if selected_index > 0:
+            previous_kind = kind_matches[selected_index - 1]
+            adjacent_bridges.append(text[previous_kind.end():selected_start])
+        next_kind = next(
+            (kind_match for kind_match in kind_matches if kind_match.start() >= schedule_end),
+            None,
+        )
+        if next_kind is not None:
+            adjacent_bridges.append(text[schedule_end:next_kind.start()])
+
+        for bridge in adjacent_bridges:
+            if _calendar_bridge_is_alternative(bridge):
+                return None
+        kind = schedule_match.group("kind").lower()
+        hour = int(schedule_match.group("hour"))
+        period = (schedule_match.group("period") or "").lower()
         if period:
             if period != "утра" or hour > 11:
                 return None
         if "утро" in kind and hour > 11:
             return None
         spec: dict[str, Any] = {"hour": hour,
-                                "minute": int(match.group("minute") or 0), "subject": text}
+                                "minute": int(schedule_match.group("minute") or 0), "subject": text}
         if kind == "сегодня": spec["one_shot_day"] = 0
         elif kind == "завтра": spec["one_shot_day"] = 1
         elif kind == "по будням": spec["frequency"] = "weekdays"
