@@ -143,6 +143,13 @@ class GroupPipeline:
                         "cancelled_count": cancelled_count,
                     }
             except Exception as exc:
+                recover = getattr(
+                    self.group_reminder_service,
+                    "recover_failed_transaction",
+                    None,
+                )
+                if callable(recover):
+                    recover()
                 reminder_action_state = {
                     "status": "error",
                     "reason": type(exc).__name__,
