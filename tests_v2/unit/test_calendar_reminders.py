@@ -444,3 +444,20 @@ def test_calendar_recurring_payload_is_until_cancelled_not_four_occurrences():
     payload = repo.created[0]["payload"]
     assert payload["recurrence_policy"] == "until_cancelled"
     assert "max_occurrences" not in payload
+
+
+
+def test_competing_calendar_kinds_fail_closed():
+    now = datetime(2026, 1, 2, 5, 0, tzinfo=timezone.utc)
+    for text in (
+        "НеНой, напоминай каждый день или каждую пятницу в 9:00 Europe/Moscow",
+        "НеНой, напомни сегодня или завтра в 18:00 Europe/Moscow",
+    ):
+        repo = FakeReminderRepo()
+        action = GroupReminderService(repo).maybe_schedule(
+            make_event(text=text, event_type=EventType.DIRECT_MENTION),
+            now=now,
+        )
+        assert action.status == "not_scheduled"
+        assert action.reason == "unsupported_time_expression"
+        assert repo.created == []
