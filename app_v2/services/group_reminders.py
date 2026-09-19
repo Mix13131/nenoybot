@@ -52,6 +52,15 @@ _CALENDAR_ALT_MARKER_RE = re.compile(
     r"\b(?:или|либо|а|но|зато|вместо|лучше|точнее|вернее|скорее|предпочтительнее|хотя|впрочем)\b",
     flags=re.IGNORECASE,
 )
+_CALENDAR_ALT_BRIDGE_WORDS = frozenset({
+    "или", "либо", "а", "но", "зато", "вместо", "лучше", "точнее",
+    "вернее", "скорее", "предпочтительнее", "хотя", "впрочем", "же",
+    "всё-таки", "все-таки", "вообще-то", "вообще", "то", "всё", "все", "таки",
+})
+_CALENDAR_SUBJECT_LINK_RE = re.compile(r"\b(?:на|про)\s*$", flags=re.IGNORECASE)
+_CALENDAR_BRIDGE_WORD_RE = re.compile(
+    r"[A-Za-zА-Яа-яЁё]+(?:-[A-Za-zА-Яа-яЁё]+)*"
+)
 _CLOCK_ATTEMPT_RE = re.compile(
     r"(?:(?<!\w)в\s+|(?<!\w)(?:или|либо)\s+)"
     r"(?:[01]?\d|2[0-3])(?::[0-5]\d)?(?![\d:])",
@@ -65,6 +74,25 @@ _MSK_RE = re.compile(r"(?<!\w)мск(?!\w)", flags=re.IGNORECASE)
 
 _MIN_RECURRING_INTERVAL_SECONDS = 15 * 60
 _MAX_GROUP_REMINDER_OCCURRENCES = 4
+
+
+def _calendar_bridge_is_alternative(bridge: str) -> bool:
+    normalized = _TIMEZONE_TOKEN_RE.sub("", bridge)
+    normalized = _MSK_RE.sub("", normalized)
+    for timezone_alias in _TZ_ALIASES:
+        normalized = re.sub(
+            re.escape(timezone_alias),
+            "",
+            normalized,
+            flags=re.IGNORECASE,
+        )
+    words = [
+        match.group(0).lower()
+        for match in _CALENDAR_BRIDGE_WORD_RE.finditer(normalized)
+    ]
+    if not words or not _CALENDAR_ALT_MARKER_RE.search(normalized):
+        return False
+    return all(word in _CALENDAR_ALT_BRIDGE_WORDS for word in words)
 
 
 @dataclass(frozen=True)
@@ -381,6 +409,19 @@ class GroupReminderService:
         ]
         if not kinds_before_clock:
             return None
+
+        # A trailing date word can belong to the reminder subject rather than
+        # the schedule: "каждый день сверять задачи на сегодня в 9:00".
+        # Only demote it when an earlier calendar kind exists, so a normal
+        # one-shot "напомни на завтра в 9:00" remains supported.
+        while (
+            len(kinds_before_clock) > 1
+            and _CALENDAR_SUBJECT_LINK_RE.search(
+                text[:kinds_before_clock[-1].start()]
+            )
+        ):
+            kinds_before_clock.pop()
+
         selected_kind = kinds_before_clock[-1]
         selected_start, selected_end = selected_kind.span()
         schedule_match = _CALENDAR_RE.match(text[selected_start:])
@@ -405,16 +446,7 @@ class GroupReminderService:
             adjacent_bridges.append(text[schedule_end:next_kind.start()])
 
         for bridge in adjacent_bridges:
-            normalized_bridge = _TIMEZONE_TOKEN_RE.sub("", bridge)
-            normalized_bridge = _MSK_RE.sub("", normalized_bridge)
-            for timezone_alias in _TZ_ALIASES:
-                normalized_bridge = re.sub(
-                    re.escape(timezone_alias),
-                    "",
-                    normalized_bridge,
-                    flags=re.IGNORECASE,
-                )
-            if _CALENDAR_ALT_MARKER_RE.search(normalized_bridge):
+            if _calendar_bridge_is_alternative(bridge):
                 return None
         kind = schedule_match.group("kind").lower()
         hour = int(schedule_match.group("hour"))
