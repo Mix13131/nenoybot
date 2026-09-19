@@ -447,6 +447,21 @@ def test_calendar_recurring_payload_is_until_cancelled_not_four_occurrences():
 
 
 
+def test_calendar_words_in_reminder_subject_do_not_create_false_ambiguity():
+    now = datetime(2026, 1, 2, 5, 0, tzinfo=timezone.utc)
+    for text in (
+        "НеНой, напоминай каждый день в 9:00 присылать прогноз на завтра Europe/Moscow",
+        "НеНой, напоминай каждую пятницу в 18:00, что завтра выходной Europe/Moscow",
+    ):
+        repo = FakeReminderRepo()
+        action = GroupReminderService(repo).maybe_schedule(
+            make_event(text=text, event_type=EventType.DIRECT_MENTION),
+            now=now,
+        )
+        assert action.status == "scheduled"
+        assert repo.created
+
+
 def test_competing_calendar_kinds_fail_closed():
     now = datetime(2026, 1, 2, 5, 0, tzinfo=timezone.utc)
     for text in (
