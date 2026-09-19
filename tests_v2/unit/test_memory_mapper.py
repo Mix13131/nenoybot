@@ -1710,3 +1710,50 @@ def test_completed_second_candidate_retry_survives_slot_renumbering_with_exact_e
     assert replay.written == ()
     assert len(store.cards) == 2
     assert store.cards == snapshots
+
+
+
+def test_partial_retry_with_same_exact_excerpt_writes_missing_semantic_candidate():
+    store = FakeStore(fail_create_at=2)
+    source = event(
+        "Поставка завтра, стоимость 900 USD.",
+        message_id="partial-same-evidence",
+    )
+    shared_excerpt = "Поставка завтра, стоимость 900 USD"
+    first_candidate = candidate(
+        memory_type="plan",
+        semantic_key="partial:schedule",
+        summary="Поставка завтра.",
+        source_message_id="partial-same-evidence",
+        evidence_excerpt=shared_excerpt,
+        subject_keys=[],
+    )
+    second_candidate = candidate(
+        memory_type="observation",
+        semantic_key="partial:cost",
+        summary="Стоимость 900 USD.",
+        source_message_id="partial-same-evidence",
+        evidence_excerpt=shared_excerpt,
+        subject_keys=[],
+    )
+    mapper = MemoryMapper(
+        store=store,
+        adapter=FakeAdapter(responses=[
+            {"candidates": [first_candidate, second_candidate]},
+            {"candidates": [second_candidate]},
+        ]),
+    )
+
+    first = mapper.map_event(source)
+    assert first.failed is True
+    assert len(first.written) == 1
+    assert first.written[0].payload["semantic_key"] == "partial:schedule"
+    assert first.written[0].payload["source_candidate_count"] == 2
+
+    store.fail_create_at = None
+    retry = mapper.map_event(source)
+
+    assert retry.failed is False
+    assert len(retry.written) == 1
+    assert retry.written[0].payload["semantic_key"] == "partial:cost"
+    assert len(store.cards) == 2

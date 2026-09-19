@@ -1275,17 +1275,80 @@ class MemoryMapper:
         source_identity = cls._source_identity(evidence)
         candidate_slot = candidate.get("_source_candidate_index")
         candidate_count = candidate.get("_source_candidate_count")
+        candidate_semantic_key = str(candidate.get("semantic_key") or "").strip()
         ambiguous_legacy_slot = False
 
+        source_cards: list[MemoryCard] = []
         for card in stable_source_cards:
+            if any(
+                cls._source_identity(item) == source_identity
+                for item in card.evidence
+            ):
+                source_cards.append(card)
+
+        persisted_counts = {
+            count
+            for card in source_cards
+            for count in (cls._source_candidate_count_for_card(card, evidence),)
+            if isinstance(count, int) and not isinstance(count, bool) and count > 0
+        }
+        expected_source_count = (
+            next(iter(persisted_counts))
+            if len(persisted_counts) == 1
+            else None
+        )
+        source_batch_complete = (
+            isinstance(expected_source_count, int)
+            and len(source_cards) >= expected_source_count
+        )
+
+        exact_cards = [
+            card
+            for card in source_cards
+            if any(
+                cls._source_identity(item) == source_identity
+                and item.excerpt == evidence.excerpt
+                for item in card.evidence
+            )
+        ]
+        exact_semantic_cards = [
+            card
+            for card in exact_cards
+            if str(card.payload.get("semantic_key") or "").strip()
+            == candidate_semantic_key
+        ]
+
+        # When a replay returns only a subset of a previously larger candidate
+        # batch, slots may be renumbered. Exact evidence is sufficient only if
+        # we can also prove which completed candidate it refers to:
+        # - same semantic identity, or
+        # - the original batch is fully persisted and this evidence identifies
+        #   exactly one completed card.
+        if (
+            isinstance(candidate_count, int)
+            and not isinstance(candidate_count, bool)
+            and isinstance(expected_source_count, int)
+            and candidate_count != expected_source_count
+            and exact_cards
+        ):
+            if len(exact_semantic_cards) == 1:
+                return "retry"
+            if source_batch_complete and len(exact_cards) == 1:
+                return "retry"
+            # In an incomplete original batch, identical evidence may belong to
+            # the missing candidate. Never turn that into a successful no-op.
+            if not source_batch_complete:
+                return "distinct"
+            # Fully persisted but multiple exact-evidence candidates and no
+            # semantic identity is genuinely ambiguous under model drift.
+            return "ambiguous"
+
+        for card in source_cards:
             matching_evidence = [
                 item
                 for item in card.evidence
                 if cls._source_identity(item) == source_identity
             ]
-            if not matching_evidence:
-                continue
-
             source_slot = cls._source_slot_for_card(card, evidence)
             source_count = cls._source_candidate_count_for_card(card, evidence)
             comparable_slots = (
@@ -1304,11 +1367,6 @@ class MemoryMapper:
             )
 
             if exact_excerpt:
-                # Exact persisted evidence can identify a completed candidate
-                # even if a later nondeterministic replay returns only that
-                # candidate and renumbers it. During an initial stable batch,
-                # however, equal candidate counts plus different slots prove
-                # that two candidates are intentionally distinct.
                 if (
                     comparable_slots
                     and comparable_counts
@@ -1319,16 +1377,12 @@ class MemoryMapper:
                 return "retry"
 
             if comparable_slots:
-                # Different source-local candidate positions are different
-                # candidates even when their validated evidence spans overlap.
                 if candidate_slot != source_slot:
                     continue
 
                 if comparable_counts:
                     if candidate_count == source_count:
                         return "retry"
-                    # Same numeric slot but a changed candidate-set size is not
-                    # stable evidence: a missing candidate may have renumbered.
                     continue
 
                 if any(
@@ -1337,9 +1391,6 @@ class MemoryMapper:
                 ):
                     return "retry"
 
-                # Legacy cards have no persisted candidate-set size. A changed
-                # excerpt plus a matching old slot cannot distinguish retry
-                # drift from a renumbered partial retry, so fail closed.
                 ambiguous_legacy_slot = True
                 continue
 
