@@ -65,6 +65,7 @@ class GroupPipeline:
         feedback_collector: Any | None = None,
         memory_mapper: Any | None = None,
         group_reminder_service: Any | None = None,
+        scheduled_action_interpreter: Any | None = None,
         unsolicited_enabled: bool = False,
     ) -> None:
         self.access_service = access_service
@@ -78,6 +79,7 @@ class GroupPipeline:
         self.feedback_collector = feedback_collector
         self.memory_mapper = memory_mapper
         self.group_reminder_service = group_reminder_service
+        self.scheduled_action_interpreter = scheduled_action_interpreter
         self.unsolicited_enabled = unsolicited_enabled
 
     def _mapper_context(self, event: EventEnvelope) -> tuple[dict[str, Any], ...]:
@@ -130,11 +132,22 @@ class GroupPipeline:
                     primary_action=PrimaryAction.IGNORE,
                 )
 
+        scheduled_action_interpretation = None
+        if self.scheduled_action_interpreter is not None:
+            try:
+                scheduled_action_interpretation = self.scheduled_action_interpreter.interpret(event)
+            except Exception:
+                scheduled_action_interpretation = None
+
         reminder_action_state: dict[str, Any] | None = None
         if self.group_reminder_service is not None:
             try:
                 cancelled_count = self.group_reminder_service.cancel_on_response(event)
-                reminder_action = self.group_reminder_service.maybe_schedule(event, now=current)
+                reminder_action = self.group_reminder_service.maybe_schedule(
+                    event,
+                    now=current,
+                    interpreted_action=scheduled_action_interpretation,
+                )
                 if reminder_action is not None:
                     reminder_action_state = reminder_action.as_action_state()
                 elif cancelled_count:
@@ -240,6 +253,11 @@ class GroupPipeline:
                     "group_behavior_probe_ids": list(behavior_memory_ids),
                     "mapped_memory_ids": list(mapped_memory_ids),
                     "reminder_action": reminder_action_state,
+                    "scheduled_action_interpretation": (
+                        scheduled_action_interpretation.as_action_state()
+                        if scheduled_action_interpretation is not None
+                        else None
+                    ),
                     "statement_watch": statement_watch_state,
                     "operation_receipts": operation_receipts,
                 },
@@ -271,6 +289,10 @@ class GroupPipeline:
         }
         if reminder_action_state is not None:
             action_state["group_reminder"] = reminder_action_state
+        if scheduled_action_interpretation is not None:
+            action_state["scheduled_action_interpretation"] = (
+                scheduled_action_interpretation.as_action_state()
+            )
         if statement_watch_state is not None:
             action_state["statement_watch"] = statement_watch_state
         if event.event_type is EventType.REMINDER_DUE:
@@ -308,6 +330,11 @@ class GroupPipeline:
                     "group_behavior_probe_ids": list(behavior_memory_ids),
                     "mapped_memory_ids": list(mapped_memory_ids),
                     "reminder_action": reminder_action_state,
+                    "scheduled_action_interpretation": (
+                        scheduled_action_interpretation.as_action_state()
+                        if scheduled_action_interpretation is not None
+                        else None
+                    ),
                     "statement_watch": statement_watch_state,
                     "operation_receipts": operation_receipts,
                 },
