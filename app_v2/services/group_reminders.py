@@ -71,11 +71,24 @@ _CLOCK_ATTEMPT_RE = re.compile(
     r"(?:[01]?\d|2[0-3])(?::[0-5]\d)?(?![\d:])",
     flags=re.IGNORECASE,
 )
+_INVERTED_ONE_SHOT_RE = re.compile(
+    r"\bв\s+(?P<hour>[01]?\d|2[0-3])"
+    r"(?::(?P<minute>[0-5]\d)|(?!:))"
+    r"\s*(?P<kind>сегодня|завтра)\b",
+    flags=re.IGNORECASE,
+)
 _TIMEZONE_TOKEN_RE = re.compile(
     r"(?<![A-Za-z0-9_+./-])(UTC|[A-Za-z][A-Za-z0-9_+.-]*/[A-Za-z0-9_+.-]+(?:/[A-Za-z0-9_+.-]+)*)(?![A-Za-z0-9_+./-])"
 )
-_TZ_ALIASES = {"по московскому времени": "Europe/Moscow"}
+_TZ_ALIASES = {
+    "по московскому времени": "Europe/Moscow",
+    "по москве": "Europe/Moscow",
+}
 _MSK_RE = re.compile(r"(?<!\w)мск(?!\w)", flags=re.IGNORECASE)
+_MOSCOW_CLARIFICATION_RE = re.compile(
+    r"^(?:мск|по\s+мск|москва|по\s+москве|московское\s+время|по\s+московскому(?:\s+времени)?)$",
+    flags=re.IGNORECASE,
+)
 
 _MIN_RECURRING_INTERVAL_SECONDS = 15 * 60
 _MAX_GROUP_REMINDER_OCCURRENCES = 4
@@ -403,7 +416,7 @@ class GroupReminderService:
     def _clarification_timezone(cls, text: str) -> str | None:
         compact = " ".join(text.strip().split()).strip(" .!?…")
         lowered = compact.lower()
-        if lowered == "по московскому времени" or _MSK_RE.fullmatch(compact):
+        if _MOSCOW_CLARIFICATION_RE.fullmatch(compact):
             return "Europe/Moscow"
 
         token_text = compact
@@ -425,7 +438,24 @@ class GroupReminderService:
             if kind_match.end() <= clock_match.start()
         ]
         if not kinds_before_clock:
-            return None
+            # Natural one-shot order from the live test:
+            # "напомни ... в 20:40 сегодня". Keep this deliberately narrow:
+            # exactly one calendar kind, immediately after the single clock,
+            # and only today/tomorrow.
+            kind_matches = list(_CALENDAR_KIND_RE.finditer(text))
+            inverted = _INVERTED_ONE_SHOT_RE.search(text)
+            if len(kind_matches) != 1 or inverted is None:
+                return None
+            kind_match = kind_matches[0]
+            if kind_match.span() != inverted.span("kind"):
+                return None
+            kind = inverted.group("kind").lower()
+            return {
+                "hour": int(inverted.group("hour")),
+                "minute": int(inverted.group("minute") or 0),
+                "one_shot_day": 0 if kind == "сегодня" else 1,
+                "subject": text,
+            }
 
         # A trailing date word can belong to the reminder subject rather than
         # the schedule: "каждый день сверять задачи на сегодня в 9:00".
