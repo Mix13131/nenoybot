@@ -452,6 +452,7 @@ def test_calendar_words_in_reminder_subject_do_not_create_false_ambiguity():
     for text in (
         "НеНой, напоминай каждый день в 9:00 присылать прогноз на завтра Europe/Moscow",
         "НеНой, напоминай каждую пятницу в 18:00, что завтра выходной Europe/Moscow",
+        "НеНой, напоминай каждый день в 9:00 спросить, выбрать сегодня или завтра Europe/Moscow",
     ):
         repo = FakeReminderRepo()
         action = GroupReminderService(repo).maybe_schedule(
@@ -467,6 +468,7 @@ def test_competing_calendar_kinds_fail_closed():
     for text in (
         "НеНой, напоминай каждый день или каждую пятницу в 9:00 Europe/Moscow",
         "НеНой, напомни сегодня или завтра в 18:00 Europe/Moscow",
+        "НеНой, напоминай каждый день в 9:00 или каждую пятницу Europe/Moscow",
     ):
         repo = FakeReminderRepo()
         action = GroupReminderService(repo).maybe_schedule(
