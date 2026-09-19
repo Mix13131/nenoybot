@@ -115,6 +115,8 @@ def group_reminder_receipt(action_state: dict[str, Any] | None) -> dict[str, Any
             "stop_on_reply": bool(action_state.get("stop_on_reply")),
             "timezone": action_state.get("timezone"),
             "recurrence_rule": action_state.get("recurrence_rule"),
+            "execution_kind": action_state.get("execution_kind"),
+            "action_instruction": action_state.get("action_instruction"),
             "reason": reason,
         }
 
