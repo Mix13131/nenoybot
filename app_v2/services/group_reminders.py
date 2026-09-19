@@ -49,7 +49,11 @@ _CALENDAR_KIND_RE = re.compile(
     flags=re.IGNORECASE,
 )
 _CALENDAR_ALT_BRIDGE_RE = re.compile(
-    r"^\s*[,;/]?\s*(?:или|либо)\s*$",
+    r"^\s*[,;:/—–-]?\s*(?:"
+    r"(?:или|либо)(?:\s+(?:лучше|вс[её][ -]?таки|может(?:\s+быть)?|точнее|вернее))?"
+    r"|а\s+(?:лучше|может(?:\s+быть)?|точнее|вернее|не)"
+    r"|(?:точнее|вернее)"
+    r")\s*[,;:/—–-]?\s*$",
     flags=re.IGNORECASE,
 )
 _CLOCK_ATTEMPT_RE = re.compile(
@@ -385,7 +389,16 @@ class GroupReminderService:
                 bridge = text[match.end():kind_match.start()]
             else:
                 bridge = text[selected_end:kind_match.start()]
-            if _CALENDAR_ALT_BRIDGE_RE.fullmatch(bridge):
+            normalized_bridge = _TIMEZONE_TOKEN_RE.sub("", bridge)
+            normalized_bridge = _MSK_RE.sub("", normalized_bridge)
+            for timezone_alias in _TZ_ALIASES:
+                normalized_bridge = re.sub(
+                    re.escape(timezone_alias),
+                    "",
+                    normalized_bridge,
+                    flags=re.IGNORECASE,
+                )
+            if _CALENDAR_ALT_BRIDGE_RE.fullmatch(normalized_bridge):
                 return None
         kind = match.group("kind").lower()
         hour = int(match.group("hour"))
