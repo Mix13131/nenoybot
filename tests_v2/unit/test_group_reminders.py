@@ -291,3 +291,103 @@ def test_bounded_burst_rejects_more_than_five_occurrences():
     assert action.status == "not_scheduled"
     assert action.reason == "bounded_burst_out_of_bounds"
     assert repo.created == []
+
+
+
+def _interpreted(kind: str, instruction: str):
+    return SimpleNamespace(
+        is_scheduled_action=True,
+        execution_kind=kind,
+        instruction=instruction,
+        confidence=0.95,
+    )
+
+
+def test_semantic_action_allows_novel_verb_without_verb_regex():
+    repo = FakeReminderRepo()
+    service = GroupReminderService(repo)
+    now = datetime(2026, 9, 19, 17, 0, tzinfo=timezone.utc)
+
+    action = service.maybe_schedule(
+        make_event(
+            text="НеНой, каждый день в 21:00 удивляй меня Europe/Moscow",
+            event_type=EventType.DIRECT_MENTION,
+        ),
+        now=now,
+        interpreted_action=_interpreted(
+            "generate_text",
+            "Удиви пользователя чем-нибудь уместным",
+        ),
+    )
+
+    assert action.status == "scheduled"
+    assert action.execution_kind == "generate_text"
+    assert action.action_instruction == "Удиви пользователя чем-нибудь уместным"
+    assert repo.created[0]["payload"]["execution_kind"] == "generate_text"
+    assert "Выполни запланированное действие" in repo.created[0]["payload"]["text"]
+
+
+def test_semantic_action_reuses_interval_scheduler_for_entertain():
+    repo = FakeReminderRepo()
+    service = GroupReminderService(repo)
+    now = datetime(2026, 9, 19, 17, 0, tzinfo=timezone.utc)
+
+    action = service.maybe_schedule(
+        make_event(
+            text="НеНой, каждые 30 минут развлекай меня",
+            event_type=EventType.DIRECT_MENTION,
+        ),
+        now=now,
+        interpreted_action=_interpreted(
+            "generate_text",
+            "Развлеки пользователя короткой живой репликой",
+        ),
+    )
+
+    assert action.status == "scheduled"
+    assert action.interval_seconds == 1800
+    assert repo.created[0]["recurrence_rule"] == "interval:1800"
+
+
+def test_semantic_action_reuses_bounded_burst_without_action_verb_allowlist():
+    repo = FakeReminderRepo()
+    service = GroupReminderService(repo)
+    now = datetime(2026, 9, 19, 17, 0, tzinfo=timezone.utc)
+
+    action = service.maybe_schedule(
+        make_event(
+            text="НеНой, в течение следующих пяти минут каждую минуту удивляй меня",
+            event_type=EventType.DIRECT_MENTION,
+        ),
+        now=now,
+        interpreted_action=_interpreted(
+            "generate_text",
+            "Удиви пользователя новой короткой репликой",
+        ),
+    )
+
+    assert action.status == "scheduled"
+    assert action.interval_seconds == 60
+    assert repo.created[0]["payload"]["max_occurrences"] == 5
+
+
+def test_semantic_external_data_action_fails_closed():
+    repo = FakeReminderRepo()
+    service = GroupReminderService(repo)
+    now = datetime(2026, 9, 19, 17, 0, tzinfo=timezone.utc)
+
+    action = service.maybe_schedule(
+        make_event(
+            text="НеНой, каждый день в 9 сообщай актуальный курс доллара Europe/Moscow",
+            event_type=EventType.DIRECT_MENTION,
+        ),
+        now=now,
+        interpreted_action=_interpreted(
+            "external_data",
+            "Сообщи актуальный курс доллара",
+        ),
+    )
+
+    assert action.status == "not_scheduled"
+    assert action.reason == "unsupported_scheduled_capability"
+    assert repo.created == []
