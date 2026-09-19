@@ -469,6 +469,7 @@ def test_competing_calendar_kinds_fail_closed():
         "НеНой, напоминай каждый день или каждую пятницу в 9:00 Europe/Moscow",
         "НеНой, напомни сегодня или завтра в 18:00 Europe/Moscow",
         "НеНой, напоминай каждый день в 9:00 или каждую пятницу Europe/Moscow",
+        "НеНой, напомни сегодня в 18:00 или завтра Europe/Moscow",
     ):
         repo = FakeReminderRepo()
         action = GroupReminderService(repo).maybe_schedule(
