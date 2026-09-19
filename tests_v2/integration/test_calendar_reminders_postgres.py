@@ -408,3 +408,42 @@ def test_calendar_recurring_continues_past_four_until_cancelled_postgres():
         conn.execute("DELETE FROM events WHERE event_id LIKE %s", (f"reminder:{reminder.id}:%",))
         conn.execute("DELETE FROM reminders WHERE id=%s", (reminder.id,))
         conn.commit()
+
+
+
+def test_payload_only_source_event_id_retry_returns_existing_postgres():
+    url = os.getenv("NENOY_V2_TEST_DATABASE_URL")
+    if not url:
+        pytest.skip("NENOY_V2_TEST_DATABASE_URL is not configured")
+    psycopg = pytest.importorskip("psycopg")
+    run_migrations(url)
+
+    source = f"test:payload-only-source:{uuid.uuid4()}"
+    due = datetime.now(timezone.utc) + timedelta(hours=1)
+    with psycopg.connect(url) as conn:
+        repo = ReminderRepository(conn)
+        first = repo.create(
+            scope_type=ScopeType.GROUP,
+            scope_id="payload-only-source",
+            due_at=due,
+            payload={"text": "synthetic", "source_event_id": source},
+        )
+        duplicate = repo.create(
+            scope_type=ScopeType.GROUP,
+            scope_id="payload-only-source",
+            due_at=due,
+            payload={"text": "synthetic", "source_event_id": source},
+        )
+
+        assert duplicate.id == first.id
+        assert duplicate.already_existing is True
+        assert conn.execute(
+            "SELECT count(*) FROM reminders WHERE payload ->> 'source_event_id'=%s",
+            (source,),
+        ).fetchone()[0] == 1
+
+        conn.execute(
+            "DELETE FROM reminders WHERE payload ->> 'source_event_id'=%s",
+            (source,),
+        )
+        conn.commit()

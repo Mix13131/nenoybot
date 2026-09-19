@@ -81,8 +81,13 @@ class ReminderRepository:
             raise ValueError("due_at must be timezone-aware")
         self._interval_seconds(recurrence_rule)
         body = dict(payload or {})
-        if source_event_id:
-            body["source_event_id"] = source_event_id
+        effective_source_event_id = source_event_id
+        if effective_source_event_id is None:
+            payload_source_event_id = body.get("source_event_id")
+            if payload_source_event_id is not None:
+                effective_source_event_id = str(payload_source_event_id)
+        if effective_source_event_id is not None:
+            body["source_event_id"] = effective_source_event_id
         row = self.conn.execute(
             """
             INSERT INTO reminders(scope_type, scope_id, due_at, recurrence_rule, status, payload)
@@ -105,7 +110,7 @@ class ReminderRepository:
             row = self.conn.execute(
                 """SELECT id, scope_type, scope_id, due_at, status, payload, last_fired_at, recurrence_rule
                    FROM reminders WHERE payload ->> 'source_event_id'=%s""",
-                (source_event_id,),
+                (effective_source_event_id,),
             ).fetchone()
             if row is None:
                 raise RuntimeError("Source-event conflict did not yield a reminder")

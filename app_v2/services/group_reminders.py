@@ -44,6 +44,10 @@ _CALENDAR_RE = re.compile(
     r"(?![\d:])",
     flags=re.IGNORECASE,
 )
+_CALENDAR_KIND_RE = re.compile(
+    r"\b(каждый день|каждое утро|по будням|каждую пятницу|сегодня|завтра)\b",
+    flags=re.IGNORECASE,
+)
 _CLOCK_ATTEMPT_RE = re.compile(
     r"(?:(?<!\w)в\s+|(?<!\w)(?:или|либо)\s+)"
     r"(?:[01]?\d|2[0-3])(?::[0-5]\d)?(?![\d:])",
@@ -362,6 +366,12 @@ class GroupReminderService:
 
     @staticmethod
     def _calendar_spec(text: str, now: datetime) -> dict[str, Any] | None:
+        kinds = {
+            match.group(1).lower()
+            for match in _CALENDAR_KIND_RE.finditer(text)
+        }
+        if len(kinds) != 1:
+            return None
         if len(_CLOCK_ATTEMPT_RE.findall(text)) != 1:
             return None
         match = _CALENDAR_RE.search(text)
