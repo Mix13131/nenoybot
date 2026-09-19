@@ -33,6 +33,7 @@ from app_v2.services.personality_engine import PersonalityEngine
 from app_v2.services.response_generator import ResponseGenerator
 from app_v2.services.retrieval_engine import RetrievalEngine
 from app_v2.services.scene_analyzer import SceneAnalyzer
+from app_v2.services.scheduled_action_interpreter import ScheduledActionInterpreter
 from app_v2.services.statement_watcher import StatementWatcher
 
 
@@ -137,6 +138,7 @@ def build_runtime(conn: Any, config: AppConfig) -> RuntimeComponents:
         feedback_collector=feedback_collector,
         memory_mapper=memory_mapper,
         group_reminder_service=GroupReminderService(reminder_repo),
+        scheduled_action_interpreter=ScheduledActionInterpreter(adapter),
     )
 
     action_engine = ActionEngine(task_repo=task_repo, reminder_repo=reminder_repo)
