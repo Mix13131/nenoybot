@@ -366,16 +366,16 @@ class GroupReminderService:
 
     @staticmethod
     def _calendar_spec(text: str, now: datetime) -> dict[str, Any] | None:
-        kinds = {
-            match.group(1).lower()
-            for match in _CALENDAR_KIND_RE.finditer(text)
-        }
-        if len(kinds) != 1:
-            return None
         if len(_CLOCK_ATTEMPT_RE.findall(text)) != 1:
             return None
         match = _CALENDAR_RE.search(text)
         if not match:
+            return None
+        kinds = {
+            kind_match.group(1).lower()
+            for kind_match in _CALENDAR_KIND_RE.finditer(match.group(0))
+        }
+        if len(kinds) != 1:
             return None
         kind = match.group("kind").lower()
         hour = int(match.group("hour"))
