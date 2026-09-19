@@ -409,3 +409,62 @@ def test_partial_retry_recovers_missing_candidate_after_slot_renumber_postgres()
 
         conn.execute("DELETE FROM memory_cards WHERE scope_id=%s", (scope_id,))
         conn.commit()
+
+
+
+def test_overlapping_evidence_candidates_remain_distinct_postgres() -> None:
+    psycopg, database_url = _psycopg_and_url()
+    scope_id = f"it-overlap-candidates-{uuid.uuid4().hex}"
+    source = EventEnvelope(
+        event_id=f"{scope_id}:event",
+        event_type=EventType.PRIVATE_MESSAGE,
+        occurred_at=NOW,
+        scope_type=ScopeType.PERSONAL,
+        scope_id=scope_id,
+        actor_user_id="991000001",
+        message_id="880700001",
+        text="Поставка завтра, стоимость 900 USD.",
+    )
+    adapter = _Adapter([{
+        "candidates": [
+            _generic_candidate(
+                source_message_id="880700001",
+                semantic_key="shipment:tomorrow",
+                excerpt="Поставка завтра, стоимость 900 USD",
+                memory_type="plan",
+            ),
+            _generic_candidate(
+                source_message_id="880700001",
+                semantic_key="shipment:cost:900-usd",
+                excerpt="стоимость 900 USD",
+            ),
+        ]
+    }])
+
+    with psycopg.connect(database_url) as conn:
+        mapper = MemoryMapper(
+            store=MemoryMapperStore(MemoryRepository(conn)),
+            adapter=adapter,
+        )
+        result = mapper.map_event(source)
+
+        assert result.failed is False
+        assert len(result.written) == 2
+        rows = conn.execute(
+            """
+            SELECT payload ->> 'semantic_key',
+                   (payload ->> 'source_candidate_index')::int
+            FROM memory_cards
+            WHERE scope_type='personal' AND scope_id=%s
+              AND status IN ('candidate','active')
+            ORDER BY (payload ->> 'source_candidate_index')::int
+            """,
+            (scope_id,),
+        ).fetchall()
+        assert rows == [
+            ("shipment:tomorrow", 0),
+            ("shipment:cost:900-usd", 1),
+        ]
+
+        conn.execute("DELETE FROM memory_cards WHERE scope_id=%s", (scope_id,))
+        conn.commit()

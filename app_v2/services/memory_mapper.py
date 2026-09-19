@@ -1286,35 +1286,50 @@ class MemoryMapper:
             if not matching_evidence:
                 continue
 
-            if any(
-                cls._excerpt_is_same_region(item.excerpt, evidence.excerpt)
-                for item in matching_evidence
-            ):
-                return "retry"
-
             source_slot = cls._source_slot_for_card(card, evidence)
-            if (
+            comparable_slots = (
                 isinstance(candidate_slot, int)
                 and not isinstance(candidate_slot, bool)
                 and isinstance(source_slot, int)
-                and candidate_slot == source_slot
-            ):
+            )
+            if comparable_slots:
+                # Different source-local candidate positions are different
+                # candidates even when their validated evidence spans overlap.
+                # This matters during the very first batch: candidate 0 may be
+                # committed before candidate 1 is processed.
+                if candidate_slot != source_slot:
+                    continue
+
                 source_count = cls._source_candidate_count_for_card(card, evidence)
-                if (
+                comparable_counts = (
                     isinstance(candidate_count, int)
                     and not isinstance(candidate_count, bool)
                     and isinstance(source_count, int)
-                ):
+                )
+                if comparable_counts:
                     if candidate_count == source_count:
                         return "retry"
                     # Same numeric slot but a changed candidate-set size is not
                     # stable evidence: a missing candidate may have renumbered.
                     continue
 
+                if any(
+                    cls._excerpt_is_same_region(item.excerpt, evidence.excerpt)
+                    for item in matching_evidence
+                ):
+                    return "retry"
+
                 # Legacy cards have no persisted candidate-set size. A changed
                 # excerpt plus a matching old slot cannot distinguish retry
                 # drift from a renumbered partial retry, so fail closed.
                 ambiguous_legacy_slot = True
+                continue
+
+            if any(
+                cls._excerpt_is_same_region(item.excerpt, evidence.excerpt)
+                for item in matching_evidence
+            ):
+                return "retry"
 
         return "ambiguous" if ambiguous_legacy_slot else "distinct"
 

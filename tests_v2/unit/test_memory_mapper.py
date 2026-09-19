@@ -1614,3 +1614,47 @@ def test_legacy_changed_excerpt_same_slot_fails_closed_when_candidate_count_unkn
     retried = mapper.map_event(source)
     assert retried.written == ()
     assert retried.failed is False
+
+
+
+def test_overlapping_evidence_candidates_with_distinct_slots_are_both_written():
+    store = FakeStore()
+    source = event(
+        "Поставка завтра, стоимость 900 USD.",
+        message_id="overlap-candidates",
+    )
+    adapter = FakeAdapter(responses=[{
+        "candidates": [
+            candidate(
+                memory_type="plan",
+                semantic_key="shipment:tomorrow",
+                summary="Поставка запланирована на завтра.",
+                source_message_id="overlap-candidates",
+                evidence_excerpt="Поставка завтра, стоимость 900 USD",
+                subject_keys=[],
+            ),
+            candidate(
+                memory_type="observation",
+                semantic_key="shipment:cost:900-usd",
+                summary="Стоимость поставки — 900 USD.",
+                source_message_id="overlap-candidates",
+                evidence_excerpt="стоимость 900 USD",
+                subject_keys=[],
+            ),
+        ]
+    }])
+    mapper = MemoryMapper(store=store, adapter=adapter)
+
+    result = mapper.map_event(source)
+
+    assert result.failed is False
+    assert len(result.written) == 2
+    assert len(store.cards) == 2
+    assert {card.payload["semantic_key"] for card in result.written} == {
+        "shipment:tomorrow",
+        "shipment:cost:900-usd",
+    }
+    assert {
+        card.payload["source_candidate_index"]
+        for card in result.written
+    } == {0, 1}
