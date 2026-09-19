@@ -645,8 +645,8 @@ class GroupReminderService:
     ) -> str:
         if execution_kind == "generate_text":
             return (
-                f"Выполни запланированное действие для {target_label} в характере НеНоя. "
-                f"Инструкция пользователя: {instruction}. "
+                f"Выполни запланированное действие в характере НеНоя. "
+                f"Адресат: {target_label}. Инструкция пользователя: {instruction}. "
                 f"Не объясняй механику планировщика. Исходный контекст: {context}"
             )
         return (
@@ -665,8 +665,8 @@ class GroupReminderService:
 
     @classmethod
     def _bounded_burst_spec(cls, text: str) -> tuple[int, int] | None:
-        if not _BURST_ACTION_RE.search(text):
-            return None
+        # Parse only the temporal shape. WHAT to do is decided by the semantic
+        # action layer, so this parser must not depend on a verb allowlist.
         match = _BOUNDED_BURST_RE.search(text)
         if not match:
             return None
