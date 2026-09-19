@@ -1455,3 +1455,162 @@ def test_multi_source_card_keeps_retry_slot_per_evidence_source():
     assert retried.written == ()
     assert store.cards == before_cards
     assert store.update_calls == before_updates
+
+
+def test_legacy_slot_is_migrated_before_second_source_is_added():
+    store = FakeStore()
+    adapter = FakeAdapter(responses=[
+        {"candidates": [
+            candidate(
+                memory_type="observation",
+                semantic_key="legacy:other",
+                summary="Первый факт.",
+                source_message_id="legacy-a",
+                evidence_excerpt="Первый факт",
+                subject_keys=[],
+            ),
+            candidate(
+                memory_type="observation",
+                semantic_key="legacy:shared",
+                summary="Общий факт.",
+                source_message_id="legacy-a",
+                evidence_excerpt="Общий факт",
+                subject_keys=[],
+            ),
+        ]},
+        {"candidates": [
+            candidate(
+                memory_type="observation",
+                semantic_key="legacy:shared",
+                summary="Общий факт.",
+                source_message_id="legacy-b",
+                evidence_excerpt="Общий факт",
+                subject_keys=[],
+            ),
+        ]},
+    ])
+    mapper = MemoryMapper(store=store, adapter=adapter)
+    first_event = event(
+        "Первый факт. Общий факт.",
+        scope=ScopeType.GROUP,
+        scope_id="legacy-slot-migration",
+        message_id="legacy-a",
+        actor_user_id="u1",
+    )
+    first = mapper.map_event(first_event)
+    shared = next(card for card in first.written if card.payload["semantic_key"] == "legacy:shared")
+
+    # Simulate a card persisted before source-specific slot/count maps existed.
+    legacy_payload = dict(shared.payload)
+    assert legacy_payload["source_candidate_index"] == 1
+    legacy_payload.pop("source_candidate_slots", None)
+    legacy_payload.pop("source_candidate_counts", None)
+    legacy_payload.pop("source_candidate_count", None)
+    store.cards[shared.id] = shared.model_copy(update={"payload": legacy_payload})
+
+    mapper.map_event(event(
+        "Общий факт.",
+        scope=ScopeType.GROUP,
+        scope_id="legacy-slot-migration",
+        message_id="legacy-b",
+        actor_user_id="u2",
+    ))
+
+    merged = store.cards[shared.id]
+    slots = merged.payload["source_candidate_slots"]
+    assert slots[mapper._source_slot_key(shared.evidence[0])] == 1
+    assert len(slots) == 2
+
+
+def test_partial_retry_does_not_treat_renumbered_missing_candidate_as_noop():
+    store = FakeStore(fail_create_at=2)
+    source = event(
+        "Первый факт. Второй факт.",
+        message_id="partial-renumber",
+    )
+    first_candidate = candidate(
+        memory_type="observation",
+        semantic_key="partial:first",
+        summary="Первый факт.",
+        source_message_id="partial-renumber",
+        evidence_excerpt="Первый факт",
+        subject_keys=[],
+    )
+    second_candidate = candidate(
+        memory_type="plan",
+        semantic_key="partial:second",
+        summary="Второй факт.",
+        source_message_id="partial-renumber",
+        evidence_excerpt="Второй факт",
+        subject_keys=[],
+    )
+    adapter = FakeAdapter(responses=[
+        {"candidates": [first_candidate, second_candidate]},
+        # Retry returns only the previously missing candidate. It is renumbered
+        # from source slot 1 to slot 0 and must still be written.
+        {"candidates": [second_candidate]},
+    ])
+    mapper = MemoryMapper(store=store, adapter=adapter)
+
+    first = mapper.map_event(source)
+    assert first.failed is True
+    assert len(first.written) == 1
+    persisted = first.written[0]
+    assert persisted.payload["source_candidate_index"] == 0
+    assert persisted.payload["source_candidate_count"] == 2
+
+    store.fail_create_at = None
+    retried = mapper.map_event(source)
+
+    assert retried.failed is False
+    assert len(retried.written) == 1
+    assert retried.written[0].payload["semantic_key"] == "partial:second"
+    assert len(store.cards) == 2
+
+
+def test_legacy_changed_excerpt_same_slot_fails_closed_when_candidate_count_unknown():
+    store = FakeStore()
+    source = event("Первый факт. Второй факт.", message_id="legacy-ambiguous-retry")
+    adapter = FakeAdapter(responses=[
+        {"candidates": [
+            candidate(
+                memory_type="observation",
+                semantic_key="legacy:first",
+                summary="Первый факт.",
+                source_message_id="legacy-ambiguous-retry",
+                evidence_excerpt="Первый факт",
+                subject_keys=[],
+            ),
+            candidate(
+                memory_type="observation",
+                semantic_key="legacy:second",
+                summary="Второй факт.",
+                source_message_id="legacy-ambiguous-retry",
+                evidence_excerpt="Второй факт",
+                subject_keys=[],
+            ),
+        ]},
+        {"candidates": [
+            candidate(
+                memory_type="plan",
+                semantic_key="legacy:drifted",
+                summary="Совсем другой фрагмент.",
+                source_message_id="legacy-ambiguous-retry",
+                evidence_excerpt="Первый факт",
+                subject_keys=[],
+            ),
+        ]},
+    ])
+    mapper = MemoryMapper(store=store, adapter=adapter)
+    first = mapper.map_event(source)
+    card = next(card for card in first.written if card.payload["semantic_key"] == "legacy:first")
+    payload = dict(card.payload)
+    payload.pop("source_candidate_slots", None)
+    payload.pop("source_candidate_counts", None)
+    payload.pop("source_candidate_count", None)
+    store.cards[card.id] = card.model_copy(update={"payload": payload})
+
+    # Excerpt-region equivalence still proves this particular retry safely.
+    retried = mapper.map_event(source)
+    assert retried.written == ()
+    assert retried.failed is False

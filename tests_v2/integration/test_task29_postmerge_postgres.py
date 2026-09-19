@@ -335,3 +335,77 @@ def test_multi_source_retry_uses_source_specific_slot_postgres() -> None:
 
         conn.execute("DELETE FROM memory_cards WHERE scope_id=%s", (scope_id,))
         conn.commit()
+
+
+def test_partial_retry_recovers_missing_candidate_after_slot_renumber_postgres() -> None:
+    psycopg, database_url = _psycopg_and_url()
+    scope_id = f"it-partial-renumber-{uuid.uuid4().hex}"
+    source = EventEnvelope(
+        event_id=f"{scope_id}:event",
+        event_type=EventType.PRIVATE_MESSAGE,
+        occurred_at=NOW,
+        scope_type=ScopeType.PERSONAL,
+        scope_id=scope_id,
+        actor_user_id="991000001",
+        message_id="880600001",
+        text="Первый факт. Второй факт.",
+    )
+    first_candidate = _generic_candidate(
+        source_message_id="880600001",
+        semantic_key="partial:first",
+        excerpt="Первый факт",
+    )
+    second_candidate = _generic_candidate(
+        source_message_id="880600001",
+        semantic_key="partial:second",
+        excerpt="Второй факт",
+        memory_type="plan",
+    )
+
+    with psycopg.connect(database_url) as conn:
+        class _FailSecondCreateStore(MemoryMapperStore):
+            def __init__(self, repo):
+                super().__init__(repo)
+                self.creates = 0
+                self.fail = True
+
+            def create(self, card):
+                self.creates += 1
+                if self.fail and self.creates == 2:
+                    raise RuntimeError("synthetic partial failure")
+                return super().create(card)
+
+        store = _FailSecondCreateStore(MemoryRepository(conn))
+        mapper = MemoryMapper(
+            store=store,
+            adapter=_Adapter([
+                {"candidates": [first_candidate, second_candidate]},
+                {"candidates": [second_candidate]},
+            ]),
+        )
+
+        first = mapper.map_event(source)
+        assert first.failed is True
+        assert len(first.written) == 1
+        assert first.written[0].payload["source_candidate_count"] == 2
+
+        store.fail = False
+        retried = mapper.map_event(source)
+        assert retried.failed is False
+        assert len(retried.written) == 1
+        assert retried.written[0].payload["semantic_key"] == "partial:second"
+
+        rows = conn.execute(
+            """
+            SELECT payload ->> 'semantic_key'
+            FROM memory_cards
+            WHERE scope_type='personal' AND scope_id=%s
+              AND status IN ('candidate','active')
+            ORDER BY payload ->> 'semantic_key'
+            """,
+            (scope_id,),
+        ).fetchall()
+        assert [row[0] for row in rows] == ["partial:first", "partial:second"]
+
+        conn.execute("DELETE FROM memory_cards WHERE scope_id=%s", (scope_id,))
+        conn.commit()
