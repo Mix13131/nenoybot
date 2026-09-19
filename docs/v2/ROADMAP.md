@@ -1,14 +1,22 @@
 # ROADMAP — НеНой 2.0
 
-## Актуальная контрольная точка — 2026-09-15
+## Актуальная контрольная точка — 2026-09-19
 
-Исправления ручной отмены напоминаний уже влиты в `v2`: PR #88, #89, #90. Последняя проверенная точка runtime-кода — `315304148fac4014e98d9e39b31ebfcb93984763` (merge PR #90).
+Рабочая линия — `v2`. Текущий проверенный code checkpoint: `16739b91e8fc6874fb948bd5f415be39566b7b20` (merge PR #98).
 
-По предыдущей рабочей сессии групповой live-test уже шёл; полный 7-дневный Friends Test не объявляется завершённым. Текущее состояние Railway, БД, whitelist и результаты нового тестового запуска этой документационной фиксацией не подтверждаются.
+После прежней точки PR #90 завершены:
 
-**Кнопку «🛑 Стоп» под напоминаниями не добавляем: пользователь отклонил предложение. Это не backlog и не следующий шаг.** Остаются текстовые команды и reply-stop.
+- **TASK 29 / #92 — trustworthy memory + feedback + operation receipts**: PR #93 → `7d8b184...`, затем bounded replay/idempotency follow-up → `aa43b5d...`;
+- **TASK 30 / #94 — calendar/timezone reminders**: PR #96 → `9462912...`, затем два post-merge P2 закрыты PR #98 → `16739b9...`;
+- последняя полная CI на follow-up TASK 30: **468 passed, 0 skipped, 1 warning** на isolated PostgreSQL 16.
+
+После этих изменений новый production deploy / live Telegram acceptance **не выполнялся**. Поэтому кодовый checkpoint закрыт, а runtime acceptance — следующий gate.
+
+Полный Friends Test не объявлен завершённым. **Кнопку «🛑 Стоп» под напоминаниями не добавляем**: решение пользователя D-046 остаётся в силе.
 
 Источник текущего состояния и границ проверки: [LIVE_TEST_STATUS.md](LIVE_TEST_STATUS.md). Принятые решения: [DECISIONS.md](DECISIONS.md), D-046–D-048.
+
+---
 
 ---
 
@@ -114,7 +122,15 @@ Stage G — Deployment / Real Test
 28 Friends Test              🚧 live feedback / reminder fixes; not completed
 ```
 
-Артефакт: `MVP_BUILD_PLAN.md`. Текущие live-оговорки — в `LIVE_TEST_STATUS.md`; отметки реализации не заменяют новый production health-check.
+После исходных 28 MVP-задач добавлен отдельный hardening-слой, не меняющий границы MVP:
+
+```text
+29 Trusted memory / feedback / truthful receipts   ✅ merged + bounded replay follow-up
+30 Calendar/timezone reminders                     ✅ merged + two post-merge P2 fixed
+Next gate: deploy + bounded live acceptance         ⏭️ not performed
+```
+
+Артефакт: `MVP_BUILD_PLAN.md`. Текущие live-оговорки — в `LIVE_TEST_STATUS.md`; отметки реализации и зелёный CI не заменяют production health-check/live acceptance.
 
 ---
 
@@ -210,17 +226,21 @@ Live tuning будет происходить только по результа
 
 ## Phase 8 — Feedback Loop
 
-**Статус: MVP BUILT**
+**Статус: HARDENED IN TASK 29; LIVE ACCEPTANCE PENDING**
 
-Собираются реакции, replies, organic re-mentions, explicit negative feedback и mute/silence signals. Feedback связывается с intervention и используется Adaptive Initiative.
+TASK 29 усилил Feedback/Memory слой: реакции и feedback привязываются к реальным bot interventions в том же scope, episode context bounded/replay-safe, evidence provenance валидируется, а memory/task/reminder confirmations опираются на фактические operation receipts.
+
+Replay/idempotency gaps, найденные после основного merge, закрыты отдельным follow-up `aa43b5d...`.
+
+Код и CI приняты; новый production deploy этой версии ещё не подтверждён.
 
 ---
 
 ## Phase 9 — Friends Test
 
-**Статус: LIVE FEEDBACK / REMINDER SAFETY CHECKPOINT; ПОЛНЫЙ ТЕСТ НЕ ЗАКРЫТ**
+**Статус: CODE HARDENING DONE; DEPLOY/LIVE ACCEPTANCE PENDING; ПОЛНЫЙ FRIENDS TEST НЕ ЗАКРЫТ**
 
-Групповой тест уже дал реальные обращения и инцидент с напоминаниями. Это не означает, что все дни плана пройдены или что текущий состав подключённых групп проверен заново.
+Групповой тест уже дал реальные обращения и инциденты, из которых выросли TASK 29 и TASK 30. Кодовые исправления завершены до `v2@16739b9...`, но эта версия ещё не прошла отдельный production deploy/live acceptance. Это не означает, что все дни Friends Test пройдены или что текущий состав подключённых групп проверен заново.
 
 План 7 дней живого теста остаётся ориентиром, а не отчётом о выполненных днях:
 
@@ -239,7 +259,7 @@ Live tuning будет происходить только по результа
 
 Этот checklist не является указанием заново подключать уже работающую группу. Статус второй группы и полнота preflight в текущей документационной задаче не проверялись.
 
-Следующий проверочный шаг по текущему инциденту: ограниченный live-smoke существующих способов отмены (reply / адресат / вся группа) с проверкой фактической остановки и нормального общения НеНоя после неё. Он не запускается автоматически этой фиксацией и пока не отмечен как PASS.
+Следующий gate: отдельно согласованный deploy актуального `v2` и bounded live acceptance truthful receipts + calendar/timezone reminders + существующей отмены (reply / адресат / вся группа). Он не запускается автоматически этой документационной фиксацией и пока не отмечен как PASS.
 
 Главная Group North Star:
 
@@ -326,6 +346,6 @@ Group: roast, sarcasm, profanity level/frequency, initiative, callbacks, max int
 
 # Critical Path
 
-`Vision ✅ → Personality ✅ → Memory ✅ → Dispatcher ✅ → Architecture ✅ → Build 01–24 ✅ → Railway / Personal Smoke ✅ (исторические проверки) → Controlled Friends Test 🚧 → Product Review v0.2 → Closed Beta → Monetization`
+`Vision ✅ → Personality ✅ → Memory ✅ → Dispatcher ✅ → Architecture ✅ → Build 01–24 ✅ → Railway / Personal Smoke ✅ (исторические проверки) → TASK 29 trusted memory/receipts ✅ → TASK 30 calendar/timezone ✅ → Deploy + bounded live acceptance ⏭️ → Controlled Friends Test 🚧 → Product Review v0.2 → Closed Beta → Monetization`
 
-Проверенная точка GitHub: PR #90. Следующее подтверждение — live-smoke существующей отмены без новых функций; подробности и границы в `LIVE_TEST_STATUS.md`.
+Проверенная точка GitHub: `v2@16739b91e8fc6874fb948bd5f415be39566b7b20` (PR #98). Следующее подтверждение — не новая функция, а deploy/live acceptance актуального кода по границам из `LIVE_TEST_STATUS.md`.
