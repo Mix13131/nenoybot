@@ -27,6 +27,7 @@ def event(excerpt="старый контекст группы") -> EventEnvelope
             "synthetic": True,
             "silence_wakeup": True,
             "silence_minutes": 240,
+            "last_human_message_id": 77,
             "last_human_excerpt": excerpt,
         },
     )
@@ -48,6 +49,16 @@ class Access:
                 participant=ParticipantContext(telegram_user_id=None),
             ),
         )
+
+
+class WakeupGuard:
+    def __init__(self, current=True):
+        self.current = current
+        self.calls = []
+
+    def is_current_episode(self, scope_id, last_human_message_id):
+        self.calls.append((scope_id, last_human_message_id))
+        return self.current
 
 
 class Scene:
@@ -102,7 +113,7 @@ class Outbox:
         return 5, True
 
 
-def build(scene):
+def build(scene, *, guard=None):
     generator = Generator()
     interventions = Interventions()
     outbox = Outbox()
@@ -114,6 +125,7 @@ def build(scene):
         response_generator=generator,
         intervention_repo=interventions,
         outbox_repo=outbox,
+        silence_wakeup_guard=guard or WakeupGuard(),
         unsolicited_enabled=True,
     )
     return pipeline, generator, interventions, outbox
@@ -155,3 +167,20 @@ def test_historical_question_cannot_turn_silence_wakeup_into_explicit_bypass():
     assert result.mode is ResponseMode.GROUP_BANTER
     assert generator.calls == 1
     assert len(outbox.items) == 1
+
+
+
+def test_new_human_message_makes_queued_silence_wakeup_stale():
+    scene = Scene()
+    guard = WakeupGuard(current=False)
+    pipeline, generator, interventions, outbox = build(scene, guard=guard)
+
+    result = pipeline.process(event("старый контекст"), now=NOW)
+
+    assert result.primary_action is PrimaryAction.IGNORE
+    assert result.access_reason == "silence_wakeup_stale"
+    assert guard.calls == [("-100777", 77)]
+    assert scene.calls == []
+    assert generator.calls == 0
+    assert interventions.rows == []
+    assert outbox.items == []
