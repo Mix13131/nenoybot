@@ -169,7 +169,16 @@ class GroupPipeline:
                 }
 
         group_context = access.context
-        scene = self.scene_analyzer.analyze(event)
+        if event.event_type is EventType.GROUP_SILENCE_WAKEUP:
+            last_human_excerpt = str(
+                event.metadata.get("last_human_excerpt") or ""
+            ).strip()
+            scene = self.scene_analyzer.analyze(
+                event,
+                recent_context=last_human_excerpt or None,
+            )
+        else:
+            scene = self.scene_analyzer.analyze(event)
 
         # Reminder stop commands are operational controls, not a request to mute
         # НеНой. Phrases like "горшочек, не вари" or "достаточно напоминать"
