@@ -103,3 +103,4 @@ class ReasonCode(str, Enum):
     GROUP_DEFAULT_SILENCE = "group_default_silence"
     HIGH_INITIATIVE = "high_initiative"
     SILENCE_REENGAGEMENT = "silence_reengagement"
+    NEGATIVE_FEEDBACK_RECENT = "negative_feedback_recent"
