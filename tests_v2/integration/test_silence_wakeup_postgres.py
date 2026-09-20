@@ -67,7 +67,8 @@ def test_postgres_silence_wakeup_candidate_and_event_are_durable():
 
         assert item.last_human_message_id > 0
         assert item.last_human_excerpt == "последняя реплика"
-        assert item.last_successful_wakeup_at is None
+        assert item.last_successful_wakeup_message_id is None
+        assert item.last_attempt_message_id is None
 
         assert repo.enqueue(
             item,
