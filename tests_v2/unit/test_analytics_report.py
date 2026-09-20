@@ -24,7 +24,8 @@ class FakeRepo:
         self.calls.append(("group",start,end,scope_id))
         return {
             "participant_count":8,"organic_participants":3,"direct_mentions":6,
-            "unsolicited_interventions":2,"replies":10,"reactions":5,"reaction_rate":.5,
+            "unsolicited_interventions":2,"silence_wakeups":1,
+            "replies":10,"reactions":5,"reaction_rate":.5,
             "roast_interventions":4,"roast_positive":3,"roast_hit_rate":.75,
             "ignored_interventions":1,"negative_feedback":2,"mute_events":1,
             "llm_cost_usd":.456,
@@ -49,6 +50,7 @@ def test_group_report_contains_product_and_cost_metrics() -> None:
     repo=FakeRepo()
     report=AnalyticsReportService(repo).build(scope="group",start=START,end=END,scope_id="-1001")
     assert report.metrics["organic_participants"] == 3
+    assert report.metrics["silence_wakeups"] == 1
     assert report.metrics["reaction_rate"] == .5
     assert report.metrics["roast_hit_rate"] == .75
     assert report.group_cost_by_day[0]["llm_cost_usd"] == .22
