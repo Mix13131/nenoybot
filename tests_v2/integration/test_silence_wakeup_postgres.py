@@ -95,6 +95,21 @@ def test_postgres_silence_wakeup_candidate_and_event_are_durable():
         assert row[2] == str(chat_id)
         assert row[3]["metadata"]["silence_wakeup"] is True
         assert row[3]["metadata"]["silence_minutes"] == 240
+        assert row[3]["metadata"]["last_human_message_id"] == item.last_human_message_id
+        assert repo.is_current_episode(str(chat_id), item.last_human_message_id) is True
+
+        conn.execute(
+            """
+            INSERT INTO messages(
+                chat_id, user_id, telegram_message_id, text,
+                message_type, created_at
+            )
+            VALUES (%s, %s, 78, 'новая реплика', 'text', %s)
+            """,
+            (chat_row[0], user_row[0], now + timedelta(seconds=1)),
+        )
+        conn.commit()
+        assert repo.is_current_episode(str(chat_id), item.last_human_message_id) is False
 
         conn.execute("DELETE FROM events WHERE scope_id=%s", (str(chat_id),))
         conn.execute("DELETE FROM chats WHERE telegram_chat_id=%s", (chat_id,))
