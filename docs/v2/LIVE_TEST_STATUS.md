@@ -1,27 +1,59 @@
 # НеНой 2.0 — Live Test Status
 
-Updated: 2026-09-19
+Updated: 2026-09-20
 
 ## Current checkpoint
 
 Рабочая линия — `v2`; `main`, legacy `app/` и legacy `tests/` без отдельного прямого решения не меняются.
 
-Текущая проверенная точка кода: `aae85beccda6598fcdeb39225298f9232859e109` — merge PR #101 в `v2`.
+Текущая production/code точка: `0fe8c260761c446aca9a3fdfd3ae1b00c6a8f05b` — merge PR #110 в `v2`.
 
-После документационной точки 15 сентября в `v2` завершены два больших hardening-цикла:
+### Что принято и доказано
 
-| Scope | Основной merge | Follow-up | Что зафиксировано |
-| --- | --- | --- | --- |
-| TASK 29 / #92 | PR #93 → `7d8b184a4f4072e3c9035b60af2ec376b07135d8` | `aa43b5dd4872decbf749875f504145bf58a3f3c8` | trusted memory/evidence, scoped episode context, feedback/reactions, replay/idempotency и честные operation receipts |
-| TASK 30 / #94 | PR #96 → `9462912515bdba808f9e057a908ab34ebcb4174d` | PR #98 → `16739b91e8fc6874fb948bd5f415be39566b7b20`; PR #101 → `aae85beccda6598fcdeb39225298f9232859e109` | calendar/timezone reminders, persisted schedule, honest schedule receipt, DST-safe recurrence, source-event retry и bounded calendar-parser hardening |
+| Scope | Итог | Live status |
+| --- | --- | --- |
+| TASK 29 / #92 | trusted memory/evidence, feedback, replay/idempotency, truthful operation receipts | deployed in current tree |
+| TASK 30 / #94 | calendar/timezone reminders + cancellation | **LIVE PASS**: timezone clarification → persisted one-shot → real Telegram fire |
+| #103 / #104 | natural one-shot order + Moscow clarification | **LIVE PASS** |
+| #105 / #106 | production migrations + transaction rollback | **LIVE PASS**: `0003/0004` applied; worker stable |
+| #107 / #108 | bounded 1-minute burst in finite window | implemented |
+| #109 / #110 | Scheduled Action Interpreter v1 | **LIVE PASS** on novel verb `удивляй` |
 
-Последняя подтверждённая полная CI-проверка TASK 30: GitHub Actions run #253 на head `5273f5a3bbddf717adf56d2630bf1f82894ac555` — **469 passed, 1 warning** на isolated PostgreSQL 16. Этот head был squash-merged PR #101 в `v2` как `aae85beccda6598fcdeb39225298f9232859e109`.
+Последняя подтверждённая полная CI-проверка финального PR #110 head — **494 passed, 1 warning** на isolated PostgreSQL 16.
 
-Финальный bounded review предыдущего head PR #101 вернул два воспроизводимых P2: explicit prepositional correction могла ошибочно стать daily, а explicit `или` с произвольным qualifier — молча выбрать одно расписание. Оба finding закрыты в финальном head и покрыты регрессиями. После зелёного full CI новый широкий аудит parser-а намеренно не запускался: дальнейшие не-блокирующие edge cases не должны автоматически возвращать проект в бесконечный hardening-loop; см. D-049.
+Railway после merge PR #110:
+- `nenoy-v2-web` — `SUCCESS`;
+- `nenoy-v2-worker` — `SUCCESS`;
+- worker startup: migrations ready / no pending migrations;
+- Telegram webhook configured, `pending_update_count=0`, Telegram last error absent;
+- `/ready` → 200;
+- после запуска нет новых traceback / aborted-transaction failures.
 
-**Production/Railway после TASK 29/TASK 30 этой точкой не разворачивался и live Telegram acceptance для нового кода не выполнялся.** Исторический live runtime ниже не доказывает, что production сейчас работает именно на `aae85be...`.
+### Controlled live acceptance уже пройден
 
-Полный Friends Test по-прежнему не объявлен завершённым. Эта фиксация обновляет документацию и не разрешает массовый rollout.
+1. Обычный Group direct path после deploy: Telegram → webhook 200 → worker → ответ — PASS.
+2. `НеНой, напомни о себе в HH:MM сегодня` → запрос timezone → reply `Москва` → persisted reminder → реальный fire — PASS.
+3. Production schema drift `pending_calendar_intents` был найден живым тестом и закрыт migrations/rollback hardening.
+4. Semantic scheduled action `в течение следующих пяти минут каждую минуту удивляй меня` → persisted bounded series → разные generated actions на последовательных fires — PASS.
+5. Truthful receipt enforcement расширен на любые semantic future-action promises: без реального persisted schedule модель не может заявить, что будет выполнять действие.
+
+### TASK 27 / #76 — Friends Test Preflight: PASS
+
+Подтверждённая preflight evidence:
+- 2026-09-14 была явно выбрана и активирована одна контролируемая тестовая группа;
+- friends profile стартовал с low initiative (`initiative=3`);
+- ordinary non-mention group message достиг v2 и остался без unsolicited ответа;
+- direct mention достиг v2 и получил ответ;
+- факт доставки ordinary group traffic доказывает, что Telegram observation path работает; отдельное повторное чтение BotFather setting не требуется для функционального gate;
+- post-token-rotation recovery подтверждён merged PR #84;
+- текущий полный CI сохраняет privacy regression: Group retrieval/context не fallback-ится в Personal scope;
+- serious/sensitive gates подавляют roast;
+- mute/silence path и reaction/feedback semantics покрыты тестами;
+- group analytics включает organic participants, direct mentions, unsolicited interventions, reactions, negative feedback и mute events.
+
+Preflight закрывает готовность **одной controlled group**. Он не является завершённым Friends Test и не разрешает массовый whitelist/rollout.
+
+Следующая граница: **7-дневный Controlled Friends Test**, затем Product Review v0.2.
 
 ## Historical reminder-controls checkpoint verified on 2026-09-15
 
@@ -87,20 +119,17 @@ Observed real path:
 
 ## Continuation boundary
 
-Следующий gate — **отдельно согласованный deploy + bounded live acceptance актуального `v2`**, а не новая функциональность.
+Следующий gate — **Controlled Friends Test**, а не новый hardening cycle.
 
-До live-test сначала проверить фактический Railway deployment/health и убедиться, что разворачивается именно `v2@aae85beccda6598fcdeb39225298f9232859e109` или более новый осознанно принятый commit. Не считать исторические статусы Railway текущими.
+На этом этапе:
+1. Days 1–2: low initiative, observation + direct replies;
+2. Days 3–4: medium initiative, cautious callbacks;
+3. Days 5–7: higher roast/callback only if feedback stays healthy;
+4. собирать product metrics и реальные диалоги;
+5. чинить только воспроизводимые live blockers / truthful / privacy / safety regressions;
+6. после 7 дней — Product Review v0.2 по фактическим данным.
 
-Минимальный acceptance после deploy:
+Не подключать новые группы автоматически, не расширять scope функциональности без live-сигнала и не возвращаться к широкому parser-hardening без воспроизводимого пользовательского сбоя.
 
-1. проверить обычный Personal/Group ответ после обновления runtime;
-2. проверить truthful operation receipts: НеНой не заявляет сохранение/создание действия без фактического success receipt;
-3. создать synthetic/контролируемый calendar reminder с timezone clarification либо явным IANA timezone;
-4. подтвердить реальную запись reminder и ближайший `due_at`;
-5. дождаться одного фактического fire через normal worker → event/outbox → Telegram;
-6. для recurring calendar chain проверить расчёт следующего локального occurrence;
-7. проверить существующую отмену (reply-stop / адресат / вся группа) на новой calendar chain и обычное общение НеНоя после отмены.
-
-Не проигрывать старые исторические команды при deploy, не создавать тестовые пинги в живой группе без согласованного сценария и не подключать новые группы автоматически.
 
 Память и действия разных групп остаются изолированы. Полный Friends Test, состав whitelist и rollout во вторые/новые группы этой записью не закрываются.
