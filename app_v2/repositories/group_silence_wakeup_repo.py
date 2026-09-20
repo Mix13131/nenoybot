@@ -59,7 +59,6 @@ class GroupSilenceWakeupRepository:
                 SELECT m.id, m.created_at, m.text
                 FROM messages m
                 WHERE m.chat_id=c.id
-                  AND m.user_id IS NOT NULL
                 ORDER BY m.created_at DESC, m.id DESC
                 LIMIT 1
             ) AS last_human ON TRUE
@@ -101,7 +100,6 @@ class GroupSilenceWakeupRepository:
             JOIN chats c ON c.id=m.chat_id
             WHERE c.telegram_chat_id=%s
               AND c.chat_type='group'
-              AND m.user_id IS NOT NULL
             ORDER BY m.created_at DESC, m.id DESC
             LIMIT 1
             """,
