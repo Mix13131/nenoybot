@@ -122,14 +122,14 @@ class GroupSilenceWakeupRepository:
         candidate: SilenceWakeupCandidate,
         *,
         now: datetime,
-        attempt_gap_minutes: int,
         silence_minutes: int,
     ) -> bool:
-        slot_seconds = max(60, int(attempt_gap_minutes) * 60)
-        slot = int(now.timestamp()) // slot_seconds
+        # One durable attempt per human silence episode. events.event_id is
+        # UNIQUE, so concurrent scanners/processes race on the same key and
+        # PostgreSQL admits exactly one synthetic event.
         event_id = (
             f"silence:{candidate.scope_id}:"
-            f"{candidate.last_human_message_id}:{slot}"
+            f"{candidate.last_human_message_id}"
         )
         payload = {
             "event_id": event_id,
