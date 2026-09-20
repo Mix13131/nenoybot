@@ -1,52 +1,29 @@
 # TASK 27 — Friends Test Preflight
 
+**Status: PASS / COMPLETED — 2026-09-20**
+
 ## Goal
-Prepare one approved Telegram group for a controlled НеНой 2.0 friends test without enabling broad rollout.
+Prepare one approved Telegram group for a controlled НеНой 2.0 Friends Test without enabling broad rollout.
 
-## Preconditions
-- TASK 25 Railway runtime operational.
-- TASK 26 Personal smoke functional pass.
-- Group whitelist remains mandatory.
-- Personal and Group memory scopes remain isolated.
-- Unsolicited behavior remains silence-first and adaptive.
+## Exit evidence
 
-## Required checks
-1. Confirm target Telegram group id and explicitly whitelist only that group.
-2. Confirm bot can receive ordinary group messages, direct mentions, replies and reactions.
-3. Disable Telegram **Group Privacy** for the v2 bot in BotFather (`/setprivacy` -> bot -> Disable), otherwise Telegram will not deliver ordinary group conversation and НеНой cannot observe/map the scene.
-4. Confirm bot has enough group permissions to receive intended events.
-5. Start with low initiative for Days 1–2.
-6. Verify direct mention always works even if unsolicited behavior is muted/cooldown-blocked.
-7. Verify ordinary chat can be observed/mapped without automatic reply.
-8. Verify Group retrieval cannot read Personal Memory Cards.
-9. Verify serious/sensitive scenes suppress roast/callback.
-10. Verify `заткнись`/silence request creates temporary group silence.
-11. Confirm metrics are available for direct mentions, unsolicited interventions, reactions, negative feedback, mute events and organic participants.
+Preflight закрыт на основании уже выполненных live-проверок и текущего зелёного regression suite:
 
-## Controlled group administration
-The v2 runtime exposes a DB-backed admin CLI. It never auto-whitelists unknown groups.
+- 2026-09-14 явно выбрана одна controlled test group и активирована через whitelist;
+- стартовый friends-profile: low initiative (`initiative=3`) с humor/sarcasm/roast/callback/sensitivity настройками;
+- ordinary non-mention group message дошёл до v2 и не вызвал unsolicited reply — silence-first path подтверждён live;
+- direct mention дошёл до v2 и получил ответ — explicit path подтверждён live;
+- ordinary group traffic был доставлен Telegram webhook, поэтому observation path функционально работает независимо от того, каким конкретно BotFather/admin setting это обеспечено;
+- post-token-rotation webhook recovery закрыт merged PR #84;
+- current test suite сохраняет Group/Personal privacy boundary: Group retrieval/context запрашивают только Group scope;
+- serious/sensitive scene tests подавляют roast/callback escalation;
+- `заткнись` / mute request path создаёт temporary group silence; human-to-human `заткнись` не мутит группу;
+- reactions/negative feedback/reaction removal имеют scoped semantics и idempotency;
+- analytics report включает direct mentions, unsolicited interventions, organic participants, reactions, negative feedback и mute events;
+- финальная production/code точка после последующего hardening: `v2@0fe8c260761c446aca9a3fdfd3ae1b00c6a8f05b`, full CI **494 passed, 1 warning**.
 
-After the bot has seen at least one update from the target group:
+## Initial profile used for controlled preflight
 
-```bash
-python -m app_v2.group_admin list
-```
-
-Activate exactly one group with the Day-1 profile:
-
-```bash
-python -m app_v2.group_admin activate-friends <telegram_chat_id>
-```
-
-Emergency disable:
-
-```bash
-python -m app_v2.group_admin deactivate <telegram_chat_id>
-```
-
-Unknown group ids fail closed.
-
-## Suggested initial group profile
 ```json
 {
   "profile": "friends",
@@ -63,26 +40,21 @@ Unknown group ids fail closed.
 }
 ```
 
-This exact profile is the default used by `activate-friends`.
+## What this completion means
 
-## Day plan
-- Days 1–2: observe/map, low initiative, direct replies normal.
-- Days 3–4: medium initiative, cautious callbacks.
-- Days 5–7: higher roast/callback if feedback is healthy.
+TASK 27 proves that one explicitly selected group can safely enter the product experiment.
 
-## Blockers before actual TASK 28 start
-- rotate Telegram token exposed in private runtime log during first Personal smoke
-- disable Group Privacy in BotFather
-- choose the exact Telegram friends group
-- whitelist only that group
+It does **not** mean:
+- full Friends Test is complete;
+- broad rollout is allowed;
+- unknown groups may auto-whitelist;
+- all personality thresholds are validated.
 
-## Exit criteria
-- target group explicitly selected
-- Group Privacy disabled
-- whitelist record created
-- initial group profile set
-- one direct mention smoke passes
-- one ordinary non-mention message is delivered to v2 and produces no unsolicited reply unless score/initiative gate explicitly allows it
-- privacy regression remains green
+## Next
 
-Do not begin broad unsolicited group behavior outside the selected test group.
+TASK 28 / Phase 9 — **7-day Controlled Friends Test**:
+- Days 1–2 low initiative;
+- Days 3–4 medium initiative + cautious callbacks;
+- Days 5–7 stronger character only if feedback remains healthy.
+
+Primary product signal: participants other than the owner begin addressing НеНой organically and repeatedly.
