@@ -72,13 +72,11 @@ def test_postgres_silence_wakeup_candidate_and_event_are_durable():
         assert repo.enqueue(
             item,
             now=now,
-            attempt_gap_minutes=30,
             silence_minutes=240,
         ) is True
         assert repo.enqueue(
             item,
             now=now,
-            attempt_gap_minutes=30,
             silence_minutes=240,
         ) is False
 
