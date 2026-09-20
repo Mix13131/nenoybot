@@ -49,8 +49,8 @@ class Repo:
     def count_successful_since(self, scope_id, since):
         return self.successful_today
 
-    def enqueue(self, item, *, now, attempt_gap_minutes, silence_minutes):
-        self.enqueued.append((item, now, attempt_gap_minutes, silence_minutes))
+    def enqueue(self, item, *, now, silence_minutes):
+        self.enqueued.append((item, now, silence_minutes))
         return True
 
 
@@ -101,8 +101,7 @@ def test_eligible_silence_enqueues_one_durable_wakeup():
     assert service(repo=repo).run_once(now=NOW) is True
 
     assert len(repo.enqueued) == 1
-    _, _, gap, silence_minutes = repo.enqueued[0]
-    assert gap == 30
+    _, _, silence_minutes = repo.enqueued[0]
     assert silence_minutes == 240
 
 
@@ -124,9 +123,27 @@ def test_new_human_message_reopens_future_silence_episode():
     assert service(repo=repo).run_once(now=NOW) is True
 
 
-def test_recent_attempt_is_not_repeated_before_attempt_gap():
+def test_any_prior_attempt_in_same_silence_episode_is_not_repeated():
     item = candidate(last_attempt_at=NOW - timedelta(minutes=10))
     repo = Repo(item)
+
+    assert service(repo=repo).run_once(now=NOW) is False
+
+
+def test_attempt_before_new_human_message_does_not_block_new_episode():
+    item = candidate(
+        last_human_message_at=NOW - timedelta(hours=4),
+        last_attempt_at=NOW - timedelta(hours=5),
+    )
+    repo = Repo(item)
+
+    assert service(repo=repo).run_once(now=NOW) is True
+
+
+def test_malformed_enablement_value_fails_closed():
+    profile = dict(candidate().profile)
+    profile["silence_wakeup_enabled"] = "disabled"
+    repo = Repo(candidate(profile=profile))
 
     assert service(repo=repo).run_once(now=NOW) is False
 
