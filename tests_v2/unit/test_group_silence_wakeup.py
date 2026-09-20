@@ -30,8 +30,8 @@ def candidate(**overrides):
         "last_human_message_id": 77,
         "last_human_message_at": NOW - timedelta(hours=4),
         "last_human_excerpt": "ну всё, разбежались по делам",
-        "last_successful_wakeup_at": None,
-        "last_attempt_at": None,
+        "last_successful_wakeup_message_id": None,
+        "last_attempt_message_id": None,
     }
     base.update(overrides)
     return SilenceWakeupCandidate(**base)
@@ -106,7 +106,7 @@ def test_eligible_silence_enqueues_one_durable_wakeup():
 
 
 def test_same_silence_episode_never_gets_second_successful_wakeup():
-    item = candidate(last_successful_wakeup_at=NOW - timedelta(hours=1))
+    item = candidate(last_successful_wakeup_message_id=77)
     repo = Repo(item)
 
     assert service(repo=repo).run_once(now=NOW) is False
@@ -115,8 +115,9 @@ def test_same_silence_episode_never_gets_second_successful_wakeup():
 
 def test_new_human_message_reopens_future_silence_episode():
     item = candidate(
+        last_human_message_id=78,
         last_human_message_at=NOW - timedelta(hours=4),
-        last_successful_wakeup_at=NOW - timedelta(hours=5),
+        last_successful_wakeup_message_id=77,
     )
     repo = Repo(item)
 
@@ -124,7 +125,7 @@ def test_new_human_message_reopens_future_silence_episode():
 
 
 def test_any_prior_attempt_in_same_silence_episode_is_not_repeated():
-    item = candidate(last_attempt_at=NOW - timedelta(minutes=10))
+    item = candidate(last_attempt_message_id=77)
     repo = Repo(item)
 
     assert service(repo=repo).run_once(now=NOW) is False
@@ -132,8 +133,9 @@ def test_any_prior_attempt_in_same_silence_episode_is_not_repeated():
 
 def test_attempt_before_new_human_message_does_not_block_new_episode():
     item = candidate(
+        last_human_message_id=78,
         last_human_message_at=NOW - timedelta(hours=4),
-        last_attempt_at=NOW - timedelta(hours=5),
+        last_attempt_message_id=77,
     )
     repo = Repo(item)
 
