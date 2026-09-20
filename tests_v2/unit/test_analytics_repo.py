@@ -38,11 +38,12 @@ def test_personal_queries_are_scope_filtered() -> None:
 
 
 def test_group_ratios_are_zero_safe() -> None:
-    # participant, organic, direct, unsolicited, replies, reactions,
-    # roast_total, roast_positive, ignored, negative, mute, cost
-    conn=FakeConn([8,3,6,2,0,5,0,3,1,2,1,.45])
+    # participant, organic, direct, unsolicited, replies, silence_wakeups,
+    # reactions, roast_total, roast_positive, ignored, negative, mute, cost
+    conn=FakeConn([8,3,6,2,0,1,5,0,3,1,2,1,.45])
     metrics=AnalyticsRepository(conn).group_counts(START,END,"-1001")
     assert metrics["participant_count"] == 8
+    assert metrics["silence_wakeups"] == 1
     assert metrics["reaction_rate"] == 0.0
     assert metrics["roast_hit_rate"] == 0.0
     assert metrics["negative_feedback"] == 2

@@ -12,7 +12,10 @@ from app_v2.config import load_config
 from app_v2.db.migrations import run_migrations
 from app_v2.group_admin import FRIENDS_DAY1_PROFILE
 from app_v2.repositories.group_context_repo import GroupContextRepository
+from app_v2.repositories.group_initiative_repo import GroupInitiativeRepository
 from app_v2.runtime import RuntimeEventHandler, build_runtime
+from app_v2.services.group_initiative import GroupInitiativeService
+from app_v2.services.group_silence_wakeup import GroupSilenceWakeupService
 from app_v2.services.maintenance import MaintenanceService
 from app_v2.workers.event_worker import EventWorker
 from app_v2.workers.maintenance import (
@@ -22,6 +25,7 @@ from app_v2.workers.maintenance import (
 )
 from app_v2.workers.outbox_worker import OutboxWorker
 from app_v2.workers.scheduler import ReminderScheduler
+from app_v2.workers.silence_wakeup import GroupSilenceWakeupWorker
 
 logger = logging.getLogger(__name__)
 
@@ -148,6 +152,7 @@ class WorkerLoop:
     reminder_scheduler: Any
     outbox_worker: Any
     maintenance_worker: Any
+    silence_wakeup_worker: Any | None = None
 
     def run_once(self) -> bool:
         """Run one fair cycle; return True when any durable work was handled."""
@@ -159,6 +164,15 @@ class WorkerLoop:
             # Maintenance is best-effort housekeeping. A failure here must not
             # stop replies/reminders/outbound delivery.
             logger.exception("v2 maintenance cycle failed")
+
+        if self.silence_wakeup_worker is not None:
+            try:
+                wakeup = self.silence_wakeup_worker.run_if_due()
+                handled = handled or bool(wakeup)
+            except Exception:
+                # Re-engagement is optional product behavior. Any failure must
+                # degrade to silence and never block normal Telegram handling.
+                logger.exception("v2 silence wakeup cycle failed")
 
         handled = self.event_worker.run_once() or handled
         handled = self.reminder_scheduler.run_once() or handled
@@ -200,11 +214,25 @@ def build_worker_loop(conn, config=None) -> WorkerLoop:
         ),
         interval_seconds=maintenance_interval_from_env(),
     )
+    silence_wakeup_worker = GroupSilenceWakeupWorker(
+        GroupSilenceWakeupService(
+            repo=runtime.silence_wakeup_repo,
+            group_context_repo=GroupContextRepository(conn),
+            initiative_service=GroupInitiativeService(
+                GroupInitiativeRepository(conn)
+            ),
+        ),
+        interval_seconds=max(
+            60,
+            _int_env("NENOY_V2_SILENCE_WAKEUP_SCAN_SECONDS", 60),
+        ),
+    )
     return WorkerLoop(
         event_worker=event_worker,
         reminder_scheduler=reminder_scheduler,
         outbox_worker=outbox_worker,
         maintenance_worker=maintenance_worker,
+        silence_wakeup_worker=silence_wakeup_worker,
     )
 
 

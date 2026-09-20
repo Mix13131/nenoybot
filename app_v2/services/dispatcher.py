@@ -246,6 +246,52 @@ def decide(
             metadata={"policy_version": POLICY_VERSION, "unsolicited": True, **state.metadata},
         )
 
+    if event.event_type is EventType.GROUP_SILENCE_WAKEUP:
+        if int(state.metadata.get("negative_feedback_recent", 0) or 0) > 0:
+            return DispatcherDecision(
+                primary_action=PrimaryAction.IGNORE,
+                intervention_score=0,
+                reason_codes=[ReasonCode.NEGATIVE_FEEDBACK_RECENT],
+                metadata={"policy_version": POLICY_VERSION, "unsolicited": True, **state.metadata},
+            )
+        if state.unsolicited_today >= state.soft_daily_limit:
+            return DispatcherDecision(
+                primary_action=PrimaryAction.IGNORE,
+                intervention_score=0,
+                reason_codes=[ReasonCode.SOFT_DAILY_LIMIT],
+                metadata={"policy_version": POLICY_VERSION, "unsolicited": True, **state.metadata},
+            )
+        if (
+            scene.seriousness_score >= 0.75
+            or scene.conflict_score >= 0.75
+        ):
+            return DispatcherDecision(
+                primary_action=PrimaryAction.IGNORE,
+                intervention_score=0,
+                reason_codes=[ReasonCode.SERIOUS_CONTEXT],
+                metadata={"policy_version": POLICY_VERSION, "unsolicited": True, **state.metadata},
+            )
+        if scene.sensitivity_score >= 0.75:
+            return DispatcherDecision(
+                primary_action=PrimaryAction.IGNORE,
+                intervention_score=0,
+                reason_codes=[ReasonCode.SENSITIVE_CONTEXT],
+                metadata={"policy_version": POLICY_VERSION, "unsolicited": True, **state.metadata},
+            )
+        return DispatcherDecision(
+            primary_action=PrimaryAction.REPLY,
+            mode=_group_mode(scene, state),
+            intervention_score=85,
+            reason_codes=[ReasonCode.SILENCE_REENGAGEMENT],
+            target_user_id=None,
+            metadata={
+                "policy_version": POLICY_VERSION,
+                "unsolicited": True,
+                "silence_reengagement": True,
+                **state.metadata,
+            },
+        )
+
     score, reasons, components = _score_group(scene, state)
     should_reply = score >= 75
     if 60 <= score <= 74 and state.initiative_level >= 8:

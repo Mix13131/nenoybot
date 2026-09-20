@@ -50,6 +50,10 @@ def test_day1_profile_is_deliberately_low_initiative() -> None:
     assert FRIENDS_DAY1_PROFILE["roast"] <= 7
     assert FRIENDS_DAY1_PROFILE["profanity_frequency"] <= 3
     assert FRIENDS_DAY1_PROFILE["sensitivity"] >= 8
+    assert FRIENDS_DAY1_PROFILE["timezone"] == "Europe/Moscow"
+    assert FRIENDS_DAY1_PROFILE["silence_wakeup_enabled"] is True
+    assert FRIENDS_DAY1_PROFILE["silence_wakeup_after_minutes"] == 180
+    assert FRIENDS_DAY1_PROFILE["silence_wakeup_daily_limit"] == 1
 
 
 def test_activate_whitelists_exact_group_with_day1_profile() -> None:
