@@ -17,9 +17,8 @@ def _bool(value: Any, default: bool = False) -> bool:
             return True
         if lowered in {"0", "false", "no", "off"}:
             return False
-    if value is None:
         return default
-    return bool(value)
+    return default
 
 
 def _int(value: Any, default: int, *, low: int, high: int) -> int:
@@ -70,12 +69,6 @@ class GroupSilenceWakeupService:
                 low=60,
                 high=2880,
             )
-            attempt_gap_minutes = _int(
-                profile.get("silence_wakeup_attempt_gap_minutes"),
-                30,
-                low=5,
-                high=1440,
-            )
             daily_limit = _int(
                 profile.get("silence_wakeup_daily_limit"),
                 1,
@@ -113,8 +106,10 @@ class GroupSilenceWakeupService:
                 continue
             if (
                 candidate.last_attempt_at is not None
-                and candidate.last_attempt_at > current - timedelta(minutes=attempt_gap_minutes)
+                and candidate.last_attempt_at >= candidate.last_human_message_at
             ):
+                # One attempt per silence episode even if later policy/generation
+                # decides not to speak. A newer human message opens a new episode.
                 continue
 
             local_now = current.astimezone(local_tz)
@@ -170,7 +165,6 @@ class GroupSilenceWakeupService:
             if self.repo.enqueue(
                 candidate,
                 now=current,
-                attempt_gap_minutes=attempt_gap_minutes,
                 silence_minutes=silence_minutes,
             ):
                 return True
