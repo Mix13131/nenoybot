@@ -66,6 +66,7 @@ class GroupPipeline:
         memory_mapper: Any | None = None,
         group_reminder_service: Any | None = None,
         scheduled_action_interpreter: Any | None = None,
+        silence_wakeup_guard: Any | None = None,
         unsolicited_enabled: bool = False,
     ) -> None:
         self.access_service = access_service
@@ -80,6 +81,7 @@ class GroupPipeline:
         self.memory_mapper = memory_mapper
         self.group_reminder_service = group_reminder_service
         self.scheduled_action_interpreter = scheduled_action_interpreter
+        self.silence_wakeup_guard = silence_wakeup_guard
         self.unsolicited_enabled = unsolicited_enabled
 
     def _mapper_context(self, event: EventEnvelope) -> tuple[dict[str, Any], ...]:
@@ -121,6 +123,40 @@ class GroupPipeline:
                 allowed=False,
                 access_reason=access.reason,
             )
+
+        if event.event_type is EventType.GROUP_SILENCE_WAKEUP:
+            try:
+                expected_last_human_id = int(
+                    event.metadata.get("last_human_message_id")
+                )
+            except (TypeError, ValueError):
+                return GroupPipelineResult(
+                    event_id=event.event_id,
+                    allowed=True,
+                    access_reason="silence_wakeup_invalid_boundary",
+                    primary_action=PrimaryAction.IGNORE,
+                )
+            if self.silence_wakeup_guard is None:
+                return GroupPipelineResult(
+                    event_id=event.event_id,
+                    allowed=True,
+                    access_reason="silence_wakeup_guard_unavailable",
+                    primary_action=PrimaryAction.IGNORE,
+                )
+            try:
+                still_current = self.silence_wakeup_guard.is_current_episode(
+                    event.scope_id,
+                    expected_last_human_id,
+                )
+            except Exception:
+                still_current = False
+            if not still_current:
+                return GroupPipelineResult(
+                    event_id=event.event_id,
+                    allowed=True,
+                    access_reason="silence_wakeup_stale",
+                    primary_action=PrimaryAction.IGNORE,
+                )
 
         if self.feedback_collector is not None:
             self.feedback_collector.collect(event)
