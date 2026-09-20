@@ -239,3 +239,20 @@ def test_silence_wakeup_is_blocked_by_serious_or_sensitive_scene():
     assert serious.reason_codes == [ReasonCode.SERIOUS_CONTEXT]
     assert sensitive.primary_action is PrimaryAction.IGNORE
     assert sensitive.reason_codes == [ReasonCode.SENSITIVE_CONTEXT]
+
+
+
+def test_silence_wakeup_is_blocked_if_feedback_turns_negative_after_enqueue():
+    decision = decide(
+        _event(event_type=EventType.GROUP_SILENCE_WAKEUP),
+        SceneAnalysis(),
+        DispatcherPolicyState(
+            cooldown_active=False,
+            unsolicited_today=0,
+            soft_daily_limit=6,
+            metadata={"negative_feedback_recent": 1},
+        ),
+    )
+
+    assert decision.primary_action is PrimaryAction.IGNORE
+    assert decision.reason_codes == [ReasonCode.NEGATIVE_FEEDBACK_RECENT]
