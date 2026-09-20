@@ -13,7 +13,6 @@ from app_v2.db.migrations import run_migrations
 from app_v2.group_admin import FRIENDS_DAY1_PROFILE
 from app_v2.repositories.group_context_repo import GroupContextRepository
 from app_v2.repositories.group_initiative_repo import GroupInitiativeRepository
-from app_v2.repositories.group_silence_wakeup_repo import GroupSilenceWakeupRepository
 from app_v2.runtime import RuntimeEventHandler, build_runtime
 from app_v2.services.group_initiative import GroupInitiativeService
 from app_v2.services.group_silence_wakeup import GroupSilenceWakeupService
@@ -217,7 +216,7 @@ def build_worker_loop(conn, config=None) -> WorkerLoop:
     )
     silence_wakeup_worker = GroupSilenceWakeupWorker(
         GroupSilenceWakeupService(
-            repo=GroupSilenceWakeupRepository(conn),
+            repo=runtime.silence_wakeup_repo,
             group_context_repo=GroupContextRepository(conn),
             initiative_service=GroupInitiativeService(
                 GroupInitiativeRepository(conn)
