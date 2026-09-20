@@ -42,6 +42,7 @@ class EventType(str, Enum):
     COMMITMENT_DUE = "commitment_due"
     FOLLOWUP_DUE = "followup_due"
     SCHEDULED_SUPPORT_MESSAGE = "scheduled_support_message"
+    GROUP_SILENCE_WAKEUP = "group_silence_wakeup"
     MEMORY_CANDIDATE_DETECTED = "memory_candidate_detected"
     MEMORY_CONFLICT_DETECTED = "memory_conflict_detected"
     MEMORY_EXPIRED = "memory_expired"
@@ -101,3 +102,4 @@ class ReasonCode(str, Enum):
     PERSONAL_DEFAULT_REPLY = "personal_default_reply"
     GROUP_DEFAULT_SILENCE = "group_default_silence"
     HIGH_INITIATIVE = "high_initiative"
+    SILENCE_REENGAGEMENT = "silence_reengagement"
