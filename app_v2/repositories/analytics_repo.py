@@ -134,6 +134,17 @@ class AnalyticsRepository:
                 {intervention_scope}""",
             [start, end, *intervention_params],
         )
+        silence_wakeups = self._scalar(
+            f"""SELECT COUNT(*)
+                FROM interventions i
+                JOIN events e ON e.event_id=i.event_id
+                WHERE i.scope_type='group'
+                  AND i.primary_action='reply'
+                  AND e.event_type='group_silence_wakeup'
+                  AND i.created_at >= %s AND i.created_at < %s
+                {intervention_scope}""",
+            [start, end, *intervention_params],
+        )
         reactions = self._scalar(
             f"""WITH ranked_reactions AS (
                     SELECT f.*,
@@ -277,6 +288,7 @@ class AnalyticsRepository:
             "organic_participants": organic,
             "direct_mentions": direct_mentions,
             "unsolicited_interventions": unsolicited,
+            "silence_wakeups": silence_wakeups,
             "replies": replies,
             "reactions": reactions,
             "reaction_rate": reactions / replies if replies else 0.0,
