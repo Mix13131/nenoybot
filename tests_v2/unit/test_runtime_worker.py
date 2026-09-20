@@ -265,3 +265,24 @@ def test_group_bootstrap_recent_mode_fails_closed_when_ambiguous(monkeypatch):
     monkeypatch.setattr(worker_main, "GroupContextRepository", FakeRepo)
     assert _bootstrap_group_from_env(object(), now=now) is None
     assert calls == []
+
+
+
+def test_worker_loop_runs_silence_wakeup_without_blocking_other_units():
+    event=Unit(False); reminder=Unit(False); outbox=Unit(True); maintenance=MaintenanceUnit(None)
+    wakeup=MaintenanceUnit(True)
+    loop=WorkerLoop(event, reminder, outbox, maintenance, wakeup)
+
+    assert loop.run_once() is True
+    assert wakeup.calls == 1
+    assert event.calls == reminder.calls == outbox.calls == maintenance.calls == 1
+
+
+def test_silence_wakeup_failure_is_fail_silent_for_worker_loop():
+    event=Unit(False); reminder=Unit(False); outbox=Unit(True); maintenance=MaintenanceUnit(None)
+    wakeup=MaintenanceUnit(error=RuntimeError("wakeup down"))
+    loop=WorkerLoop(event, reminder, outbox, maintenance, wakeup)
+
+    assert loop.run_once() is True
+    assert wakeup.calls == 1
+    assert outbox.calls == 1
