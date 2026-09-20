@@ -8,6 +8,7 @@ from app_v2.domain.enums import EventType, PrimaryAction, ResponseMode, ScopeTyp
 from app_v2.domain.events import EventEnvelope, SceneAnalysis
 from app_v2.domain.outbound import OutboundMessage
 from app_v2.services.dispatcher import DispatcherPolicyState, decide
+from app_v2.services.group_silence_wakeup import silence_wakeup_window_open
 from app_v2.services.operation_receipts import group_operation_receipts
 
 
@@ -155,6 +156,16 @@ class GroupPipeline:
                     event_id=event.event_id,
                     allowed=True,
                     access_reason="silence_wakeup_stale",
+                    primary_action=PrimaryAction.IGNORE,
+                )
+            if not silence_wakeup_window_open(
+                dict(access.context.profile or {}),
+                now=current,
+            ):
+                return GroupPipelineResult(
+                    event_id=event.event_id,
+                    allowed=True,
+                    access_reason="silence_wakeup_window_closed",
                     primary_action=PrimaryAction.IGNORE,
                 )
 
