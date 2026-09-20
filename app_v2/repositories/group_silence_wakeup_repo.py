@@ -81,6 +81,26 @@ class GroupSilenceWakeupRepository:
             for row in rows
         ]
 
+    def is_current_episode(
+        self,
+        scope_id: str,
+        last_human_message_id: int,
+    ) -> bool:
+        row = self.conn.execute(
+            """
+            SELECT m.id
+            FROM messages m
+            JOIN chats c ON c.id=m.chat_id
+            WHERE c.telegram_chat_id=%s
+              AND c.chat_type='group'
+              AND m.user_id IS NOT NULL
+            ORDER BY m.created_at DESC, m.id DESC
+            LIMIT 1
+            """,
+            (int(scope_id),),
+        ).fetchone()
+        return bool(row and int(row[0]) == int(last_human_message_id))
+
     def count_successful_since(self, scope_id: str, since: datetime) -> int:
         row = self.conn.execute(
             """
@@ -125,6 +145,7 @@ class GroupSilenceWakeupRepository:
                 "synthetic": True,
                 "silence_wakeup": True,
                 "silence_minutes": int(silence_minutes),
+                "last_human_message_id": candidate.last_human_message_id,
                 "last_human_message_at": candidate.last_human_message_at.isoformat(),
                 "last_human_excerpt": candidate.last_human_excerpt,
             },
