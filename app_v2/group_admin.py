@@ -27,7 +27,6 @@ FRIENDS_DAY1_PROFILE: dict[str, Any] = {
     "silence_wakeup_start_hour": 10,
     "silence_wakeup_end_hour": 22,
     "silence_wakeup_daily_limit": 1,
-    "silence_wakeup_attempt_gap_minutes": 30,
 }
 
 
