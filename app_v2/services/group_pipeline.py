@@ -177,6 +177,21 @@ class GroupPipeline:
                 event,
                 recent_context=last_human_excerpt or None,
             )
+            # The excerpt is historical safety/context evidence, not a new
+            # human turn. Never let an old question/command promote this
+            # synthetic event into the explicit path and bypass unsolicited
+            # guardrails.
+            scene = scene.model_copy(
+                update={
+                    "direct_mention": False,
+                    "reply_to_bot": False,
+                    "question_to_bot": False,
+                    "command_intent": None,
+                    "memory_value": 0.0,
+                    "commitment_signal": 0.0,
+                    "decision_signal": 0.0,
+                }
+            )
         else:
             scene = self.scene_analyzer.analyze(event)
 
