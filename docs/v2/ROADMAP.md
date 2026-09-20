@@ -1,22 +1,28 @@
 # ROADMAP — НеНой 2.0
 
-## Актуальная контрольная точка — 2026-09-19
+## Актуальная контрольная точка — 2026-09-20
 
-Рабочая линия — `v2`. Текущий проверенный code checkpoint: `aae85beccda6598fcdeb39225298f9232859e109` (merge PR #101).
+Рабочая линия — `v2`. Текущий production/code checkpoint: `0fe8c260761c446aca9a3fdfd3ae1b00c6a8f05b` (merge PR #110).
 
-После прежней точки PR #90 завершены:
+После прежнего checkpoint `aae85be...` завершён не только code hardening, но и bounded production acceptance:
 
-- **TASK 29 / #92 — trustworthy memory + feedback + operation receipts**: PR #93 → `7d8b184...`, затем bounded replay/idempotency follow-up → `aa43b5d...`;
-- **TASK 30 / #94 — calendar/timezone reminders**: PR #96 → `9462912...`, post-merge P2 → PR #98 `16739b9...`, финальный bounded parser follow-up → PR #101 `aae85be...`;
-- последняя полная CI на финальном TASK 30 head: **469 passed, 1 warning** на isolated PostgreSQL 16 (run #253).
+- **TASK 29 / #92 — trustworthy memory + feedback + operation receipts** — merged и находится в текущем production tree;
+- **TASK 30 / #94 — calendar/timezone reminders** — merged, затем прошёл controlled Telegram acceptance: timezone clarification, persisted one-shot reminder и реальный fire;
+- live production drift по calendar schema/aborted transactions закрыт PR #106; migrations `0003/0004` реально применены в Railway, worker после этого стабильно стартует;
+- **bounded burst UX** закрыт PR #108;
+- **Scheduled Action Interpreter v1 / #109** закрыт PR #110: LLM определяет WHAT пользователь поручил делать во времени, а deterministic scheduler остаётся авторитетом для WHEN / timezone / limits / persistence / cancellation;
+- semantic action прошёл live acceptance на фразе `в течение следующих пяти минут каждую минуту удивляй меня`: серия реально сохранилась и выдала разные generated actions по минутным fire;
+- последняя полная CI на финальном PR #110 head: **494 passed, 1 warning** на isolated PostgreSQL 16.
 
-После финального bounded review два найденных P2 были закрыты в PR #101; после зелёного full CI новый широкий parser-аудит намеренно не запускался (D-049). Новый production deploy / live Telegram acceptance **ещё не подтверждён**. Runtime acceptance — следующий gate.
+Railway production на `0fe8c260...` подтверждён: web/worker `SUCCESS`, worker стартует после проверки migrations, webhook rebinding healthy, `/ready` → 200.
 
-Полный Friends Test не объявлен завершённым. **Кнопку «🛑 Стоп» под напоминаниями не добавляем**: решение пользователя D-046 остаётся в силе.
+**TASK 27 / #76 — Friends Test Preflight: PASS.** Исторически 2026-09-14 была выбрана и активирована ровно одна контролируемая тестовая группа с friends-profile и `initiative=3`; ordinary non-mention message дошёл до v2 и был оставлен без unsolicited reply, direct mention получил ответ. Privacy/scope, serious/sensitive, mute/silence, reactions/feedback и analytics boundaries покрыты текущим зелёным test suite. PR #84 подтверждает post-token-rotation webhook recovery path. Это закрывает preflight, но **не закрывает сам 7-дневный Friends Test**.
 
-Источник текущего состояния и границ проверки: [LIVE_TEST_STATUS.md](LIVE_TEST_STATUS.md). Принятые решения: [DECISIONS.md](DECISIONS.md), D-046–D-049.
+Следующий gate теперь не очередная функция и не новый parser-аудит, а **Controlled Friends Test — TASK 28 / Phase 9**.
 
----
+Полный Friends Test пока не объявлен завершённым. **Кнопку «🛑 Стоп» под напоминаниями не добавляем**: D-046 остаётся в силе.
+
+Источник текущего состояния: [LIVE_TEST_STATUS.md](LIVE_TEST_STATUS.md). Принятые решения: [DECISIONS.md](DECISIONS.md), включая D-046–D-051.
 
 ## Phase 0 — Product Vision
 
@@ -116,16 +122,17 @@ Stage F — Feedback / Cost / Reliability
 Stage G — Deployment / Real Test
 25 Railway v2                ✅ functional live runtime (historical check)
 26 Personal Smoke            ✅ functional PASS (2026-09-14)
-27 Friends Preflight         🟡 group test occurred; full checklist not re-audited
-28 Friends Test              🚧 live feedback / reminder fixes; not completed
+27 Friends Preflight         ✅ PASS — controlled group + silence-first + privacy regression
+28 Friends Test              🚧 NEXT — 7-day controlled product test
 ```
 
 После исходных 28 MVP-задач добавлен отдельный hardening-слой, не меняющий границы MVP:
 
 ```text
 29 Trusted memory / feedback / truthful receipts   ✅ merged + bounded replay follow-up
-30 Calendar/timezone reminders                     ✅ merged + bounded parser follow-up (#101)
-Next gate: deploy + bounded live acceptance         ⏭️ not performed
+30 Calendar/timezone reminders                     ✅ merged + live accepted
+31 Semantic scheduled actions / natural verbs       ✅ merged PR #110 + live accepted
+Next gate: Controlled Friends Test                  ⏭️ ready
 ```
 
 Артефакт: `MVP_BUILD_PLAN.md`. Текущие live-оговорки — в `LIVE_TEST_STATUS.md`; отметки реализации и зелёный CI не заменяют production health-check/live acceptance.
@@ -158,7 +165,7 @@ Telegram
 - transport INFO logs могли записать credential-bearing Telegram Bot API URL — logging hardened в PR #73; на том этапе была необходима ротация старого токена;
 - strict JSON schema Memory Mapper дала скрытый HTTP 400 — schema hardened в PR #74.
 
-Позднее PR #84 описал восстановление webhook после смены токена. Завершённость ротации и актуальные настройки production при обновлении документации 2026-09-15 повторно не проверялись: не объявлять старую операционную задачу ни автоматически закрытой, ни необходимой к повторному выполнению без проверки.
+PR #84 закрывает post-token-rotation failure mode: после смены токена web boot заново регистрирует webhook и проверяет endpoint. В текущем production-check 2026-09-20 webhook healthy (`pending_update_count=0`, Telegram last error absent), поэтому старый blocker ротации не переносится дальше в Friends Test.
 
 Артефакты: `LIVE_TEST_STATUS.md`, `tasks/TASK_26_PERSONAL_SMOKE_TEST.md`.
 
@@ -166,7 +173,7 @@ Telegram
 
 ## Phase 6 — Group MVP
 
-**Статус: BUILT IN CODE — CONTROLLED LIVE HISTORY; LATEST DEPLOY PENDING**
+**Статус: LIVE — PREFLIGHT PASS; CONTROLLED FRIENDS TEST NEXT**
 
 Group-код уже умеет:
 
@@ -224,48 +231,48 @@ Live tuning будет происходить только по результа
 
 ## Phase 8 — Feedback Loop
 
-**Статус: HARDENED IN TASK 29; LIVE ACCEPTANCE PENDING**
+**Статус: HARDENED / DEPLOYED; LIVE PRODUCT SIGNALS CONTINUE IN FRIENDS TEST**
 
 TASK 29 усилил Feedback/Memory слой: реакции и feedback привязываются к реальным bot interventions в том же scope, episode context bounded/replay-safe, evidence provenance валидируется, а memory/task/reminder confirmations опираются на фактические operation receipts.
 
 Replay/idempotency gaps, найденные после основного merge, закрыты отдельным follow-up `aa43b5d...`.
 
-Код и CI приняты; новый production deploy этой версии ещё не подтверждён.
+Код находится в текущем production tree; отдельный Friends Test должен дать уже не технический smoke, а продуктовые feedback/retention сигналы.
 
 ---
 
 ## Phase 9 — Friends Test
 
-**Статус: CODE HARDENING DONE; DEPLOY/LIVE ACCEPTANCE PENDING; ПОЛНЫЙ FRIENDS TEST НЕ ЗАКРЫТ**
+**Статус: READY TO START — TASK 27 PREFLIGHT PASS; TASK 28 IS THE NEXT PRODUCT GATE**
 
-Групповой тест уже дал реальные обращения и инциденты, из которых выросли TASK 29 и TASK 30. Кодовые исправления завершены до `v2@aae85be...`, но эта версия ещё не прошла отдельный production deploy/live acceptance. Это не означает, что все дни Friends Test пройдены или что текущий состав подключённых групп проверен заново.
+Технический полигон уже доказал transport, memory boundaries, truthful receipts, calendar reminders, cancellation, bounded bursts и semantic scheduled actions. Следующая цель — не доказать, что бот умеет отвечать, а проверить, становится ли НеНой самостоятельным участником живой группы.
 
-План 7 дней живого теста остаётся ориентиром, а не отчётом о выполненных днях:
+7-дневный план:
 
-- День 1–2: low initiative, наблюдение.
-- День 3–4: callbacks ON, medium initiative.
-- День 5–7: высокий roast, profanity по настройке группы, adaptive initiative.
+- **Дни 1–2 — low initiative:** НеНой в основном наблюдает/запоминает, нормально отвечает на прямые обращения; unsolicited вмешательства редкие.
+- **Дни 3–4 — medium initiative + cautious callbacks:** увеличиваем инициативу только если первые два дня не дали явного раздражения; смотрим на уместность callback и running jokes.
+- **Дни 5–7 — higher character pressure:** больше roast/callback и разрешённой группе резкости только при здоровой реакции; negative feedback имеет больший вес, чем positive.
 
-Для подключения новой группы сохраняется контролируемый preflight:
+Главная North Star:
 
-1. проверить безопасность текущих credentials; не повторять ротацию вслепую;
-2. проверить настройку BotFather `/setprivacy` для передачи обычных групповых сообщений;
-3. получить явный выбор конкретной тестовой группы;
-4. добавить НеНоя 2.0 и получить хотя бы один group update;
-5. активировать именно выбранную группу через whitelist с согласованным профилем;
-6. провести direct mention + ordinary message smoke и проверить изоляцию её контекста.
+> **Количество участников, кроме владельца, которые сами начали обращаться к НеНою повторно.**
 
-Этот checklist не является указанием заново подключать уже работающую группу. Статус второй группы и полнота preflight в текущей документационной задаче не проверялись.
+Дополнительные сигналы:
 
-Следующий gate: отдельно согласованный deploy актуального `v2` и bounded live acceptance truthful receipts + calendar/timezone reminders + существующей отмены (reply / адресат / вся группа). Он не запускается автоматически этой документационной фиксацией и пока не отмечен как PASS.
+- organic participants;
+- direct mentions / replies;
+- повторные обращения одного и того же человека;
+- reactions и reaction quality;
+- roast hit/miss;
+- callback hit/miss;
+- ignored unsolicited interventions;
+- negative feedback / mute;
+- organic memory/reminder/scheduled-action use;
+- cost per active group / active participant.
 
-Главная Group North Star:
+Правило теста: в течение Friends Test кодим только воспроизводимые live-проблемы, которые мешают реальному сценарию или нарушают truthful/safety/privacy boundaries. Новые функции не добавляем только потому, что можем.
 
-> **Количество участников, кроме владельца, которые сами начали обращаться к НеНою.**
-
-Дополнительно: mentions, replies, reactions, roast hit rate, memory requests, reminders, ignored interventions, negative feedback, mute requests, bot removed.
-
----
+Preflight не означает broad rollout: новые группы не whitelist-ятся автоматически.
 
 ## Phase 10 — Product Review v0.2
 
@@ -344,6 +351,6 @@ Group: roast, sarcasm, profanity level/frequency, initiative, callbacks, max int
 
 # Critical Path
 
-`Vision ✅ → Personality ✅ → Memory ✅ → Dispatcher ✅ → Architecture ✅ → Build 01–24 ✅ → Railway / Personal Smoke ✅ (исторические проверки) → TASK 29 trusted memory/receipts ✅ → TASK 30 calendar/timezone ✅ → Deploy + bounded live acceptance ⏭️ → Controlled Friends Test 🚧 → Product Review v0.2 → Closed Beta → Monetization`
+`Vision ✅ → Personality ✅ → Memory ✅ → Dispatcher ✅ → Architecture ✅ → Build 01–24 ✅ → Railway / Personal Smoke ✅ → TASK 29 trusted memory/receipts ✅ → TASK 30 calendar/timezone ✅ → Semantic Scheduled Actions ✅ → Friends Preflight ✅ → Controlled Friends Test 🚧 → Product Review v0.2 → Settings UX → Closed Beta → Monetization`
 
-Проверенная точка GitHub: `v2@aae85beccda6598fcdeb39225298f9232859e109` (PR #101). Следующее подтверждение — не новая функция, а deploy/live acceptance актуального кода по границам из `LIVE_TEST_STATUS.md`.
+Проверенная production/code точка: `v2@0fe8c260761c446aca9a3fdfd3ae1b00c6a8f05b` (PR #110), full CI **494 passed, 1 warning**. Следующий шаг — не новая функция, а 7-дневный Controlled Friends Test.
