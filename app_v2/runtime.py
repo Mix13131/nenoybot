@@ -11,6 +11,7 @@ from app_v2.repositories.event_repo import EventRepository
 from app_v2.repositories.feedback_repo import FeedbackRepository
 from app_v2.repositories.group_context_repo import GroupContextRepository
 from app_v2.repositories.group_initiative_repo import GroupInitiativeRepository
+from app_v2.repositories.group_silence_wakeup_repo import GroupSilenceWakeupRepository
 from app_v2.repositories.intervention_repo import InterventionRepository
 from app_v2.repositories.maintenance_repo import MaintenanceRepository
 from app_v2.repositories.memory_repo import MemoryRepository
@@ -50,6 +51,7 @@ class RuntimeComponents:
     action_engine: ActionEngine
     telegram_sender: TelegramSender
     maintenance_repo: MaintenanceRepository
+    silence_wakeup_repo: GroupSilenceWakeupRepository
 
 
 class RuntimeEventHandler:
@@ -95,6 +97,7 @@ def build_runtime(conn: Any, config: AppConfig) -> RuntimeComponents:
     usage_repo = UsageRepository(conn)
     group_context_repo = GroupContextRepository(conn)
     group_initiative_repo = GroupInitiativeRepository(conn)
+    silence_wakeup_repo = GroupSilenceWakeupRepository(conn)
     maintenance_repo = MaintenanceRepository(conn)
 
     adapter = OpenAIAdapter(config, usage_repo=usage_repo)
@@ -139,6 +142,7 @@ def build_runtime(conn: Any, config: AppConfig) -> RuntimeComponents:
         memory_mapper=memory_mapper,
         group_reminder_service=GroupReminderService(reminder_repo),
         scheduled_action_interpreter=ScheduledActionInterpreter(adapter),
+        silence_wakeup_guard=silence_wakeup_repo,
     )
 
     action_engine = ActionEngine(task_repo=task_repo, reminder_repo=reminder_repo)
@@ -156,4 +160,5 @@ def build_runtime(conn: Any, config: AppConfig) -> RuntimeComponents:
         action_engine=action_engine,
         telegram_sender=telegram_sender,
         maintenance_repo=maintenance_repo,
+        silence_wakeup_repo=silence_wakeup_repo,
     )
