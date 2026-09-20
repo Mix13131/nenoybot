@@ -14,8 +14,8 @@ class SilenceWakeupCandidate:
     last_human_message_id: int
     last_human_message_at: datetime
     last_human_excerpt: str
-    last_successful_wakeup_at: datetime | None
-    last_attempt_at: datetime | None
+    last_successful_wakeup_message_id: int | None
+    last_attempt_message_id: int | None
 
 
 class GroupSilenceWakeupRepository:
@@ -35,21 +35,25 @@ class GroupSilenceWakeupRepository:
                 last_human.created_at,
                 LEFT(COALESCE(last_human.text, ''), 700),
                 (
-                    SELECT MAX(i.created_at)
+                    SELECT (e.payload -> 'metadata' ->> 'last_human_message_id')::bigint
                     FROM interventions i
                     JOIN events e ON e.event_id=i.event_id
                     WHERE i.scope_type='group'
                       AND i.scope_id=c.telegram_chat_id::text
                       AND i.primary_action='reply'
                       AND e.event_type='group_silence_wakeup'
-                ) AS last_successful_wakeup_at,
+                    ORDER BY i.created_at DESC, i.id DESC
+                    LIMIT 1
+                ) AS last_successful_wakeup_message_id,
                 (
-                    SELECT MAX(e.created_at)
+                    SELECT (e.payload -> 'metadata' ->> 'last_human_message_id')::bigint
                     FROM events e
                     WHERE e.scope_type='group'
                       AND e.scope_id=c.telegram_chat_id::text
                       AND e.event_type='group_silence_wakeup'
-                ) AS last_attempt_at
+                    ORDER BY e.created_at DESC, e.id DESC
+                    LIMIT 1
+                ) AS last_attempt_message_id
             FROM chats c
             JOIN LATERAL (
                 SELECT m.id, m.created_at, m.text
@@ -75,8 +79,12 @@ class GroupSilenceWakeupRepository:
                 last_human_message_id=int(row[3]),
                 last_human_message_at=row[4],
                 last_human_excerpt=str(row[5] or ""),
-                last_successful_wakeup_at=row[6],
-                last_attempt_at=row[7],
+                last_successful_wakeup_message_id=(
+                    int(row[6]) if row[6] is not None else None
+                ),
+                last_attempt_message_id=(
+                    int(row[7]) if row[7] is not None else None
+                ),
             )
             for row in rows
         ]
