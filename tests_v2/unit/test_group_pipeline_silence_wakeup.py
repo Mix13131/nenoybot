@@ -45,7 +45,15 @@ class Access:
                 is_whitelisted=True,
                 is_active=True,
                 silent_until=None,
-                profile={"profile": "friends", "initiative": 3},
+                profile={
+                    "profile": "friends",
+                    "initiative": 3,
+                    "unsolicited_enabled": True,
+                    "timezone": "Europe/Moscow",
+                    "silence_wakeup_enabled": True,
+                    "silence_wakeup_start_hour": 10,
+                    "silence_wakeup_end_hour": 22,
+                },
                 participant=ParticipantContext(telegram_user_id=None),
             ),
         )
@@ -183,4 +191,28 @@ def test_new_human_message_makes_queued_silence_wakeup_stale():
     assert scene.calls == []
     assert generator.calls == 0
     assert interventions.rows == []
+    assert outbox.items == []
+
+
+
+def test_disabled_or_out_of_window_profile_drops_queued_wakeup():
+    scene = Scene()
+    pipeline, generator, _, outbox = build(scene)
+    original = pipeline.access_service.evaluate
+
+    def closed_access(evt, *, now=None):
+        result = original(evt, now=now)
+        profile = dict(result.context.profile)
+        profile["silence_wakeup_enabled"] = False
+        context = result.context.__class__(
+            **{**result.context.__dict__, "profile": profile}
+        )
+        return result.__class__(result.allowed, result.reason, context)
+
+    pipeline.access_service.evaluate = closed_access
+    result = pipeline.process(event(), now=NOW)
+
+    assert result.primary_action is PrimaryAction.IGNORE
+    assert result.access_reason == "silence_wakeup_window_closed"
+    assert generator.calls == 0
     assert outbox.items == []
