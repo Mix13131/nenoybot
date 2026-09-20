@@ -254,3 +254,32 @@ Personal profile — в user context, Group profile — в chat context, Partici
 - следующий gate после принятого code checkpoint — deploy + bounded live acceptance, а не очередная полировка parser/architecture.
 
 Это stop-rule процесса, а не утверждение, что в коде больше не существует ни одного edge case. Если live-test показывает реальную ошибку, она снова становится предметом отдельной bounded задачи.
+
+
+## 2026-09-20
+
+### D-050 — Scheduled Action Interpreter отделяет WHAT от WHEN
+
+После live-сигнала с естественными глаголами (`пиши`, `удивляй`, `развлекай`, `спрашивай` и т.п.) новые действия во времени больше не расширяются verb allowlist-ом в reminder regex.
+
+- semantic classifier определяет **WHAT** пользователь поручил НеНою делать;
+- deterministic scheduler остаётся авторитетом для **WHEN**: time parsing, timezone, limits, persistence, dedupe и cancellation;
+- canonical reminder regex остаётся fail-safe fallback для уже доказанных legacy-команд;
+- unsupported external-data capabilities fail closed;
+- любой future-action promise требует подтверждённого persisted operation receipt;
+- scheduled `generate_text` на fire выполняет `action_instruction`, а не напоминает о том, что пользователь когда-то просил выполнить действие.
+
+Реализация: PR #110, production/code checkpoint `0fe8c260761c446aca9a3fdfd3ae1b00c6a8f05b`. Live acceptance пройден на novel verb `удивляй`.
+
+### D-051 — Friends Test Preflight завершён; следующий gate — 7-дневный продуктовый тест
+
+TASK 27 / #76 считается PASS на основании controlled group activation, live ordinary-message silence-first проверки, live direct mention smoke и текущего privacy/silence/reaction/analytics regression suite.
+
+Это разрешает начать **один controlled Friends Test**, но не broad rollout.
+
+- новые группы не whitelist-ятся автоматически;
+- Days 1–2 начинаются с low initiative;
+- усиление initiative/roast/callback происходит только по здоровой живой реакции;
+- главный North Star — участники кроме владельца, которые сами начинают обращаться к НеНою повторно;
+- во время теста новые функции не добавляются без реального live-сигнала;
+- после 7 дней выполняется Product Review v0.2, а не автоматический переход к Settings/Closed Beta.
