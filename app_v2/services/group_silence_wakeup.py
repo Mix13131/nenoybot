@@ -98,17 +98,13 @@ class GroupSilenceWakeupService:
             if candidate.silent_until and candidate.silent_until > current:
                 continue
             if (
-                candidate.last_successful_wakeup_at is not None
-                and candidate.last_successful_wakeup_at >= candidate.last_human_message_at
+                candidate.last_successful_wakeup_message_id
+                == candidate.last_human_message_id
             ):
-                # One successful wakeup per silence episode. If humans do not
-                # respond, НеНой does not start talking to himself.
+                # One successful wakeup per exact human silence episode.
                 continue
-            if (
-                candidate.last_attempt_at is not None
-                and candidate.last_attempt_at >= candidate.last_human_message_at
-            ):
-                # One attempt per silence episode even if later policy/generation
+            if candidate.last_attempt_message_id == candidate.last_human_message_id:
+                # One attempt per exact episode even if later policy/generation
                 # decides not to speak. A newer human message opens a new episode.
                 continue
 
