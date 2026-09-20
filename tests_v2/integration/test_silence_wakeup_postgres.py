@@ -103,9 +103,9 @@ def test_postgres_silence_wakeup_candidate_and_event_are_durable():
                 chat_id, user_id, telegram_message_id, text,
                 message_type, created_at
             )
-            VALUES (%s, %s, 78, 'новая реплика', 'text', %s)
+            VALUES (%s, NULL, 78, 'анонимная новая реплика', 'text', %s)
             """,
-            (chat_row[0], user_row[0], now + timedelta(seconds=1)),
+            (chat_row[0], now + timedelta(seconds=1)),
         )
         conn.commit()
         assert repo.is_current_episode(str(chat_id), item.last_human_message_id) is False
