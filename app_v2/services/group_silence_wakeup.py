@@ -29,6 +29,45 @@ def _int(value: Any, default: int, *, low: int, high: int) -> int:
     return max(low, min(high, parsed))
 
 
+def silence_wakeup_window_open(
+    profile: dict[str, Any],
+    *,
+    now: datetime,
+) -> bool:
+    if now.tzinfo is None or now.utcoffset() is None:
+        raise ValueError("now must be timezone-aware")
+    if not _bool(profile.get("silence_wakeup_enabled"), False):
+        return False
+    if not _bool(profile.get("unsolicited_enabled"), False):
+        return False
+
+    timezone_name = str(profile.get("timezone") or "").strip()
+    if not timezone_name:
+        return False
+    try:
+        local_tz = ZoneInfo(timezone_name)
+    except ZoneInfoNotFoundError:
+        return False
+
+    start_hour = _int(
+        profile.get("silence_wakeup_start_hour"),
+        10,
+        low=0,
+        high=23,
+    )
+    end_hour = _int(
+        profile.get("silence_wakeup_end_hour"),
+        22,
+        low=1,
+        high=24,
+    )
+    if start_hour >= end_hour:
+        return False
+
+    local_now = now.astimezone(local_tz)
+    return start_hour <= local_now.hour < end_hour
+
+
 class GroupSilenceWakeupService:
     """Create one durable proactive event when an approved group goes quiet."""
 
@@ -50,19 +89,11 @@ class GroupSilenceWakeupService:
 
         for candidate in self.repo.list_candidates(limit=50):
             profile = dict(candidate.profile or {})
-            if not _bool(profile.get("silence_wakeup_enabled"), False):
-                continue
-            if not _bool(profile.get("unsolicited_enabled"), False):
+            if not silence_wakeup_window_open(profile, now=current):
                 continue
 
             timezone_name = str(profile.get("timezone") or "").strip()
-            if not timezone_name:
-                continue
-            try:
-                local_tz = ZoneInfo(timezone_name)
-            except ZoneInfoNotFoundError:
-                continue
-
+            local_tz = ZoneInfo(timezone_name)
             threshold_minutes = _int(
                 profile.get("silence_wakeup_after_minutes"),
                 180,
@@ -75,19 +106,7 @@ class GroupSilenceWakeupService:
                 low=0,
                 high=5,
             )
-            start_hour = _int(
-                profile.get("silence_wakeup_start_hour"),
-                10,
-                low=0,
-                high=23,
-            )
-            end_hour = _int(
-                profile.get("silence_wakeup_end_hour"),
-                22,
-                low=1,
-                high=24,
-            )
-            if start_hour >= end_hour or daily_limit == 0:
+            if daily_limit == 0:
                 continue
 
             silence_minutes = int(
@@ -109,8 +128,6 @@ class GroupSilenceWakeupService:
                 continue
 
             local_now = current.astimezone(local_tz)
-            if not (start_hour <= local_now.hour < end_hour):
-                continue
             local_day_start = local_now.replace(
                 hour=0, minute=0, second=0, microsecond=0
             ).astimezone(timezone.utc)
