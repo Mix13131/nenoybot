@@ -142,3 +142,16 @@ def test_serious_last_scene_suppresses_silence_wakeup_before_generation():
     assert generator.calls == 0
     assert outbox.items == []
     assert interventions.rows[-1]["generated_text"] is None
+
+
+
+def test_historical_question_cannot_turn_silence_wakeup_into_explicit_bypass():
+    scene = Scene(SceneAnalysis(question_to_bot=True, command_intent="mute"))
+    pipeline, generator, _, outbox = build(scene)
+
+    result = pipeline.process(event("НеНой, ты тут?"), now=NOW)
+
+    assert result.primary_action is PrimaryAction.REPLY
+    assert result.mode is ResponseMode.GROUP_BANTER
+    assert generator.calls == 1
+    assert len(outbox.items) == 1
