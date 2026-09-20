@@ -21,6 +21,13 @@ FRIENDS_DAY1_PROFILE: dict[str, Any] = {
     "profanity_frequency": 3,
     "sensitivity": 8,
     "callback_fatigue_minutes": 180,
+    "timezone": "Europe/Moscow",
+    "silence_wakeup_enabled": True,
+    "silence_wakeup_after_minutes": 180,
+    "silence_wakeup_start_hour": 10,
+    "silence_wakeup_end_hour": 22,
+    "silence_wakeup_daily_limit": 1,
+    "silence_wakeup_attempt_gap_minutes": 30,
 }
 
 
