@@ -170,3 +170,72 @@ def test_recent_bot_activity_and_ignored_intervention_reduce_score() -> None:
     assert decision.intervention_score == 20
     assert ReasonCode.BOT_SPOKE_RECENTLY in decision.reason_codes
     assert ReasonCode.PREVIOUS_UNSOLICITED_IGNORED in decision.reason_codes
+
+
+
+def test_silence_wakeup_gets_one_explicit_unsolicited_reply_path():
+    decision = decide(
+        _event(event_type=EventType.GROUP_SILENCE_WAKEUP),
+        SceneAnalysis(),
+        DispatcherPolicyState(
+            cooldown_active=False,
+            unsolicited_today=0,
+            soft_daily_limit=6,
+            hard_daily_limit=10,
+        ),
+    )
+
+    assert decision.primary_action is PrimaryAction.REPLY
+    assert decision.mode is ResponseMode.GROUP_BANTER
+    assert decision.reason_codes == [ReasonCode.SILENCE_REENGAGEMENT]
+    assert decision.metadata["unsolicited"] is True
+    assert decision.metadata["silence_reengagement"] is True
+
+
+def test_silence_wakeup_can_use_grounded_callback_mode():
+    decision = decide(
+        _event(event_type=EventType.GROUP_SILENCE_WAKEUP),
+        SceneAnalysis(callback_opportunity=0.9),
+        DispatcherPolicyState(
+            allow_callbacks=True,
+            cooldown_active=False,
+            unsolicited_today=0,
+            soft_daily_limit=6,
+        ),
+    )
+
+    assert decision.primary_action is PrimaryAction.REPLY
+    assert decision.mode is ResponseMode.GROUP_CALLBACK
+
+
+def test_silence_wakeup_is_blocked_by_soft_limit():
+    decision = decide(
+        _event(event_type=EventType.GROUP_SILENCE_WAKEUP),
+        SceneAnalysis(),
+        DispatcherPolicyState(
+            unsolicited_today=6,
+            soft_daily_limit=6,
+            hard_daily_limit=10,
+        ),
+    )
+
+    assert decision.primary_action is PrimaryAction.IGNORE
+    assert decision.reason_codes == [ReasonCode.SOFT_DAILY_LIMIT]
+
+
+def test_silence_wakeup_is_blocked_by_serious_or_sensitive_scene():
+    serious = decide(
+        _event(event_type=EventType.GROUP_SILENCE_WAKEUP),
+        SceneAnalysis(seriousness_score=0.8),
+        DispatcherPolicyState(),
+    )
+    sensitive = decide(
+        _event(event_type=EventType.GROUP_SILENCE_WAKEUP),
+        SceneAnalysis(sensitivity_score=0.8),
+        DispatcherPolicyState(),
+    )
+
+    assert serious.primary_action is PrimaryAction.IGNORE
+    assert serious.reason_codes == [ReasonCode.SERIOUS_CONTEXT]
+    assert sensitive.primary_action is PrimaryAction.IGNORE
+    assert sensitive.reason_codes == [ReasonCode.SENSITIVE_CONTEXT]
