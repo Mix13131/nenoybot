@@ -247,6 +247,13 @@ def decide(
         )
 
     if event.event_type is EventType.GROUP_SILENCE_WAKEUP:
+        if int(state.metadata.get("negative_feedback_recent", 0) or 0) > 0:
+            return DispatcherDecision(
+                primary_action=PrimaryAction.IGNORE,
+                intervention_score=0,
+                reason_codes=[ReasonCode.NEGATIVE_FEEDBACK_RECENT],
+                metadata={"policy_version": POLICY_VERSION, "unsolicited": True, **state.metadata},
+            )
         if state.unsolicited_today >= state.soft_daily_limit:
             return DispatcherDecision(
                 primary_action=PrimaryAction.IGNORE,
