@@ -165,7 +165,7 @@ Telegram
 - transport INFO logs могли записать credential-bearing Telegram Bot API URL — logging hardened в PR #73; на том этапе была необходима ротация старого токена;
 - strict JSON schema Memory Mapper дала скрытый HTTP 400 — schema hardened в PR #74.
 
-Позднее PR #84 описал восстановление webhook после смены токена. Завершённость ротации и актуальные настройки production при обновлении документации 2026-09-15 повторно не проверялись: не объявлять старую операционную задачу ни автоматически закрытой, ни необходимой к повторному выполнению без проверки.
+PR #84 закрывает post-token-rotation failure mode: после смены токена web boot заново регистрирует webhook и проверяет endpoint. В текущем production-check 2026-09-20 webhook healthy (`pending_update_count=0`, Telegram last error absent), поэтому старый blocker ротации не переносится дальше в Friends Test.
 
 Артефакты: `LIVE_TEST_STATUS.md`, `tasks/TASK_26_PERSONAL_SMOKE_TEST.md`.
 
@@ -237,7 +237,7 @@ TASK 29 усилил Feedback/Memory слой: реакции и feedback при
 
 Replay/idempotency gaps, найденные после основного merge, закрыты отдельным follow-up `aa43b5d...`.
 
-Код и CI приняты; новый production deploy этой версии ещё не подтверждён.
+Код находится в текущем production tree; отдельный Friends Test должен дать уже не технический smoke, а продуктовые feedback/retention сигналы.
 
 ---
 
