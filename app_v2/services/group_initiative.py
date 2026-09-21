@@ -5,6 +5,7 @@ from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
+from app_v2.domain.connectors import ConnectorConfig
 from app_v2.domain.enums import EventType, ScopeType
 from app_v2.domain.events import EventEnvelope
 from app_v2.repositories.group_context_repo import GroupContext
@@ -90,8 +91,13 @@ class GroupInitiativeService:
     intents and are not blocked by these unsolicited guardrails.
     """
 
-    def __init__(self, repo: Any) -> None:
+    def __init__(
+        self,
+        repo: Any,
+        connector_resolver: Any | None = None,
+    ) -> None:
         self.repo = repo
+        self.connector_resolver = connector_resolver
 
     @staticmethod
     def is_silence_request(text: str | None) -> bool:
@@ -104,19 +110,34 @@ class GroupInitiativeService:
         event: EventEnvelope,
         group_context: GroupContext,
         now: datetime,
+        connector_config: ConnectorConfig | None = None,
     ) -> GroupInitiativeSnapshot:
         if now.tzinfo is None or now.utcoffset() is None:
             raise ValueError("now must be timezone-aware")
 
-        profile = dict(group_context.profile or {})
-        base_cooldown = _int(profile.get("cooldown_minutes"), 12, low=1, high=1440)
-        soft_limit = _int(profile.get("soft_daily_limit"), 6, low=0, high=100)
-        hard_limit = _int(profile.get("hard_daily_limit"), 10, low=max(soft_limit, 1), high=200)
-        base_initiative = _int(profile.get("initiative"), 6, low=0, high=10)
-        mute_minutes = _int(profile.get("mute_minutes"), 120, low=1, high=10080)
-        max_bot_share = _float(profile.get("bot_share_max"), 0.10, low=0.01, high=1.0)
-        share_window_minutes = _int(profile.get("bot_share_window_minutes"), 60, low=5, high=1440)
-        min_messages_for_share = _int(profile.get("bot_share_min_messages"), 10, low=1, high=1000)
+        if connector_config is None and self.connector_resolver is not None:
+            connector_config = self.connector_resolver.resolve(group_context)
+
+        if connector_config is not None:
+            behavior = connector_config.behavior
+            base_cooldown = behavior.cooldown_minutes
+            soft_limit = behavior.soft_daily_limit
+            hard_limit = max(behavior.hard_daily_limit, max(soft_limit, 1))
+            base_initiative = behavior.initiative
+            mute_minutes = behavior.mute_minutes
+            max_bot_share = behavior.bot_share_max
+            share_window_minutes = behavior.bot_share_window_minutes
+            min_messages_for_share = behavior.bot_share_min_messages
+        else:
+            profile = dict(group_context.profile or {})
+            base_cooldown = _int(profile.get("cooldown_minutes"), 12, low=1, high=1440)
+            soft_limit = _int(profile.get("soft_daily_limit"), 6, low=0, high=100)
+            hard_limit = _int(profile.get("hard_daily_limit"), 10, low=max(soft_limit, 1), high=200)
+            base_initiative = _int(profile.get("initiative"), 6, low=0, high=10)
+            mute_minutes = _int(profile.get("mute_minutes"), 120, low=1, high=10080)
+            max_bot_share = _float(profile.get("bot_share_max"), 0.10, low=0.01, high=1.0)
+            share_window_minutes = _int(profile.get("bot_share_window_minutes"), 60, low=5, high=1440)
+            min_messages_for_share = _int(profile.get("bot_share_min_messages"), 10, low=1, high=1000)
 
         silence_requested = is_addressed_to_bot(event) and (
             event.event_type is EventType.MUTE_REQUEST
