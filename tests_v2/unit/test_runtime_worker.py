@@ -12,6 +12,7 @@ from app_v2.workers.main import (
     _bootstrap_group_from_env,
     _configure_logging,
     _enable_silence_wakeup_group_from_env,
+    _migrate_connector_group_from_env,
 )
 
 
@@ -426,3 +427,122 @@ def test_silence_wakeup_profile_patch_fails_closed_on_ambiguous_title(monkeypatc
 
     assert _enable_silence_wakeup_group_from_env(object()) is None
     assert calls == []
+
+
+
+def test_connector_migration_exact_title_preserves_legacy_profile(monkeypatch):
+    import app_v2.workers.main as worker_main
+    from app_v2.repositories.group_context_repo import GroupContext, ParticipantContext
+
+    monkeypatch.setenv(
+        "NENOY_V2_MIGRATE_CONNECTOR_GROUP_TITLE",
+        "Группа НеНой Тест",
+    )
+    created = []
+    legacy_profile = {
+        "profile": "friends",
+        "unsolicited_enabled": True,
+        "initiative": 3,
+        "humor": 8,
+        "sarcasm": 8,
+        "roast": 7,
+        "callback": 8,
+        "timezone": "Europe/Moscow",
+        "silence_wakeup_enabled": True,
+    }
+
+    class FakeGroupRepo:
+        def __init__(self, conn):
+            pass
+
+        def list_groups(self, limit=100):
+            return [
+                SimpleNamespace(
+                    title="Группа НеНой Тест",
+                    telegram_chat_id="-1",
+                    is_whitelisted=True,
+                    is_active=True,
+                    profile=legacy_profile,
+                ),
+            ]
+
+        def load(self, telegram_chat_id, actor_user_id):
+            return GroupContext(
+                internal_chat_id=1,
+                telegram_chat_id="-1",
+                title="Группа НеНой Тест",
+                is_whitelisted=True,
+                is_active=True,
+                silent_until=None,
+                profile=dict(legacy_profile),
+                participant=ParticipantContext(telegram_user_id=None),
+            )
+
+    class FakeConnectorRepo:
+        def __init__(self, conn):
+            pass
+
+        def create(self, **kwargs):
+            created.append(kwargs)
+            return True
+
+    monkeypatch.setattr(worker_main, "GroupContextRepository", FakeGroupRepo)
+    monkeypatch.setattr(worker_main, "ConnectorRepository", FakeConnectorRepo)
+
+    result = _migrate_connector_group_from_env(object())
+
+    assert result == {
+        "title": "Группа НеНой Тест",
+        "created": True,
+        "version": 1,
+    }
+    assert len(created) == 1
+    connector = created[0]["config"]
+    assert connector.identity.preset == "friends"
+    assert connector.behavior.initiative == 3
+    assert connector.personality.values["humor"] == 8
+    assert connector.personality.values["roast"] == 7
+    assert connector.memory.cross_connector_memory is False
+    assert created[0]["scope_type"] == "group"
+
+
+def test_connector_migration_requires_approved_unique_group(monkeypatch):
+    import app_v2.workers.main as worker_main
+
+    monkeypatch.setenv(
+        "NENOY_V2_MIGRATE_CONNECTOR_GROUP_TITLE",
+        "Лучшие ЗДЕСЬ",
+    )
+    created = []
+
+    class FakeGroupRepo:
+        def __init__(self, conn):
+            pass
+
+        def list_groups(self, limit=100):
+            return [
+                SimpleNamespace(
+                    title="Лучшие ЗДЕСЬ",
+                    telegram_chat_id="-2",
+                    is_whitelisted=False,
+                    is_active=True,
+                    profile={},
+                ),
+            ]
+
+        def load(self, *args, **kwargs):
+            raise AssertionError("must not load unapproved group")
+
+    class FakeConnectorRepo:
+        def __init__(self, conn):
+            pass
+
+        def create(self, **kwargs):
+            created.append(kwargs)
+            return True
+
+    monkeypatch.setattr(worker_main, "GroupContextRepository", FakeGroupRepo)
+    monkeypatch.setattr(worker_main, "ConnectorRepository", FakeConnectorRepo)
+
+    assert _migrate_connector_group_from_env(object()) is None
+    assert created == []
