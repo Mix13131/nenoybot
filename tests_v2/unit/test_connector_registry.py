@@ -184,3 +184,24 @@ def test_persisted_scope_binding_cannot_be_overridden_by_json() -> None:
 
     assert result.connector_id == persisted.connector_id
     assert not hasattr(result, "scope_id")
+
+
+
+def test_registry_scope_binding_type_mismatch_is_rejected_before_storage() -> None:
+    from app_v2.repositories.connector_repo import ConnectorRepository
+
+    config = migrated_legacy_connector(context())
+    channel_config = replace(config, connector_type="telegram_channel")
+
+    class NoDB:
+        def transaction(self):
+            raise AssertionError("database must not be touched")
+
+    repo = ConnectorRepository(NoDB())
+
+    with pytest.raises(ValueError, match="group scope requires"):
+        repo.create(
+            scope_type="group",
+            scope_id=context().telegram_chat_id,
+            config=channel_config,
+        )
