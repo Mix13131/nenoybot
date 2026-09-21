@@ -288,6 +288,20 @@ def _migrate_connector_group_from_env(conn) -> dict[str, Any] | None:
     }
 
 
+def _rollback_connector_onboarding(conn) -> None:
+    rollback = getattr(conn, "rollback", None)
+    if callable(rollback):
+        # Do not swallow rollback failure: continuing on an unusable shared
+        # connection is worse than restarting the worker with a fresh one.
+        rollback()
+
+
+def _commit_connector_onboarding(conn) -> None:
+    commit = getattr(conn, "commit", None)
+    if callable(commit):
+        commit()
+
+
 def _apply_connector_preset_from_env(conn) -> dict[str, Any] | None:
     """One-shot exact-title onboarding into persisted Connector Registry."""
 
@@ -314,6 +328,7 @@ def _apply_connector_preset_from_env(conn) -> dict[str, Any] | None:
             created_by="env_connector_preset_onboarding",
         )
     except ConnectorOnboardingError as exc:
+        _rollback_connector_onboarding(conn)
         logger.error(
             "connector preset onboarding failed title=%r preset=%r reason=%s",
             title,
@@ -322,8 +337,10 @@ def _apply_connector_preset_from_env(conn) -> dict[str, Any] | None:
         )
         return None
     except Exception:
-        # Optional onboarding must never take down the shared production
-        # worker. Failure leaves the new group unconfigured/unwhitelisted.
+        # A failed PostgreSQL statement can leave psycopg in an aborted
+        # transaction. Reset the shared connection before the normal worker
+        # loop is allowed to reuse it.
+        _rollback_connector_onboarding(conn)
         logger.exception(
             "connector preset onboarding runtime failure title=%r preset=%r",
             title,
@@ -331,6 +348,7 @@ def _apply_connector_preset_from_env(conn) -> dict[str, Any] | None:
         )
         return None
 
+    _commit_connector_onboarding(conn)
     logger.warning(
         "connector preset onboarding applied title=%r preset=%r created=%s version=%d",
         result.title,
