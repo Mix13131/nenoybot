@@ -4,6 +4,7 @@ from dataclasses import dataclass
 from datetime import datetime
 from typing import Any
 
+from app_v2.domain.connectors import ConnectorConfig
 from app_v2.domain.enums import EventType, ScopeType
 from app_v2.domain.events import EventEnvelope, SceneAnalysis
 from app_v2.repositories.group_context_repo import GroupContext
@@ -77,32 +78,58 @@ class GroupBehaviorEngine:
         group_context: GroupContext,
         scene: SceneAnalysis,
         now: datetime,
+        connector_config: ConnectorConfig | None = None,
     ) -> GroupBehaviorPlan:
         if event.scope_type is not ScopeType.GROUP:
             raise ValueError("GroupBehaviorEngine requires group scope")
 
-        profile = dict(group_context.profile or {})
+        legacy_profile = dict(group_context.profile or {})
         participant = dict(group_context.participant.profile or {})
         adaptation_raw = participant.get("personality_modifiers")
         adaptation = dict(adaptation_raw) if isinstance(adaptation_raw, dict) else {}
 
-        unsolicited_enabled = _bool(profile.get("unsolicited_enabled"), False)
+        if connector_config is not None:
+            profile = connector_config.personality.as_context_profile(
+                connector_config.identity.preset
+            )
+            unsolicited_enabled = connector_config.behavior.unsolicited_enabled
+            initiative = connector_config.behavior.initiative
+            fatigue = connector_config.behavior.callback_fatigue_minutes
+            connector_state = connector_config.public_state()
+        else:
+            profile = legacy_profile
+            unsolicited_enabled = _bool(profile.get("unsolicited_enabled"), False)
+            initiative = _int(profile.get("initiative"), 6)
+            fatigue = _int(
+                profile.get("callback_fatigue_minutes"),
+                180,
+                low=0,
+                high=1440,
+            )
+            connector_state = None
+
         roast_level = _int(profile.get("roast"), 9)
         callback_level = _int(profile.get("callback"), 10)
-        initiative = _int(profile.get("initiative"), 6)
         roast_tolerance = _int(participant.get("roast_tolerance"), 7)
-        fatigue = _int(profile.get("callback_fatigue_minutes"), 180, low=0, high=1440)
 
         policy_degraded = False
         initiative_unavailable = False
         dynamic = None
         if self.initiative_service is not None:
             try:
-                dynamic = self.initiative_service.evaluate(
-                    event=event,
-                    group_context=group_context,
-                    now=now,
-                )
+                if connector_config is not None:
+                    dynamic = self.initiative_service.evaluate(
+                        event=event,
+                        group_context=group_context,
+                        now=now,
+                        connector_config=connector_config,
+                    )
+                else:
+                    dynamic = self.initiative_service.evaluate(
+                        event=event,
+                        group_context=group_context,
+                        now=now,
+                    )
             except Exception:
                 policy_degraded = True
                 initiative_unavailable = True
@@ -290,6 +317,7 @@ class GroupBehaviorEngine:
                 "policy_degraded": policy_degraded,
                 "memory_unavailable": memory_unavailable,
                 "initiative_unavailable": initiative_unavailable,
+                "connector": connector_state,
                 **dynamic_metadata,
             },
         )
