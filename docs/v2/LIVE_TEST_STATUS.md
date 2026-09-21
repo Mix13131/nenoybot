@@ -6,7 +6,7 @@ Updated: 2026-09-21
 
 Рабочая линия — `v2`; `main`, legacy `app/` и legacy `tests/` без отдельного прямого решения не меняются.
 
-Текущая production/code точка: `0fe8c260761c446aca9a3fdfd3ae1b00c6a8f05b` — merge PR #110 в `v2`.
+Текущая production/code точка: `9697171b1bcf927bce465dedec052859a209f6fc` — merge PR #126 в `v2`.
 
 ### Что принято и доказано
 
@@ -18,17 +18,17 @@ Updated: 2026-09-21
 | #105 / #106 | production migrations + transaction rollback | **LIVE PASS**: `0003/0004` applied; worker stable |
 | #107 / #108 | bounded 1-minute burst in finite window | implemented |
 | #109 / #110 | Scheduled Action Interpreter v1 | **LIVE PASS** on novel verb `удивляй` |
-| Live UX 2026-09-21 | response depth / progressive disclosure | **FINDING ACCEPTED**; docs fixed, runtime implementation pending |
+| TASK 32 / #126 | response depth / progressive disclosure | **IMPLEMENTED + DEPLOYED**; live Telegram regression re-test pending |
 
-Последняя подтверждённая полная CI-проверка финального PR #110 head — **494 passed, 1 warning** на isolated PostgreSQL 16.
+Последняя подтверждённая полная CI-проверка финального PR #126 head — **570 passed, 1 warning** на isolated PostgreSQL 16.
 
-Railway после merge PR #110:
+Railway после merge PR #126:
 - `nenoy-v2-web` — `SUCCESS`;
 - `nenoy-v2-worker` — `SUCCESS`;
-- worker startup: migrations ready / no pending migrations;
+- worker startup: `No pending migrations`, worker started;
 - Telegram webhook configured, `pending_update_count=0`, Telegram last error absent;
-- `/ready` → 200;
-- после запуска нет новых traceback / aborted-transaction failures.
+- `/ready` → 200.
+
 
 ### Controlled live acceptance уже пройден
 
@@ -53,7 +53,7 @@ Railway после merge PR #110:
 
 Нормативно закреплено в [PERSONALITY_SPEC.md](PERSONALITY_SPEC.md), §2.1 и [DECISIONS.md](DECISIONS.md), D-052.
 
-**Статус:** решение принято и документация обновлена; изменение runtime/prompt policy ещё не реализовано и не проверено live.
+**Статус:** runtime/prompt policy реализована PR #126 и развернута в production. Full CI: **570 passed, 1 warning**. Railway web/worker — `SUCCESS`. Финальный продуктовый PASS ещё не ставим: нужен повтор того же Telegram regression-case.
 
 ### TASK 27 / #76 — Friends Test Preflight: PASS
 
