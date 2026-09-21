@@ -15,6 +15,10 @@ from app_v2.repositories.connector_repo import ConnectorRepository
 from app_v2.repositories.group_context_repo import GroupContextRepository
 from app_v2.repositories.group_initiative_repo import GroupInitiativeRepository
 from app_v2.runtime import RuntimeEventHandler, build_runtime
+from app_v2.services.connector_onboarding import (
+    ConnectorOnboardingError,
+    ConnectorOnboardingService,
+)
 from app_v2.services.connector_resolver import migrated_legacy_connector
 from app_v2.services.group_initiative import GroupInitiativeService
 from app_v2.services.group_silence_wakeup import GroupSilenceWakeupService
@@ -284,6 +288,50 @@ def _migrate_connector_group_from_env(conn) -> dict[str, Any] | None:
     }
 
 
+def _apply_connector_preset_from_env(conn) -> dict[str, Any] | None:
+    """One-shot exact-title onboarding into persisted Connector Registry."""
+
+    title = (
+        os.getenv("NENOY_V2_APPLY_CONNECTOR_PRESET_GROUP_TITLE") or ""
+    ).strip()
+    preset = (os.getenv("NENOY_V2_CONNECTOR_PRESET_NAME") or "").strip()
+    if not title and not preset:
+        return None
+    if not title or not preset:
+        logger.error(
+            "connector preset onboarding skipped: both title and preset are required"
+        )
+        return None
+
+    service = ConnectorOnboardingService(
+        group_repo=GroupContextRepository(conn),
+        connector_repo=ConnectorRepository(conn),
+    )
+    try:
+        result = service.apply_exact_title(
+            title=title,
+            preset_name=preset,
+            created_by="env_connector_preset_onboarding",
+        )
+    except ConnectorOnboardingError as exc:
+        logger.error(
+            "connector preset onboarding failed title=%r preset=%r reason=%s",
+            title,
+            preset,
+            str(exc),
+        )
+        return None
+
+    logger.warning(
+        "connector preset onboarding applied title=%r preset=%r created=%s version=%d",
+        result.title,
+        result.preset,
+        result.created,
+        result.version,
+    )
+    return result.as_public_dict()
+
+
 @dataclass
 class WorkerLoop:
     event_worker: Any
@@ -391,6 +439,7 @@ def run_forever() -> None:
         _bootstrap_group_from_env(conn)
         _enable_silence_wakeup_group_from_env(conn)
         _migrate_connector_group_from_env(conn)
+        _apply_connector_preset_from_env(conn)
         loop = build_worker_loop(conn, config)
         logger.info("nenoy-v2-worker started")
         while True:
