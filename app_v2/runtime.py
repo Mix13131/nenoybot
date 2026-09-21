@@ -7,6 +7,7 @@ from app_v2.adapters.openai_adapter import OpenAIAdapter
 from app_v2.adapters.telegram_sender import TelegramSender
 from app_v2.config import AppConfig
 from app_v2.domain.enums import EventType, ScopeType
+from app_v2.repositories.connector_repo import ConnectorRepository
 from app_v2.repositories.event_repo import EventRepository
 from app_v2.repositories.feedback_repo import FeedbackRepository
 from app_v2.repositories.group_context_repo import GroupContextRepository
@@ -21,7 +22,10 @@ from app_v2.repositories.reminder_repo import ReminderRepository
 from app_v2.repositories.task_repo import TaskRepository
 from app_v2.repositories.usage_repo import UsageRepository
 from app_v2.services.action_engine import ActionEngine
-from app_v2.services.connector_resolver import LegacyGroupConnectorResolver
+from app_v2.services.connector_resolver import (
+    LegacyGroupConnectorResolver,
+    PersistedGroupConnectorResolver,
+)
 from app_v2.services.context_builder import ContextBuilder
 from app_v2.services.feedback_collector import FeedbackCollector
 from app_v2.services.group_access import GroupAccessService
@@ -53,6 +57,8 @@ class RuntimeComponents:
     telegram_sender: TelegramSender
     maintenance_repo: MaintenanceRepository
     silence_wakeup_repo: GroupSilenceWakeupRepository
+    connector_repo: ConnectorRepository
+    connector_resolver: PersistedGroupConnectorResolver
 
 
 class RuntimeEventHandler:
@@ -99,6 +105,7 @@ def build_runtime(conn: Any, config: AppConfig) -> RuntimeComponents:
     group_context_repo = GroupContextRepository(conn)
     group_initiative_repo = GroupInitiativeRepository(conn)
     silence_wakeup_repo = GroupSilenceWakeupRepository(conn)
+    connector_repo = ConnectorRepository(conn)
     maintenance_repo = MaintenanceRepository(conn)
 
     adapter = OpenAIAdapter(config, usage_repo=usage_repo)
@@ -115,7 +122,10 @@ def build_runtime(conn: Any, config: AppConfig) -> RuntimeComponents:
     )
     response_generator = ResponseGenerator(adapter=adapter)
     feedback_collector = FeedbackCollector(feedback_repo)
-    connector_resolver = LegacyGroupConnectorResolver()
+    connector_resolver = PersistedGroupConnectorResolver(
+        connector_repo,
+        fallback=LegacyGroupConnectorResolver(),
+    )
 
     personal_pipeline = PersonalPipeline(
         scene_analyzer=scene_analyzer,
@@ -167,4 +177,6 @@ def build_runtime(conn: Any, config: AppConfig) -> RuntimeComponents:
         telegram_sender=telegram_sender,
         maintenance_repo=maintenance_repo,
         silence_wakeup_repo=silence_wakeup_repo,
+        connector_repo=connector_repo,
+        connector_resolver=connector_resolver,
     )

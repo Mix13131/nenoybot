@@ -11,9 +11,11 @@ from app_v2.adapters.postgres import connect
 from app_v2.config import load_config
 from app_v2.db.migrations import run_migrations
 from app_v2.group_admin import FRIENDS_DAY1_PROFILE
+from app_v2.repositories.connector_repo import ConnectorRepository
 from app_v2.repositories.group_context_repo import GroupContextRepository
 from app_v2.repositories.group_initiative_repo import GroupInitiativeRepository
 from app_v2.runtime import RuntimeEventHandler, build_runtime
+from app_v2.services.connector_resolver import migrated_legacy_connector
 from app_v2.services.group_initiative import GroupInitiativeService
 from app_v2.services.group_silence_wakeup import GroupSilenceWakeupService
 from app_v2.services.maintenance import MaintenanceService
@@ -219,6 +221,73 @@ def _enable_silence_wakeup_group_from_env(conn) -> dict[str, Any] | None:
     }
 
 
+def _migrate_connector_group_from_env(conn) -> dict[str, Any] | None:
+    """One-shot exact-title migration from legacy group_profile to Connector v1."""
+
+    title = (os.getenv("NENOY_V2_MIGRATE_CONNECTOR_GROUP_TITLE") or "").strip()
+    if not title:
+        return None
+
+    group_repo = GroupContextRepository(conn)
+    matches = [
+        row
+        for row in group_repo.list_groups(limit=100)
+        if (row.title or "").strip() == title
+    ]
+    if not matches:
+        logger.warning("connector migration skipped: title not found title=%r", title)
+        return None
+    if len(matches) != 1:
+        logger.error(
+            "connector migration skipped: ambiguous title=%r matches=%d",
+            title,
+            len(matches),
+        )
+        return None
+
+    match = matches[0]
+    if not match.is_whitelisted or not match.is_active:
+        logger.warning(
+            "connector migration skipped: group not approved title=%r whitelisted=%s active=%s",
+            title,
+            match.is_whitelisted,
+            match.is_active,
+        )
+        return None
+
+    context = group_repo.load(match.telegram_chat_id, None)
+    if context is None:
+        logger.error("connector migration skipped: context unavailable title=%r", title)
+        return None
+
+    connector = migrated_legacy_connector(context)
+    connector_repo = ConnectorRepository(conn)
+    created = connector_repo.create(
+        scope_type="group",
+        scope_id=context.telegram_chat_id,
+        config=connector,
+        created_by="legacy_profile_migration",
+    )
+    if not created:
+        logger.warning("connector migration skipped: already persisted title=%r", title)
+        return {
+            "title": title,
+            "created": False,
+            "version": 1,
+        }
+
+    logger.warning(
+        "connector migration completed title=%r version=%d",
+        title,
+        connector.version,
+    )
+    return {
+        "title": title,
+        "created": True,
+        "version": connector.version,
+    }
+
+
 @dataclass
 class WorkerLoop:
     event_worker: Any
@@ -292,8 +361,10 @@ def build_worker_loop(conn, config=None) -> WorkerLoop:
             repo=runtime.silence_wakeup_repo,
             group_context_repo=GroupContextRepository(conn),
             initiative_service=GroupInitiativeService(
-                GroupInitiativeRepository(conn)
+                GroupInitiativeRepository(conn),
+                connector_resolver=runtime.connector_resolver,
             ),
+            connector_resolver=runtime.connector_resolver,
         ),
         interval_seconds=max(
             60,
@@ -323,6 +394,7 @@ def run_forever() -> None:
     with connect(config.database_url) as conn:
         _bootstrap_group_from_env(conn)
         _enable_silence_wakeup_group_from_env(conn)
+        _migrate_connector_group_from_env(conn)
         loop = build_worker_loop(conn, config)
         logger.info("nenoy-v2-worker started")
         while True:
