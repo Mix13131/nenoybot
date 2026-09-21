@@ -14,6 +14,7 @@ from app_v2.workers.main import (
     _configure_logging,
     _enable_silence_wakeup_group_from_env,
     _migrate_connector_group_from_env,
+    _run_startup_hooks,
 )
 
 
@@ -880,3 +881,85 @@ def test_connector_preset_onboarding_rollback_failure_is_not_hidden(monkeypatch)
     import pytest
     with pytest.raises(RuntimeError, match="cannot be reset"):
         _apply_connector_preset_from_env(BrokenConn())
+
+
+
+def test_startup_hooks_commit_legacy_work_before_preset_onboarding(monkeypatch):
+    import app_v2.workers.main as worker_main
+
+    calls = []
+
+    class FakeConn:
+        def commit(self):
+            calls.append("commit")
+
+    monkeypatch.setattr(
+        worker_main,
+        "_bootstrap_group_from_env",
+        lambda conn: calls.append("bootstrap"),
+    )
+    monkeypatch.setattr(
+        worker_main,
+        "_enable_silence_wakeup_group_from_env",
+        lambda conn: calls.append("silence"),
+    )
+    monkeypatch.setattr(
+        worker_main,
+        "_migrate_connector_group_from_env",
+        lambda conn: calls.append("migrate"),
+    )
+
+    def onboarding(conn):
+        # Regression for P2 4062162908: preset onboarding starts only after
+        # earlier startup-hook work has been durably committed.
+        assert calls == ["bootstrap", "silence", "migrate", "commit"]
+        calls.append("onboarding")
+
+    monkeypatch.setattr(
+        worker_main,
+        "_apply_connector_preset_from_env",
+        onboarding,
+    )
+
+    _run_startup_hooks(FakeConn())
+
+    assert calls == [
+        "bootstrap",
+        "silence",
+        "migrate",
+        "commit",
+        "onboarding",
+    ]
+
+
+def test_startup_boundary_commit_failure_stops_before_preset_onboarding(monkeypatch):
+    import app_v2.workers.main as worker_main
+
+    onboarding_calls = []
+
+    class BrokenConn:
+        def commit(self):
+            raise RuntimeError("cannot persist startup hooks")
+
+    monkeypatch.setattr(worker_main, "_bootstrap_group_from_env", lambda conn: None)
+    monkeypatch.setattr(
+        worker_main,
+        "_enable_silence_wakeup_group_from_env",
+        lambda conn: None,
+    )
+    monkeypatch.setattr(
+        worker_main,
+        "_migrate_connector_group_from_env",
+        lambda conn: None,
+    )
+    monkeypatch.setattr(
+        worker_main,
+        "_apply_connector_preset_from_env",
+        lambda conn: onboarding_calls.append(True),
+    )
+
+    import pytest
+    with pytest.raises(RuntimeError, match="cannot persist startup hooks"):
+        _run_startup_hooks(BrokenConn())
+
+    assert onboarding_calls == []
