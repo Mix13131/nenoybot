@@ -98,6 +98,14 @@ class GroupSilenceWakeupService:
             raise ValueError("now must be timezone-aware")
 
         for candidate in self.repo.list_candidates(limit=50):
+            group_context = self.group_context_repo.load(candidate.scope_id, None)
+            if (
+                group_context is None
+                or not group_context.is_whitelisted
+                or not group_context.is_active
+            ):
+                continue
+
             connector_config = None
             if self.connector_resolver is not None:
                 try:
@@ -162,14 +170,6 @@ class GroupSilenceWakeupService:
                 candidate.scope_id,
                 local_day_start,
             ) >= daily_limit:
-                continue
-
-            group_context = self.group_context_repo.load(candidate.scope_id, None)
-            if (
-                group_context is None
-                or not group_context.is_whitelisted
-                or not group_context.is_active
-            ):
                 continue
 
             probe_event = EventEnvelope(
