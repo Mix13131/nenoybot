@@ -5,7 +5,10 @@ from dataclasses import dataclass
 from typing import Any
 
 from app_v2.domain.connectors import ConnectorConfig
-from app_v2.services.connector_codec import encode_connector_payload
+from app_v2.services.connector_codec import (
+    decode_connector_payload,
+    encode_connector_payload,
+)
 
 
 @dataclass(frozen=True)
@@ -66,7 +69,16 @@ class ConnectorRepository:
         config: ConnectorConfig,
         created_by: str = "system",
     ) -> bool:
+        if config.version != 1:
+            raise ValueError("new connector must start at version 1")
         payload = encode_connector_payload(config)
+        decode_connector_payload(
+            connector_id=config.connector_id,
+            connector_type=config.connector_type,
+            status=config.status,
+            version=config.version,
+            payload=payload,
+        )
         with self.conn.transaction():
             existing = self.conn.execute(
                 """
@@ -123,8 +135,17 @@ class ConnectorRepository:
     ) -> int:
         if config.connector_id != connector_id:
             raise ValueError("connector_id mismatch")
+        if config.version != expected_version + 1:
+            raise ValueError("config.version must be expected_version + 1")
 
         payload = encode_connector_payload(config)
+        decode_connector_payload(
+            connector_id=config.connector_id,
+            connector_type=config.connector_type,
+            status=config.status,
+            version=config.version,
+            payload=payload,
+        )
         with self.conn.transaction():
             row = self.conn.execute(
                 """
