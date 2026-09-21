@@ -9,6 +9,7 @@ from app_v2.domain.events import EventEnvelope
 from app_v2.runtime import RuntimeEventHandler
 from app_v2.workers.main import (
     WorkerLoop,
+    _apply_connector_preset_from_env,
     _bootstrap_group_from_env,
     _configure_logging,
     _enable_silence_wakeup_group_from_env,
@@ -596,3 +597,286 @@ def test_connector_migration_fails_closed_when_exact_title_is_ambiguous_beyond_a
 
     assert _migrate_connector_group_from_env(object()) is None
     assert created == []
+
+
+
+def test_connector_preset_onboarding_is_noop_without_env(monkeypatch):
+    import app_v2.workers.main as worker_main
+
+    monkeypatch.delenv(
+        "NENOY_V2_APPLY_CONNECTOR_PRESET_GROUP_TITLE",
+        raising=False,
+    )
+    monkeypatch.delenv("NENOY_V2_CONNECTOR_PRESET_NAME", raising=False)
+
+    class ShouldNotConstruct:
+        def __init__(self, conn):
+            raise AssertionError("repos must not be constructed")
+
+    monkeypatch.setattr(worker_main, "GroupContextRepository", ShouldNotConstruct)
+    assert _apply_connector_preset_from_env(object()) is None
+
+
+def test_connector_preset_onboarding_requires_both_env_values(monkeypatch):
+    import app_v2.workers.main as worker_main
+
+    monkeypatch.setenv(
+        "NENOY_V2_APPLY_CONNECTOR_PRESET_GROUP_TITLE",
+        "НеНой Lab — Бриллиантовый голос",
+    )
+    monkeypatch.delenv("NENOY_V2_CONNECTOR_PRESET_NAME", raising=False)
+
+    class ShouldNotConstruct:
+        def __init__(self, conn):
+            raise AssertionError("repos must not be constructed")
+
+    monkeypatch.setattr(worker_main, "GroupContextRepository", ShouldNotConstruct)
+    assert _apply_connector_preset_from_env(object()) is None
+
+
+def test_connector_preset_onboarding_creates_registry_and_whitelists(monkeypatch):
+    import app_v2.workers.main as worker_main
+
+    title = "НеНой Lab — Бриллиантовый голос"
+    monkeypatch.setenv("NENOY_V2_APPLY_CONNECTOR_PRESET_GROUP_TITLE", title)
+    monkeypatch.setenv(
+        "NENOY_V2_CONNECTOR_PRESET_NAME",
+        "education_community_v1",
+    )
+    whitelist_calls = []
+    created = []
+
+    class FakeGroupRepo:
+        def __init__(self, conn):
+            pass
+
+        def find_groups_by_exact_title(self, value):
+            return [
+                SimpleNamespace(
+                    title=value,
+                    telegram_chat_id="-42",
+                    is_whitelisted=False,
+                    is_active=True,
+                    profile={"legacy_sentinel": "keep"},
+                )
+            ]
+
+        def set_whitelisted(self, scope_id, enabled):
+            whitelist_calls.append((scope_id, enabled))
+            return True
+
+    class FakeConnectorRepo:
+        def __init__(self, conn):
+            pass
+
+        def get_for_scope(self, scope_type, scope_id):
+            return None
+
+        def create(self, **kwargs):
+            created.append(kwargs)
+            return True
+
+    monkeypatch.setattr(worker_main, "GroupContextRepository", FakeGroupRepo)
+    monkeypatch.setattr(worker_main, "ConnectorRepository", FakeConnectorRepo)
+
+    result = _apply_connector_preset_from_env(object())
+
+    assert result == {
+        "title": title,
+        "preset": "education_community_v1",
+        "created": True,
+        "version": 1,
+        "whitelisted": True,
+    }
+    assert whitelist_calls == [("-42", True)]
+    assert len(created) == 1
+    config = created[0]["config"]
+    assert config.identity.role == "community_cohost"
+    assert config.identity.preset == "education"
+    assert config.behavior.silence_wakeup_enabled is False
+    assert config.personality.values["warmth"] == 9
+    assert config.memory.cross_connector_memory is False
+
+
+def test_connector_preset_onboarding_unknown_preset_fails_closed(monkeypatch):
+    import app_v2.workers.main as worker_main
+
+    monkeypatch.setenv(
+        "NENOY_V2_APPLY_CONNECTOR_PRESET_GROUP_TITLE",
+        "НеНой Lab — Бриллиантовый голос",
+    )
+    monkeypatch.setenv("NENOY_V2_CONNECTOR_PRESET_NAME", "does_not_exist")
+    whitelist_calls = []
+
+    class FakeGroupRepo:
+        def __init__(self, conn):
+            pass
+
+        def find_groups_by_exact_title(self, value):
+            return [
+                SimpleNamespace(
+                    title=value,
+                    telegram_chat_id="-42",
+                    is_whitelisted=False,
+                    is_active=True,
+                    profile={},
+                )
+            ]
+
+        def set_whitelisted(self, scope_id, enabled):
+            whitelist_calls.append((scope_id, enabled))
+            return True
+
+    class FakeConnectorRepo:
+        def __init__(self, conn):
+            pass
+
+        def get_for_scope(self, scope_type, scope_id):
+            return None
+
+    monkeypatch.setattr(worker_main, "GroupContextRepository", FakeGroupRepo)
+    monkeypatch.setattr(worker_main, "ConnectorRepository", FakeConnectorRepo)
+
+    assert _apply_connector_preset_from_env(object()) is None
+    assert whitelist_calls == []
+
+
+
+def test_connector_preset_onboarding_runtime_failure_rolls_back_shared_connection(monkeypatch):
+    import app_v2.workers.main as worker_main
+
+    monkeypatch.setenv(
+        "NENOY_V2_APPLY_CONNECTOR_PRESET_GROUP_TITLE",
+        "НеНой Lab — Бриллиантовый голос",
+    )
+    monkeypatch.setenv(
+        "NENOY_V2_CONNECTOR_PRESET_NAME",
+        "education_community_v1",
+    )
+
+    class FakeConn:
+        def __init__(self):
+            self.rollback_calls = 0
+            self.commit_calls = 0
+
+        def rollback(self):
+            self.rollback_calls += 1
+
+        def commit(self):
+            self.commit_calls += 1
+
+    class FakeGroupRepo:
+        def __init__(self, conn):
+            pass
+
+        def find_groups_by_exact_title(self, title):
+            raise RuntimeError("temporary database read failure")
+
+    class FakeConnectorRepo:
+        def __init__(self, conn):
+            pass
+
+    monkeypatch.setattr(worker_main, "GroupContextRepository", FakeGroupRepo)
+    monkeypatch.setattr(worker_main, "ConnectorRepository", FakeConnectorRepo)
+
+    conn = FakeConn()
+    assert _apply_connector_preset_from_env(conn) is None
+    assert conn.rollback_calls == 1
+    assert conn.commit_calls == 0
+
+
+def test_connector_preset_onboarding_success_closes_read_transaction(monkeypatch):
+    import app_v2.workers.main as worker_main
+
+    monkeypatch.setenv(
+        "NENOY_V2_APPLY_CONNECTOR_PRESET_GROUP_TITLE",
+        "НеНой Lab — Бриллиантовый голос",
+    )
+    monkeypatch.setenv(
+        "NENOY_V2_CONNECTOR_PRESET_NAME",
+        "education_community_v1",
+    )
+
+    class FakeConn:
+        def __init__(self):
+            self.rollback_calls = 0
+            self.commit_calls = 0
+
+        def rollback(self):
+            self.rollback_calls += 1
+
+        def commit(self):
+            self.commit_calls += 1
+
+    class FakeGroupRepo:
+        def __init__(self, conn):
+            pass
+
+        def find_groups_by_exact_title(self, title):
+            return [
+                SimpleNamespace(
+                    title=title,
+                    telegram_chat_id="-42",
+                    is_whitelisted=False,
+                    is_active=True,
+                    profile={},
+                )
+            ]
+
+        def set_whitelisted(self, scope_id, enabled):
+            return True
+
+    class FakeConnectorRepo:
+        def __init__(self, conn):
+            pass
+
+        def get_for_scope(self, scope_type, scope_id):
+            return None
+
+        def create(self, **kwargs):
+            return True
+
+    monkeypatch.setattr(worker_main, "GroupContextRepository", FakeGroupRepo)
+    monkeypatch.setattr(worker_main, "ConnectorRepository", FakeConnectorRepo)
+
+    conn = FakeConn()
+    result = _apply_connector_preset_from_env(conn)
+
+    assert result is not None
+    assert conn.rollback_calls == 0
+    assert conn.commit_calls == 1
+
+
+def test_connector_preset_onboarding_rollback_failure_is_not_hidden(monkeypatch):
+    import app_v2.workers.main as worker_main
+
+    monkeypatch.setenv(
+        "NENOY_V2_APPLY_CONNECTOR_PRESET_GROUP_TITLE",
+        "НеНой Lab — Бриллиантовый голос",
+    )
+    monkeypatch.setenv(
+        "NENOY_V2_CONNECTOR_PRESET_NAME",
+        "education_community_v1",
+    )
+
+    class BrokenConn:
+        def rollback(self):
+            raise RuntimeError("connection cannot be reset")
+
+    class FakeGroupRepo:
+        def __init__(self, conn):
+            pass
+
+        def find_groups_by_exact_title(self, title):
+            raise RuntimeError("query aborted")
+
+    class FakeConnectorRepo:
+        def __init__(self, conn):
+            pass
+
+    monkeypatch.setattr(worker_main, "GroupContextRepository", FakeGroupRepo)
+    monkeypatch.setattr(worker_main, "ConnectorRepository", FakeConnectorRepo)
+
+    import pytest
+    with pytest.raises(RuntimeError, match="cannot be reset"):
+        _apply_connector_preset_from_env(BrokenConn())
