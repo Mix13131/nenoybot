@@ -153,7 +153,7 @@ def test_clarification_markers_do_not_expand_to_detail_mode():
     payload = json.loads(adapter.calls[0][1])
     instructions = adapter.calls[0][2]["instructions"]
     assert payload["response_depth"] == "clarify"
-    assert "сначала сделать понятнее, а не длиннее" in instructions
+    assert "сначала сделай понятнее, а не длиннее" in instructions
     assert "НЕ означают запрос на глубокий обзор" in instructions
 
 
