@@ -7,7 +7,12 @@ from types import SimpleNamespace
 from app_v2.domain.enums import EventType, ScopeType
 from app_v2.domain.events import EventEnvelope
 from app_v2.runtime import RuntimeEventHandler
-from app_v2.workers.main import WorkerLoop, _bootstrap_group_from_env, _configure_logging
+from app_v2.workers.main import (
+    WorkerLoop,
+    _bootstrap_group_from_env,
+    _configure_logging,
+    _enable_silence_wakeup_group_from_env,
+)
 
 
 def claimed(*, scope="personal", event_type="private_message", event_id="e1"):
@@ -286,3 +291,138 @@ def test_silence_wakeup_failure_is_fail_silent_for_worker_loop():
     assert loop.run_once() is True
     assert wakeup.calls == 1
     assert outbox.calls == 1
+
+
+
+def test_silence_wakeup_profile_patch_preserves_existing_group_character(monkeypatch):
+    import app_v2.workers.main as worker_main
+
+    monkeypatch.setenv(
+        "NENOY_V2_ENABLE_SILENCE_WAKEUP_GROUP_TITLE",
+        "Лучшие ЗДЕСЬ",
+    )
+    calls = []
+
+    existing_profile = {
+        "profile": "friends",
+        "initiative": 7,
+        "humor": 9,
+        "sarcasm": 9,
+        "roast": 8,
+        "callback": 9,
+        "profanity_level": 5,
+        "custom_second_group_flag": "keep-me",
+    }
+
+    class FakeRepo:
+        def __init__(self, conn):
+            pass
+
+        def list_groups(self, limit=100):
+            return [
+                SimpleNamespace(
+                    title="Группа НеНой Тест",
+                    telegram_chat_id="-1",
+                    is_whitelisted=True,
+                    is_active=True,
+                    profile={"profile": "friends"},
+                ),
+                SimpleNamespace(
+                    title="Лучшие ЗДЕСЬ",
+                    telegram_chat_id="-2",
+                    is_whitelisted=True,
+                    is_active=True,
+                    profile=existing_profile,
+                ),
+            ]
+
+        def set_group_profile(self, telegram_chat_id, profile):
+            calls.append((telegram_chat_id, profile))
+            return True
+
+    monkeypatch.setattr(worker_main, "GroupContextRepository", FakeRepo)
+
+    result = _enable_silence_wakeup_group_from_env(object())
+
+    assert result is not None
+    assert result["title"] == "Лучшие ЗДЕСЬ"
+    assert len(calls) == 1
+    assert calls[0][0] == "-2"
+    profile = calls[0][1]
+    assert profile["initiative"] == 7
+    assert profile["sarcasm"] == 9
+    assert profile["roast"] == 8
+    assert profile["custom_second_group_flag"] == "keep-me"
+    assert profile["timezone"] == "Europe/Moscow"
+    assert profile["silence_wakeup_enabled"] is True
+    assert profile["silence_wakeup_after_minutes"] == 180
+    assert profile["silence_wakeup_daily_limit"] == 1
+
+
+def test_silence_wakeup_profile_patch_requires_existing_approved_group(monkeypatch):
+    import app_v2.workers.main as worker_main
+
+    monkeypatch.setenv(
+        "NENOY_V2_ENABLE_SILENCE_WAKEUP_GROUP_TITLE",
+        "Лучшие ЗДЕСЬ",
+    )
+    calls = []
+
+    class FakeRepo:
+        def __init__(self, conn):
+            pass
+
+        def list_groups(self, limit=100):
+            return [
+                SimpleNamespace(
+                    title="Лучшие ЗДЕСЬ",
+                    telegram_chat_id="-2",
+                    is_whitelisted=False,
+                    is_active=True,
+                    profile={"profile": "friends"},
+                ),
+            ]
+
+        def set_group_profile(self, telegram_chat_id, profile):
+            calls.append((telegram_chat_id, profile))
+            return True
+
+    monkeypatch.setattr(worker_main, "GroupContextRepository", FakeRepo)
+
+    assert _enable_silence_wakeup_group_from_env(object()) is None
+    assert calls == []
+
+
+def test_silence_wakeup_profile_patch_fails_closed_on_ambiguous_title(monkeypatch):
+    import app_v2.workers.main as worker_main
+
+    monkeypatch.setenv(
+        "NENOY_V2_ENABLE_SILENCE_WAKEUP_GROUP_TITLE",
+        "Лучшие ЗДЕСЬ",
+    )
+    calls = []
+
+    class FakeRepo:
+        def __init__(self, conn):
+            pass
+
+        def list_groups(self, limit=100):
+            common = dict(
+                title="Лучшие ЗДЕСЬ",
+                is_whitelisted=True,
+                is_active=True,
+                profile={"profile": "friends"},
+            )
+            return [
+                SimpleNamespace(telegram_chat_id="-2", **common),
+                SimpleNamespace(telegram_chat_id="-3", **common),
+            ]
+
+        def set_group_profile(self, telegram_chat_id, profile):
+            calls.append((telegram_chat_id, profile))
+            return True
+
+    monkeypatch.setattr(worker_main, "GroupContextRepository", FakeRepo)
+
+    assert _enable_silence_wakeup_group_from_env(object()) is None
+    assert calls == []
