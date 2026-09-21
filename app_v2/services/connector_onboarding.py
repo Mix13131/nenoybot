@@ -4,7 +4,10 @@ from dataclasses import dataclass
 from typing import Any
 
 from app_v2.services.connector_codec import decode_connector_payload
-from app_v2.services.connector_presets import build_connector_preset
+from app_v2.services.connector_presets import (
+    ConnectorPresetError,
+    build_connector_preset,
+)
 from app_v2.services.connector_resolver import connector_id_for_scope
 
 
@@ -64,13 +67,18 @@ class ConnectorOnboardingService:
 
         scope_id = str(group.telegram_chat_id)
         connector_id = connector_id_for_scope("group", scope_id)
-        desired = build_connector_preset(
-            normalized_preset,
-            connector_id=connector_id,
-            version=1,
-            status="live",
-            owner_subjects=owner_subjects,
-        )
+        try:
+            desired = build_connector_preset(
+                normalized_preset,
+                connector_id=connector_id,
+                version=1,
+                status="live",
+                owner_subjects=owner_subjects,
+            )
+        except ConnectorPresetError as exc:
+            raise ConnectorOnboardingError(
+                "unknown or invalid connector preset"
+            ) from exc
 
         existing = self.connector_repo.get_for_scope("group", scope_id)
         created = False
