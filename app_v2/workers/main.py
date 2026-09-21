@@ -229,11 +229,7 @@ def _migrate_connector_group_from_env(conn) -> dict[str, Any] | None:
         return None
 
     group_repo = GroupContextRepository(conn)
-    matches = [
-        row
-        for row in group_repo.list_groups(limit=100)
-        if (row.title or "").strip() == title
-    ]
+    matches = group_repo.find_groups_by_exact_title(title)
     if not matches:
         logger.warning("connector migration skipped: title not found title=%r", title)
         return None
