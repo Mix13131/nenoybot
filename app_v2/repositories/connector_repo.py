@@ -22,6 +22,10 @@ class PersistedConnectorRecord:
     config: dict[str, Any]
 
 
+class ConnectorRegistryCorruptionError(RuntimeError):
+    """Persisted connector exists but its current snapshot is unreadable/missing."""
+
+
 class ConnectorRepository:
     def __init__(self, conn) -> None:
         self.conn = conn
@@ -42,7 +46,7 @@ class ConnectorRepository:
                 c.current_version,
                 v.config
             FROM connectors c
-            JOIN connector_versions v
+            LEFT JOIN connector_versions v
               ON v.connector_id=c.connector_id
              AND v.version=c.current_version
             WHERE c.scope_type=%s AND c.scope_id=%s
@@ -51,6 +55,10 @@ class ConnectorRepository:
         ).fetchone()
         if row is None:
             return None
+        if row[6] is None:
+            raise ConnectorRegistryCorruptionError(
+                "persisted connector current snapshot is missing"
+            )
         return PersistedConnectorRecord(
             connector_id=str(row[0]),
             scope_type=str(row[1]),
@@ -84,25 +92,15 @@ class ConnectorRepository:
             payload=payload,
         )
         with self.conn.transaction():
-            existing = self.conn.execute(
-                """
-                SELECT connector_id
-                FROM connectors
-                WHERE scope_type=%s AND scope_id=%s
-                FOR UPDATE
-                """,
-                (scope_type, scope_id),
-            ).fetchone()
-            if existing is not None:
-                return False
-
-            self.conn.execute(
+            inserted = self.conn.execute(
                 """
                 INSERT INTO connectors(
                     connector_id, scope_type, scope_id, connector_type,
                     status, current_version
                 )
                 VALUES (%s,%s,%s,%s,%s,%s)
+                ON CONFLICT DO NOTHING
+                RETURNING connector_id
                 """,
                 (
                     config.connector_id,
@@ -112,7 +110,10 @@ class ConnectorRepository:
                     config.status,
                     config.version,
                 ),
-            )
+            ).fetchone()
+            if inserted is None:
+                return False
+
             self.conn.execute(
                 """
                 INSERT INTO connector_versions(
