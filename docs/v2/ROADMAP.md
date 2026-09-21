@@ -2,7 +2,7 @@
 
 ## Актуальная контрольная точка — 2026-09-21
 
-Рабочая линия — `v2`. Текущий production/code checkpoint: `0fe8c260761c446aca9a3fdfd3ae1b00c6a8f05b` (merge PR #110).
+Рабочая линия — `v2`. Текущий production/code checkpoint: `9697171b1bcf927bce465dedec052859a209f6fc` (merge PR #126).
 
 После прежнего checkpoint `aae85be...` завершён не только code hardening, но и bounded production acceptance:
 
@@ -12,15 +12,15 @@
 - **bounded burst UX** закрыт PR #108;
 - **Scheduled Action Interpreter v1 / #109** закрыт PR #110: LLM определяет WHAT пользователь поручил делать во времени, а deterministic scheduler остаётся авторитетом для WHEN / timezone / limits / persistence / cancellation;
 - semantic action прошёл live acceptance на фразе `в течение следующих пяти минут каждую минуту удивляй меня`: серия реально сохранилась и выдала разные generated actions по минутным fire;
-- последняя полная CI на финальном PR #110 head: **494 passed, 1 warning** на isolated PostgreSQL 16.
 - live-диалог 2026-09-21 выявил conversational UX overshoot: обычный экспертный вопрос превратился в многоэкранный разбор, а `поясни детальнее, не понятно` расширило тему вместо упрощения;
-- решение D-052 фиксирует **progressive disclosure**: сначала минимально достаточный ответ, дальнейшая глубина — по намерению пользователя; runtime/prompt implementation ещё не выполнена.
+- **TASK 32 / PR #126** реализовал D-052: Generator получает `concise / clarify / detail / deep`, а Personal/Group prompts применяют progressive disclosure;
+- финальная CI PR #126: **570 passed, 1 warning** на isolated PostgreSQL 16.
 
-Railway production на `0fe8c260...` подтверждён: web/worker `SUCCESS`, worker стартует после проверки migrations, webhook rebinding healthy, `/ready` → 200.
+Railway production на `9697171b...` подтверждён: web/worker `SUCCESS`, `No pending migrations`, webhook healthy (`pending_update_count=0`, last error absent), `/ready` → 200.
 
 **TASK 27 / #76 — Friends Test Preflight: PASS.** Исторически 2026-09-14 была выбрана и активирована ровно одна контролируемая тестовая группа с friends-profile и `initiative=3`; ordinary non-mention message дошёл до v2 и был оставлен без unsolicited reply, direct mention получил ответ. Privacy/scope, serious/sensitive, mute/silence, reactions/feedback и analytics boundaries покрыты текущим зелёным test suite. PR #84 подтверждает post-token-rotation webhook recovery path. Это закрывает preflight, но **не закрывает сам 7-дневный Friends Test**.
 
-Следующий продуктовый gate остаётся **Controlled Friends Test — TASK 28 / Phase 9**. Перед продолжением/внутри него допускается один bounded live-driven fix по D-052 — response depth / progressive disclosure; это не новая функция и не повод открывать новый широкий hardening-cycle.
+Следующий продуктовый gate остаётся **Controlled Friends Test — TASK 28 / Phase 9**. Bounded fix D-052 уже реализован и deployed; перед продолжением нужен только повтор исходного Telegram regression-case, без нового широкого hardening-cycle.
 
 Полный Friends Test пока не объявлен завершённым. **Кнопку «🛑 Стоп» под напоминаниями не добавляем**: D-046 остаётся в силе.
 
@@ -134,8 +134,8 @@ Stage G — Deployment / Real Test
 29 Trusted memory / feedback / truthful receipts   ✅ merged + bounded replay follow-up
 30 Calendar/timezone reminders                     ✅ merged + live accepted
 31 Semantic scheduled actions / natural verbs       ✅ merged PR #110 + live accepted
-32 Response depth / progressive disclosure           📝 live finding + policy accepted; runtime pending
-Next gate: Controlled Friends Test                  ⏭️ after bounded D-052 implementation
+32 Response depth / progressive disclosure           ✅ merged PR #126 + deployed; live re-test pending
+Next gate: Controlled Friends Test                  ⏭️ after one Telegram regression re-test
 ```
 
 Артефакт: `MVP_BUILD_PLAN.md`. Текущие live-оговорки — в `LIVE_TEST_STATUS.md`; отметки реализации и зелёный CI не заменяют production health-check/live acceptance.
@@ -356,6 +356,6 @@ Group: roast, sarcasm, profanity level/frequency, initiative, callbacks, max int
 
 # Critical Path
 
-`Vision ✅ → Personality ✅ → Memory ✅ → Dispatcher ✅ → Architecture ✅ → Build 01–24 ✅ → Railway / Personal Smoke ✅ → TASK 29 trusted memory/receipts ✅ → TASK 30 calendar/timezone ✅ → Semantic Scheduled Actions ✅ → Friends Preflight ✅ → D-052 response-depth tuning 📝 → Controlled Friends Test 🚧 → Product Review v0.2 → Settings UX → Closed Beta → Monetization`
+`Vision ✅ → Personality ✅ → Memory ✅ → Dispatcher ✅ → Architecture ✅ → Build 01–24 ✅ → Railway / Personal Smoke ✅ → TASK 29 trusted memory/receipts ✅ → TASK 30 calendar/timezone ✅ → Semantic Scheduled Actions ✅ → Friends Preflight ✅ → D-052 response-depth tuning ✅ → Telegram regression re-test ⏭️ → Controlled Friends Test 🚧 → Product Review v0.2 → Settings UX → Closed Beta → Monetization`
 
-Проверенная production/code точка: `v2@0fe8c260761c446aca9a3fdfd3ae1b00c6a8f05b` (PR #110), full CI **494 passed, 1 warning**. Ближайший bounded шаг — реализовать D-052 response-depth policy и затем продолжать 7-дневный Controlled Friends Test; широкого нового hardening-аудита не требуется.
+Проверенная production/code точка: `v2@9697171b1bcf927bce465dedec052859a209f6fc` (PR #126), full CI **570 passed, 1 warning**. Ближайший шаг — один живой regression re-test исходного диалога; при PASS продолжаем 7-дневный Controlled Friends Test.
