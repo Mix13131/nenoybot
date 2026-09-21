@@ -7,6 +7,7 @@ from app_v2.domain.enums import EventType, ScopeType
 from app_v2.domain.events import EventEnvelope, SceneAnalysis
 from app_v2.repositories.group_context_repo import GroupContext, ParticipantContext
 from app_v2.services.group_access import GroupAccessResult
+from app_v2.services.connector_resolver import LegacyGroupConnectorResolver
 from app_v2.services.group_pipeline import GroupPipeline
 from app_v2.services.scheduled_action_interpreter import ScheduledActionInterpretation
 
@@ -142,6 +143,7 @@ def test_group_pipeline_passes_semantic_action_to_scheduler_and_context():
         outbox_repo=Outbox(),
         group_reminder_service=reminders,
         scheduled_action_interpreter=interpreter,
+        connector_resolver=LegacyGroupConnectorResolver(),
     )
 
     result = pipeline.process(
@@ -156,7 +158,57 @@ def test_group_pipeline_passes_semantic_action_to_scheduler_and_context():
     assert reminders.received.instruction == "Удиви пользователя новой короткой репликой"
     assert context_builder.action_state["scheduled_action_interpretation"]["execution_kind"] == "generate_text"
     assert context_builder.action_state["group_reminder"]["status"] == "scheduled"
+    connector_state = context_builder.action_state["connector"]
+    assert connector_state["connector_type"] == "telegram_group"
+    assert connector_state["preset"] == "friends"
+    assert connector_state["memory"]["cross_connector_memory"] is False
+    assert "-1001" not in repr(connector_state)
     receipt = context_builder.action_state["operation_receipts"]["reminder"]
     assert receipt["status"] == "succeeded"
     assert receipt["changed"] is True
     assert receipt["execution_kind"] == "generate_text"
+
+
+
+class FailingConnectorResolver:
+    def resolve(self, group_context):
+        raise RuntimeError("connector store unavailable")
+
+
+class CountingGenerator:
+    def __init__(self):
+        self.calls = 0
+
+    def generate(self, context):
+        self.calls += 1
+        return SimpleNamespace(text="should not happen")
+
+
+def test_connector_resolution_failure_fails_closed_before_generation():
+    generator = CountingGenerator()
+    interpreter = Interpreter()
+    reminders = Reminders()
+    pipeline = GroupPipeline(
+        access_service=Access(),
+        scene_analyzer=Scene(),
+        personality_engine=Personality(),
+        context_builder=ContextBuilder(),
+        response_generator=generator,
+        intervention_repo=Interventions(),
+        outbox_repo=Outbox(),
+        group_reminder_service=reminders,
+        scheduled_action_interpreter=interpreter,
+        connector_resolver=FailingConnectorResolver(),
+    )
+
+    result = pipeline.process(
+        _event(),
+        now=datetime(2026, 9, 19, 18, 0, tzinfo=timezone.utc),
+    )
+
+    assert result.primary_action is not None
+    assert result.primary_action.value == "ignore"
+    assert result.access_reason == "connector_unavailable"
+    assert generator.calls == 0
+    assert interpreter.calls == []
+    assert reminders.received is None

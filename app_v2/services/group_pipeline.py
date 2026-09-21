@@ -68,6 +68,7 @@ class GroupPipeline:
         group_reminder_service: Any | None = None,
         scheduled_action_interpreter: Any | None = None,
         silence_wakeup_guard: Any | None = None,
+        connector_resolver: Any | None = None,
         unsolicited_enabled: bool = False,
     ) -> None:
         self.access_service = access_service
@@ -83,6 +84,7 @@ class GroupPipeline:
         self.group_reminder_service = group_reminder_service
         self.scheduled_action_interpreter = scheduled_action_interpreter
         self.silence_wakeup_guard = silence_wakeup_guard
+        self.connector_resolver = connector_resolver
         self.unsolicited_enabled = unsolicited_enabled
 
     def _mapper_context(self, event: EventEnvelope) -> tuple[dict[str, Any], ...]:
@@ -124,6 +126,18 @@ class GroupPipeline:
                 allowed=False,
                 access_reason=access.reason,
             )
+
+        connector_config = None
+        if self.connector_resolver is not None:
+            try:
+                connector_config = self.connector_resolver.resolve(access.context)
+            except Exception:
+                return GroupPipelineResult(
+                    event_id=event.event_id,
+                    allowed=True,
+                    access_reason="connector_unavailable",
+                    primary_action=PrimaryAction.IGNORE,
+                )
 
         if event.event_type is EventType.GROUP_SILENCE_WAKEUP:
             try:
@@ -250,7 +264,13 @@ class GroupPipeline:
         if reminder_action_state and reminder_action_state.get("status") in {"cancelled", "not_cancelled"}:
             scene = scene.model_copy(update={"command_intent": "cancel_reminder"})
 
-        profile = dict(group_context.profile or {})
+        profile = (
+            connector_config.personality.as_context_profile(
+                connector_config.identity.preset
+            )
+            if connector_config is not None
+            else dict(group_context.profile or {})
+        )
         participant_profile = dict(group_context.participant.profile or {})
         adaptation = participant_profile.get("personality_modifiers")
         if not isinstance(adaptation, dict):
@@ -263,12 +283,15 @@ class GroupPipeline:
         # Retrieve old memory before mapping the current message so a callback
         # can never be manufactured from the line it is reacting to.
         if self.group_behavior_engine is not None:
-            plan = self.group_behavior_engine.plan(
-                event=event,
-                group_context=group_context,
-                scene=scene,
-                now=current,
-            )
+            plan_kwargs = {
+                "event": event,
+                "group_context": group_context,
+                "scene": scene,
+                "now": current,
+            }
+            if connector_config is not None:
+                plan_kwargs["connector_config"] = connector_config
+            plan = self.group_behavior_engine.plan(**plan_kwargs)
             scene = plan.scene
             state = plan.state
             profile = dict(plan.context_profile)
@@ -279,13 +302,30 @@ class GroupPipeline:
             statement_watch_state = plan.statement_watch
         else:
             muted = bool(group_context.silent_until and group_context.silent_until > current)
+            connector_unsolicited = (
+                connector_config.behavior.unsolicited_enabled
+                if connector_config is not None
+                else self.unsolicited_enabled
+            )
+            connector_initiative = (
+                connector_config.behavior.initiative
+                if connector_config is not None
+                else int(profile.get("initiative", 6) or 6)
+            )
             state = DispatcherPolicyState(
                 group_muted=muted,
-                cooldown_active=(not self.unsolicited_enabled),
-                initiative_level=int(profile.get("initiative", 6) or 6),
+                cooldown_active=(not connector_unsolicited),
+                initiative_level=connector_initiative,
                 allow_roast=False,
                 allow_callbacks=False,
-                metadata={"group_profile": profile.get("profile", "friends")},
+                metadata={
+                    "group_profile": profile.get("profile", "friends"),
+                    "connector": (
+                        connector_config.public_state()
+                        if connector_config is not None
+                        else None
+                    ),
+                },
             )
 
         mapped_memory_ids: tuple[str, ...] = ()
@@ -354,6 +394,11 @@ class GroupPipeline:
         action_state: dict[str, Any] = {
             "group_title": group_context.title,
             "participant_role": group_context.participant.role,
+            "connector": (
+                connector_config.public_state()
+                if connector_config is not None
+                else None
+            ),
             "behavior_probe_ids": list(behavior_memory_ids),
             "mapped_memory_ids": list(mapped_memory_ids),
             "operation_receipts": operation_receipts,
