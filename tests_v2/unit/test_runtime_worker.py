@@ -739,3 +739,33 @@ def test_connector_preset_onboarding_unknown_preset_fails_closed(monkeypatch):
 
     assert _apply_connector_preset_from_env(object()) is None
     assert whitelist_calls == []
+
+
+
+def test_connector_preset_onboarding_runtime_failure_does_not_crash_worker_hook(monkeypatch):
+    import app_v2.workers.main as worker_main
+
+    monkeypatch.setenv(
+        "NENOY_V2_APPLY_CONNECTOR_PRESET_GROUP_TITLE",
+        "НеНой Lab — Бриллиантовый голос",
+    )
+    monkeypatch.setenv(
+        "NENOY_V2_CONNECTOR_PRESET_NAME",
+        "education_community_v1",
+    )
+
+    class FakeGroupRepo:
+        def __init__(self, conn):
+            pass
+
+        def find_groups_by_exact_title(self, title):
+            raise RuntimeError("temporary database read failure")
+
+    class FakeConnectorRepo:
+        def __init__(self, conn):
+            pass
+
+    monkeypatch.setattr(worker_main, "GroupContextRepository", FakeGroupRepo)
+    monkeypatch.setattr(worker_main, "ConnectorRepository", FakeConnectorRepo)
+
+    assert _apply_connector_preset_from_env(object()) is None
