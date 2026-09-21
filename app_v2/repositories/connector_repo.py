@@ -69,6 +69,10 @@ class ConnectorRepository:
         config: ConnectorConfig,
         created_by: str = "system",
     ) -> bool:
+        if scope_type != "group":
+            raise ValueError("TASK 35 registry supports group scope only")
+        if config.connector_type != "telegram_group":
+            raise ValueError("group scope requires telegram_group connector_type")
         if config.version != 1:
             raise ValueError("new connector must start at version 1")
         payload = encode_connector_payload(config)
