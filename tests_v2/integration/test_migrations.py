@@ -116,10 +116,11 @@ def test_live_postgres_migrations_are_repeat_safe() -> None:
 
     assert second == []
     assert first in (
-        [1, 2, 3, 4],
-        [2, 3, 4],
-        [3, 4],
-        [4],
+        [1, 2, 3, 4, 5],
+        [2, 3, 4, 5],
+        [3, 4, 5],
+        [4, 5],
+        [5],
         [],
     )
 
@@ -138,12 +139,14 @@ def test_live_postgres_schema_constraints_and_indexes() -> None:
         "interventions", "feedback_events", "outbox", "llm_usage",
         "schema_migrations",
         "pending_calendar_intents",
+        "connectors", "connector_versions",
     }
     expected_indexes = {
         "idx_events_pending", "idx_reminders_pending", "idx_outbox_pending",
         "idx_memory_cards_scope_status", "idx_memory_cards_scope_type",
         "idx_outbox_telegram_message", "idx_feedback_events_feedback_id",
         "idx_pending_calendar_intents_lookup", "idx_reminders_source_event",
+        "idx_connectors_scope", "idx_connector_versions_created_at",
     }
 
     with psycopg.connect(database_url) as conn:
