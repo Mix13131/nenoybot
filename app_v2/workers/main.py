@@ -321,6 +321,15 @@ def _apply_connector_preset_from_env(conn) -> dict[str, Any] | None:
             str(exc),
         )
         return None
+    except Exception:
+        # Optional onboarding must never take down the shared production
+        # worker. Failure leaves the new group unconfigured/unwhitelisted.
+        logger.exception(
+            "connector preset onboarding runtime failure title=%r preset=%r",
+            title,
+            preset,
+        )
+        return None
 
     logger.warning(
         "connector preset onboarding applied title=%r preset=%r created=%s version=%d",
