@@ -85,6 +85,10 @@ class ConnectorOnboardingService:
                 # Another worker/process may have won the create race. Re-read
                 # and verify exact equivalence rather than overwriting.
                 existing = self.connector_repo.get_for_scope("group", scope_id)
+                if existing is None:
+                    raise ConnectorOnboardingError(
+                        "connector create lost but persisted record is unavailable"
+                    )
         if existing is not None:
             current = decode_connector_payload(
                 connector_id=existing.connector_id,
