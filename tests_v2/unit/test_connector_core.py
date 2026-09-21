@@ -239,3 +239,14 @@ def test_initiative_can_resolve_connector_internally_for_non_pipeline_callers() 
     assert result.soft_daily_limit == 4
     assert result.hard_daily_limit == 8
     assert result.initiative_level == 7
+
+
+
+def test_non_finite_bot_share_values_fail_to_safe_default() -> None:
+    resolver = LegacyGroupConnectorResolver()
+
+    for malformed in ("nan", "inf", "-inf"):
+        connector = resolver.resolve(
+            group_context({"bot_share_max": malformed})
+        )
+        assert connector.behavior.bot_share_max == 0.10
