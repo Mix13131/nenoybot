@@ -4,6 +4,7 @@ from datetime import datetime, timedelta, timezone
 from typing import Any
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
+from app_v2.domain.connectors import ConnectorConfig
 from app_v2.domain.enums import EventType, ScopeType
 from app_v2.domain.events import EventEnvelope
 
@@ -33,34 +34,41 @@ def silence_wakeup_window_open(
     profile: dict[str, Any],
     *,
     now: datetime,
+    connector_config: ConnectorConfig | None = None,
 ) -> bool:
     if now.tzinfo is None or now.utcoffset() is None:
         raise ValueError("now must be timezone-aware")
-    if not _bool(profile.get("silence_wakeup_enabled"), False):
-        return False
-    if not _bool(profile.get("unsolicited_enabled"), False):
-        return False
 
-    timezone_name = str(profile.get("timezone") or "").strip()
-    if not timezone_name:
+    if connector_config is not None:
+        behavior = connector_config.behavior
+        enabled = behavior.silence_wakeup_enabled
+        unsolicited_enabled = behavior.unsolicited_enabled
+        timezone_name = str(behavior.timezone or "").strip()
+        start_hour = behavior.silence_wakeup_start_hour
+        end_hour = behavior.silence_wakeup_end_hour
+    else:
+        enabled = _bool(profile.get("silence_wakeup_enabled"), False)
+        unsolicited_enabled = _bool(profile.get("unsolicited_enabled"), False)
+        timezone_name = str(profile.get("timezone") or "").strip()
+        start_hour = _int(
+            profile.get("silence_wakeup_start_hour"),
+            10,
+            low=0,
+            high=23,
+        )
+        end_hour = _int(
+            profile.get("silence_wakeup_end_hour"),
+            22,
+            low=1,
+            high=24,
+        )
+
+    if not enabled or not unsolicited_enabled or not timezone_name:
         return False
     try:
         local_tz = ZoneInfo(timezone_name)
     except ZoneInfoNotFoundError:
         return False
-
-    start_hour = _int(
-        profile.get("silence_wakeup_start_hour"),
-        10,
-        low=0,
-        high=23,
-    )
-    end_hour = _int(
-        profile.get("silence_wakeup_end_hour"),
-        22,
-        low=1,
-        high=24,
-    )
     if start_hour >= end_hour:
         return False
 
@@ -77,10 +85,12 @@ class GroupSilenceWakeupService:
         repo: Any,
         group_context_repo: Any,
         initiative_service: Any,
+        connector_resolver: Any | None = None,
     ) -> None:
         self.repo = repo
         self.group_context_repo = group_context_repo
         self.initiative_service = initiative_service
+        self.connector_resolver = connector_resolver
 
     def run_once(self, *, now: datetime | None = None) -> bool:
         current = now or datetime.now(timezone.utc)
@@ -88,24 +98,41 @@ class GroupSilenceWakeupService:
             raise ValueError("now must be timezone-aware")
 
         for candidate in self.repo.list_candidates(limit=50):
+            connector_config = None
+            if self.connector_resolver is not None:
+                try:
+                    connector_config = self.connector_resolver.resolve(group_context)
+                except Exception:
+                    continue
+
             profile = dict(candidate.profile or {})
-            if not silence_wakeup_window_open(profile, now=current):
+            if not silence_wakeup_window_open(
+                profile,
+                now=current,
+                connector_config=connector_config,
+            ):
                 continue
 
-            timezone_name = str(profile.get("timezone") or "").strip()
+            if connector_config is not None:
+                behavior = connector_config.behavior
+                timezone_name = str(behavior.timezone or "").strip()
+                threshold_minutes = behavior.silence_wakeup_after_minutes
+                daily_limit = behavior.silence_wakeup_daily_limit
+            else:
+                timezone_name = str(profile.get("timezone") or "").strip()
+                threshold_minutes = _int(
+                    profile.get("silence_wakeup_after_minutes"),
+                    180,
+                    low=60,
+                    high=2880,
+                )
+                daily_limit = _int(
+                    profile.get("silence_wakeup_daily_limit"),
+                    1,
+                    low=0,
+                    high=5,
+                )
             local_tz = ZoneInfo(timezone_name)
-            threshold_minutes = _int(
-                profile.get("silence_wakeup_after_minutes"),
-                180,
-                low=60,
-                high=2880,
-            )
-            daily_limit = _int(
-                profile.get("silence_wakeup_daily_limit"),
-                1,
-                low=0,
-                high=5,
-            )
             if daily_limit == 0:
                 continue
 
@@ -161,11 +188,19 @@ class GroupSilenceWakeupService:
                     "last_human_excerpt": candidate.last_human_excerpt,
                 },
             )
-            snapshot = self.initiative_service.evaluate(
-                event=probe_event,
-                group_context=group_context,
-                now=current,
-            )
+            if connector_config is not None:
+                snapshot = self.initiative_service.evaluate(
+                    event=probe_event,
+                    group_context=group_context,
+                    now=current,
+                    connector_config=connector_config,
+                )
+            else:
+                snapshot = self.initiative_service.evaluate(
+                    event=probe_event,
+                    group_context=group_context,
+                    now=current,
+                )
             if snapshot.group_muted or snapshot.cooldown_active:
                 continue
             if snapshot.negative_feedback_recent > 0:
