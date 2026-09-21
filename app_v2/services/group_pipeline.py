@@ -175,6 +175,7 @@ class GroupPipeline:
             if not silence_wakeup_window_open(
                 dict(access.context.profile or {}),
                 now=current,
+                connector_config=connector_config,
             ):
                 return GroupPipelineResult(
                     event_id=event.event_id,
