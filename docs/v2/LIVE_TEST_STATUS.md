@@ -1,6 +1,6 @@
 # НеНой 2.0 — Live Test Status
 
-Updated: 2026-09-20
+Updated: 2026-09-21
 
 ## Current checkpoint
 
@@ -18,6 +18,7 @@ Updated: 2026-09-20
 | #105 / #106 | production migrations + transaction rollback | **LIVE PASS**: `0003/0004` applied; worker stable |
 | #107 / #108 | bounded 1-minute burst in finite window | implemented |
 | #109 / #110 | Scheduled Action Interpreter v1 | **LIVE PASS** on novel verb `удивляй` |
+| Live UX 2026-09-21 | response depth / progressive disclosure | **FINDING ACCEPTED**; docs fixed, runtime implementation pending |
 
 Последняя подтверждённая полная CI-проверка финального PR #110 head — **494 passed, 1 warning** на isolated PostgreSQL 16.
 
@@ -36,6 +37,23 @@ Railway после merge PR #110:
 3. Production schema drift `pending_calendar_intents` был найден живым тестом и закрыт migrations/rollback hardening.
 4. Semantic scheduled action `в течение следующих пяти минут каждую минуту удивляй меня` → persisted bounded series → разные generated actions на последовательных fires — PASS.
 5. Truthful receipt enforcement расширен на любые semantic future-action promises: без реального persisted schedule модель не может заявить, что будет выполнять действие.
+
+### Live UX finding — response depth
+
+Реальный тест диалога 2026-09-21 выявил отдельный conversational UX-дефект: обычный экспертный вопрос получил многоэкранный ответ, а фраза пользователя `поясни детальнее, не понятно` привела к ещё большему расширению темы вместо более простого объяснения.
+
+Принятое направление исправления:
+
+- default — минимально достаточный ответ, а не исчерпывающая статья;
+- `не понял / поясни / объясни` → сделать текущий тезис яснее, не шире;
+- `подробнее` → раскрыть один следующий слой текущего тезиса;
+- глубокий режим включать по явному запросу на исследование/детальный разбор;
+- не решать проблему жёстким глобальным лимитом символов;
+- критичные safety / medical / legal / compliance оговорки сохранять, но вывод ставить первым.
+
+Нормативно закреплено в [PERSONALITY_SPEC.md](PERSONALITY_SPEC.md), §2.1 и [DECISIONS.md](DECISIONS.md), D-052.
+
+**Статус:** решение принято и документация обновлена; изменение runtime/prompt policy ещё не реализовано и не проверено live.
 
 ### TASK 27 / #76 — Friends Test Preflight: PASS
 
