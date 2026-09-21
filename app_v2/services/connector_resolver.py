@@ -106,6 +106,18 @@ class LegacyGroupConnectorResolver:
             profile.get("unsolicited_enabled"),
             False,
         )
+        soft_daily_limit = _int(
+            profile.get("soft_daily_limit"),
+            6,
+            low=0,
+            high=100,
+        )
+        hard_daily_limit = _int(
+            profile.get("hard_daily_limit"),
+            10,
+            low=max(soft_daily_limit, 1),
+            high=200,
+        )
         silence_wakeup_enabled = _bool(
             profile.get("silence_wakeup_enabled"),
             False,
@@ -142,18 +154,8 @@ class LegacyGroupConnectorResolver:
                     low=1,
                     high=1440,
                 ),
-                soft_daily_limit=_int(
-                    profile.get("soft_daily_limit"),
-                    6,
-                    low=0,
-                    high=100,
-                ),
-                hard_daily_limit=_int(
-                    profile.get("hard_daily_limit"),
-                    10,
-                    low=1,
-                    high=200,
-                ),
+                soft_daily_limit=soft_daily_limit,
+                hard_daily_limit=hard_daily_limit,
                 mute_minutes=_int(
                     profile.get("mute_minutes"),
                     120,
