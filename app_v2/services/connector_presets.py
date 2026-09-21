@@ -47,7 +47,9 @@ class ConnectorPresetDefinition:
             version=version,
             identity=self.identity,
             behavior=self.behavior,
-            personality=self.personality,
+            personality=ConnectorPersonalityProfile(
+                values=dict(self.personality.values),
+            ),
             memory=self.memory,
             capabilities=self.capabilities,
             authority=ConnectorAuthorityProfile(
