@@ -71,3 +71,24 @@ def test_list_groups_returns_admin_records_and_clamps_limit() -> None:
     assert rows[0].telegram_chat_id == "-100777"
     assert rows[0].profile == {"profile": "friends"}
     assert conn.calls[0][1] == (100,)
+
+
+
+def test_find_groups_by_exact_title_has_no_admin_list_limit() -> None:
+    conn = FakeConn()
+    now = datetime(2026, 9, 21, 10, 0, tzinfo=timezone.utc)
+    conn.next_result = FakeResult(
+        all_rows=[
+            (-1001, "Same", True, True, {"profile": "friends"}, now),
+            (-1002, "Same", True, True, {"profile": "friends"}, now),
+        ]
+    )
+    repo = GroupContextRepository(conn)
+
+    rows = repo.find_groups_by_exact_title(" Same ")
+
+    assert len(rows) == 2
+    sql, params = conn.calls[0]
+    assert "BTRIM" in sql
+    assert "LIMIT" not in sql.upper()
+    assert params == ("Same",)

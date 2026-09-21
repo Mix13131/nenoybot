@@ -274,6 +274,10 @@ class PersistedGroupConnectorResolver:
             raise ConnectorConfigurationError("persisted connector scope_type mismatch")
         if record.scope_id != group_context.telegram_chat_id:
             raise ConnectorConfigurationError("persisted connector scope_id mismatch")
+        if record.connector_type != "telegram_group":
+            raise ConnectorConfigurationError(
+                "group scope requires telegram_group connector_type"
+            )
 
         config = decode_connector_payload(
             connector_id=record.connector_id,

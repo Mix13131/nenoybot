@@ -455,7 +455,7 @@ def test_connector_migration_exact_title_preserves_legacy_profile(monkeypatch):
         def __init__(self, conn):
             pass
 
-        def list_groups(self, limit=100):
+        def find_groups_by_exact_title(self, title):
             return [
                 SimpleNamespace(
                     title="Группа НеНой Тест",
@@ -519,7 +519,7 @@ def test_connector_migration_requires_approved_unique_group(monkeypatch):
         def __init__(self, conn):
             pass
 
-        def list_groups(self, limit=100):
+        def find_groups_by_exact_title(self, title):
             return [
                 SimpleNamespace(
                     title="Лучшие ЗДЕСЬ",
@@ -532,6 +532,56 @@ def test_connector_migration_requires_approved_unique_group(monkeypatch):
 
         def load(self, *args, **kwargs):
             raise AssertionError("must not load unapproved group")
+
+    class FakeConnectorRepo:
+        def __init__(self, conn):
+            pass
+
+        def create(self, **kwargs):
+            created.append(kwargs)
+            return True
+
+    monkeypatch.setattr(worker_main, "GroupContextRepository", FakeGroupRepo)
+    monkeypatch.setattr(worker_main, "ConnectorRepository", FakeConnectorRepo)
+
+    assert _migrate_connector_group_from_env(object()) is None
+    assert created == []
+
+
+
+def test_connector_migration_fails_closed_when_exact_title_is_ambiguous_beyond_admin_list(monkeypatch):
+    import app_v2.workers.main as worker_main
+
+    monkeypatch.setenv(
+        "NENOY_V2_MIGRATE_CONNECTOR_GROUP_TITLE",
+        "Повторяющееся имя",
+    )
+    created = []
+
+    class FakeGroupRepo:
+        def __init__(self, conn):
+            pass
+
+        def find_groups_by_exact_title(self, title):
+            return [
+                SimpleNamespace(
+                    title=title,
+                    telegram_chat_id="-2",
+                    is_whitelisted=True,
+                    is_active=True,
+                    profile={},
+                ),
+                SimpleNamespace(
+                    title=title,
+                    telegram_chat_id="-999",
+                    is_whitelisted=True,
+                    is_active=True,
+                    profile={},
+                ),
+            ]
+
+        def load(self, *args, **kwargs):
+            raise AssertionError("ambiguous title must not load a group")
 
     class FakeConnectorRepo:
         def __init__(self, conn):

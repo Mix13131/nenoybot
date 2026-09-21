@@ -127,6 +127,36 @@ class GroupContextRepository:
             for row in rows
         ]
 
+    def find_groups_by_exact_title(
+        self,
+        title: str,
+    ) -> list[GroupAdminRecord]:
+        normalized = str(title or "").strip()
+        if not normalized:
+            return []
+        rows = self.conn.execute(
+            """
+            SELECT telegram_chat_id, title, is_whitelisted, is_active,
+                   group_profile, updated_at
+            FROM chats
+            WHERE chat_type='group'
+              AND BTRIM(COALESCE(title, ''))=%s
+            ORDER BY updated_at DESC
+            """,
+            (normalized,),
+        ).fetchall()
+        return [
+            GroupAdminRecord(
+                telegram_chat_id=str(row[0]),
+                title=row[1],
+                is_whitelisted=bool(row[2]),
+                is_active=bool(row[3]),
+                profile=dict(row[4] or {}),
+                updated_at=row[5],
+            )
+            for row in rows
+        ]
+
     def set_whitelisted(self, telegram_chat_id: str, enabled: bool) -> bool:
         row = self.conn.execute(
             """
