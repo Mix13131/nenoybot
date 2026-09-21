@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import hashlib
 import math
+from dataclasses import replace
 from typing import Any
 
 from app_v2.domain.connectors import (
@@ -13,6 +15,10 @@ from app_v2.domain.connectors import (
     ConnectorPersonalityProfile,
 )
 from app_v2.repositories.group_context_repo import GroupContext
+from app_v2.services.connector_codec import (
+    ConnectorConfigurationError,
+    decode_connector_payload,
+)
 
 
 _PERSONALITY_FIELDS = (
@@ -236,3 +242,65 @@ class LegacyGroupConnectorResolver:
                 ),
             ),
         )
+
+
+
+def connector_id_for_scope(scope_type: str, scope_id: str) -> str:
+    material = f"{scope_type}:{scope_id}".encode("utf-8")
+    digest = hashlib.sha256(material).hexdigest()[:24]
+    return f"conn_{digest}"
+
+
+class PersistedGroupConnectorResolver:
+    """Prefer persisted/versioned connectors; fallback only when none exists."""
+
+    def __init__(
+        self,
+        repo: Any,
+        fallback: LegacyGroupConnectorResolver | None = None,
+    ) -> None:
+        self.repo = repo
+        self.fallback = fallback or LegacyGroupConnectorResolver()
+
+    def resolve(self, group_context: GroupContext) -> ConnectorConfig:
+        record = self.repo.get_for_scope(
+            "group",
+            group_context.telegram_chat_id,
+        )
+        if record is None:
+            return self.fallback.resolve(group_context)
+
+        if record.scope_type != "group":
+            raise ConnectorConfigurationError("persisted connector scope_type mismatch")
+        if record.scope_id != group_context.telegram_chat_id:
+            raise ConnectorConfigurationError("persisted connector scope_id mismatch")
+
+        config = decode_connector_payload(
+            connector_id=record.connector_id,
+            connector_type=record.connector_type,
+            status=record.status,
+            version=record.version,
+            payload=record.config,
+        )
+        if config.status != "live":
+            raise ConnectorConfigurationError(
+                "persisted connector is not live"
+            )
+        return config
+
+
+def migrated_legacy_connector(
+    group_context: GroupContext,
+    *,
+    resolver: LegacyGroupConnectorResolver | None = None,
+) -> ConnectorConfig:
+    legacy = (resolver or LegacyGroupConnectorResolver()).resolve(group_context)
+    return replace(
+        legacy,
+        connector_id=connector_id_for_scope(
+            "group",
+            group_context.telegram_chat_id,
+        ),
+        status="live",
+        version=1,
+    )
