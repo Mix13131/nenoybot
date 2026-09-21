@@ -52,11 +52,12 @@ def _context(
     memories=(),
     *,
     action_state=None,
+    event_text="Привет",
 ):
     return GenerationContext(
         scope_type=scope_type,
         scope_id="u1" if scope_type is ScopeType.PERSONAL else "g1",
-        event={"event_id": "evt1", "text": "Привет"},
+        event={"event_id": "evt1", "text": event_text},
         scene={"seriousness_score": 0.1},
         decision={
             "primary_action": PrimaryAction.REPLY.value,
@@ -64,7 +65,7 @@ def _context(
             "reason_codes": ["direct_mention"],
         },
         personality=_personality(mode.value),
-        hot_messages=({"message_id": "1", "text": "Привет"},),
+        hot_messages=({"message_id": "1", "text": event_text},),
         memories=tuple(memories),
         target_user_id="u1",
         action_state=dict(action_state or {}),
@@ -119,6 +120,52 @@ def test_group_prompt_selected_for_group_context():
     assert "Group Generator" in kwargs["instructions"]
     assert "не объясняй шутку" in kwargs["instructions"]
     assert "operation_receipts" in kwargs["instructions"]
+
+
+@pytest.mark.parametrize(
+    "event_text, expected_depth",
+    [
+        ("Что здесь происходит?", "concise"),
+        ("Поясни детальнее, не понятно", "clarify"),
+        ("Расскажи подробнее", "detail"),
+        ("Разбери подробно все нюансы", "deep"),
+        ("Исследуй этот вопрос", "deep"),
+    ],
+)
+def test_response_depth_is_classified_and_sent_to_generator(event_text, expected_depth):
+    adapter = FakeAdapter()
+    ResponseGenerator(adapter=adapter).generate(_context(event_text=event_text))
+
+    payload = json.loads(adapter.calls[0][1])
+    assert payload["response_depth"] == expected_depth
+
+
+def test_clarification_markers_do_not_expand_to_detail_mode():
+    adapter = FakeAdapter()
+    ResponseGenerator(adapter=adapter).generate(
+        _context(
+            ScopeType.GROUP,
+            ResponseMode.GROUP_HELP,
+            event_text="Поясни детальнее, не понятно",
+        )
+    )
+
+    payload = json.loads(adapter.calls[0][1])
+    instructions = adapter.calls[0][2]["instructions"]
+    assert payload["response_depth"] == "clarify"
+    assert "сначала сделать понятнее, а не длиннее" in instructions
+    assert "НЕ означают запрос на глубокий обзор" in instructions
+
+
+def test_personal_prompt_contains_progressive_disclosure_contract():
+    adapter = FakeAdapter()
+    ResponseGenerator(adapter=adapter).generate(_context(event_text="Не понял, объясни"))
+
+    payload = json.loads(adapter.calls[0][1])
+    instructions = adapter.calls[0][2]["instructions"]
+    assert payload["response_depth"] == "clarify"
+    assert "response_depth" in instructions
+    assert "тот же тезис проще" in instructions
 
 
 def test_group_callback_without_memory_is_blocked_before_model_call():
