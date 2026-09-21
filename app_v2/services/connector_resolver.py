@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import math
 from typing import Any
 
 from app_v2.domain.connectors import (
@@ -53,6 +54,8 @@ def _float(value: Any, default: float, *, low: float, high: float) -> float:
     try:
         parsed = float(value)
     except (TypeError, ValueError):
+        return default
+    if not math.isfinite(parsed):
         return default
     return max(low, min(high, parsed))
 
