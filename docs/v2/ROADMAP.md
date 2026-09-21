@@ -1,6 +1,6 @@
 # ROADMAP — НеНой 2.0
 
-## Актуальная контрольная точка — 2026-09-20
+## Актуальная контрольная точка — 2026-09-21
 
 Рабочая линия — `v2`. Текущий production/code checkpoint: `0fe8c260761c446aca9a3fdfd3ae1b00c6a8f05b` (merge PR #110).
 
@@ -13,16 +13,18 @@
 - **Scheduled Action Interpreter v1 / #109** закрыт PR #110: LLM определяет WHAT пользователь поручил делать во времени, а deterministic scheduler остаётся авторитетом для WHEN / timezone / limits / persistence / cancellation;
 - semantic action прошёл live acceptance на фразе `в течение следующих пяти минут каждую минуту удивляй меня`: серия реально сохранилась и выдала разные generated actions по минутным fire;
 - последняя полная CI на финальном PR #110 head: **494 passed, 1 warning** на isolated PostgreSQL 16.
+- live-диалог 2026-09-21 выявил conversational UX overshoot: обычный экспертный вопрос превратился в многоэкранный разбор, а `поясни детальнее, не понятно` расширило тему вместо упрощения;
+- решение D-052 фиксирует **progressive disclosure**: сначала минимально достаточный ответ, дальнейшая глубина — по намерению пользователя; runtime/prompt implementation ещё не выполнена.
 
 Railway production на `0fe8c260...` подтверждён: web/worker `SUCCESS`, worker стартует после проверки migrations, webhook rebinding healthy, `/ready` → 200.
 
 **TASK 27 / #76 — Friends Test Preflight: PASS.** Исторически 2026-09-14 была выбрана и активирована ровно одна контролируемая тестовая группа с friends-profile и `initiative=3`; ordinary non-mention message дошёл до v2 и был оставлен без unsolicited reply, direct mention получил ответ. Privacy/scope, serious/sensitive, mute/silence, reactions/feedback и analytics boundaries покрыты текущим зелёным test suite. PR #84 подтверждает post-token-rotation webhook recovery path. Это закрывает preflight, но **не закрывает сам 7-дневный Friends Test**.
 
-Следующий gate теперь не очередная функция и не новый parser-аудит, а **Controlled Friends Test — TASK 28 / Phase 9**.
+Следующий продуктовый gate остаётся **Controlled Friends Test — TASK 28 / Phase 9**. Перед продолжением/внутри него допускается один bounded live-driven fix по D-052 — response depth / progressive disclosure; это не новая функция и не повод открывать новый широкий hardening-cycle.
 
 Полный Friends Test пока не объявлен завершённым. **Кнопку «🛑 Стоп» под напоминаниями не добавляем**: D-046 остаётся в силе.
 
-Источник текущего состояния: [LIVE_TEST_STATUS.md](LIVE_TEST_STATUS.md). Принятые решения: [DECISIONS.md](DECISIONS.md), включая D-046–D-051.
+Источник текущего состояния: [LIVE_TEST_STATUS.md](LIVE_TEST_STATUS.md). Принятые решения: [DECISIONS.md](DECISIONS.md), включая D-046–D-052.
 
 ## Phase 0 — Product Vision
 
@@ -38,7 +40,7 @@ Railway production на `0fe8c260...` подтверждён: web/worker `SUCCES
 
 **Статус: DONE**
 
-Зафиксированы Core Personality, Personal/Group profiles, roast, sarcasm, profanity, initiative, callback, care, sensitivity, Participant Adaptation, Situational Override и feedback adaptation.
+Зафиксированы Core Personality, Personal/Group profiles, roast, sarcasm, profanity, initiative, callback, care, sensitivity, Participant Adaptation, Situational Override, feedback adaptation и progressive response depth (§2.1).
 
 Артефакт: `PERSONALITY_SPEC.md`.
 
@@ -132,7 +134,8 @@ Stage G — Deployment / Real Test
 29 Trusted memory / feedback / truthful receipts   ✅ merged + bounded replay follow-up
 30 Calendar/timezone reminders                     ✅ merged + live accepted
 31 Semantic scheduled actions / natural verbs       ✅ merged PR #110 + live accepted
-Next gate: Controlled Friends Test                  ⏭️ ready
+32 Response depth / progressive disclosure           📝 live finding + policy accepted; runtime pending
+Next gate: Controlled Friends Test                  ⏭️ after bounded D-052 implementation
 ```
 
 Артефакт: `MVP_BUILD_PLAN.md`. Текущие live-оговорки — в `LIVE_TEST_STATUS.md`; отметки реализации и зелёный CI не заменяют production health-check/live acceptance.
@@ -272,6 +275,8 @@ Replay/idempotency gaps, найденные после основного merge,
 
 Правило теста: в течение Friends Test кодим только воспроизводимые live-проблемы, которые мешают реальному сценарию или нарушают truthful/safety/privacy boundaries. Новые функции не добавляем только потому, что можем.
 
+Live finding 2026-09-21 по избыточной глубине ответа подпадает под это правило: D-052 разрешает **bounded conversational tuning** response policy без расширения архитектурного scope.
+
 Preflight не означает broad rollout: новые группы не whitelist-ятся автоматически.
 
 ## Phase 10 — Product Review v0.2
@@ -351,6 +356,6 @@ Group: roast, sarcasm, profanity level/frequency, initiative, callbacks, max int
 
 # Critical Path
 
-`Vision ✅ → Personality ✅ → Memory ✅ → Dispatcher ✅ → Architecture ✅ → Build 01–24 ✅ → Railway / Personal Smoke ✅ → TASK 29 trusted memory/receipts ✅ → TASK 30 calendar/timezone ✅ → Semantic Scheduled Actions ✅ → Friends Preflight ✅ → Controlled Friends Test 🚧 → Product Review v0.2 → Settings UX → Closed Beta → Monetization`
+`Vision ✅ → Personality ✅ → Memory ✅ → Dispatcher ✅ → Architecture ✅ → Build 01–24 ✅ → Railway / Personal Smoke ✅ → TASK 29 trusted memory/receipts ✅ → TASK 30 calendar/timezone ✅ → Semantic Scheduled Actions ✅ → Friends Preflight ✅ → D-052 response-depth tuning 📝 → Controlled Friends Test 🚧 → Product Review v0.2 → Settings UX → Closed Beta → Monetization`
 
-Проверенная production/code точка: `v2@0fe8c260761c446aca9a3fdfd3ae1b00c6a8f05b` (PR #110), full CI **494 passed, 1 warning**. Следующий шаг — не новая функция, а 7-дневный Controlled Friends Test.
+Проверенная production/code точка: `v2@0fe8c260761c446aca9a3fdfd3ae1b00c6a8f05b` (PR #110), full CI **494 passed, 1 warning**. Ближайший bounded шаг — реализовать D-052 response-depth policy и затем продолжать 7-дневный Controlled Friends Test; широкого нового hardening-аудита не требуется.
