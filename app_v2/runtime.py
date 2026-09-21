@@ -21,6 +21,7 @@ from app_v2.repositories.reminder_repo import ReminderRepository
 from app_v2.repositories.task_repo import TaskRepository
 from app_v2.repositories.usage_repo import UsageRepository
 from app_v2.services.action_engine import ActionEngine
+from app_v2.services.connector_resolver import LegacyGroupConnectorResolver
 from app_v2.services.context_builder import ContextBuilder
 from app_v2.services.feedback_collector import FeedbackCollector
 from app_v2.services.group_access import GroupAccessService
@@ -114,6 +115,7 @@ def build_runtime(conn: Any, config: AppConfig) -> RuntimeComponents:
     )
     response_generator = ResponseGenerator(adapter=adapter)
     feedback_collector = FeedbackCollector(feedback_repo)
+    connector_resolver = LegacyGroupConnectorResolver()
 
     personal_pipeline = PersonalPipeline(
         scene_analyzer=scene_analyzer,
@@ -135,7 +137,10 @@ def build_runtime(conn: Any, config: AppConfig) -> RuntimeComponents:
         outbox_repo=outbox_repo,
         group_behavior_engine=GroupBehaviorEngine(
             retrieval_engine,
-            initiative_service=GroupInitiativeService(group_initiative_repo),
+            initiative_service=GroupInitiativeService(
+                group_initiative_repo,
+                connector_resolver=connector_resolver,
+            ),
             statement_watcher=StatementWatcher(adapter),
         ),
         feedback_collector=feedback_collector,
@@ -143,6 +148,7 @@ def build_runtime(conn: Any, config: AppConfig) -> RuntimeComponents:
         group_reminder_service=GroupReminderService(reminder_repo),
         scheduled_action_interpreter=ScheduledActionInterpreter(adapter),
         silence_wakeup_guard=silence_wakeup_repo,
+        connector_resolver=connector_resolver,
     )
 
     action_engine = ActionEngine(task_repo=task_repo, reminder_repo=reminder_repo)
