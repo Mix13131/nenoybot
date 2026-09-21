@@ -292,8 +292,10 @@ def build_worker_loop(conn, config=None) -> WorkerLoop:
             repo=runtime.silence_wakeup_repo,
             group_context_repo=GroupContextRepository(conn),
             initiative_service=GroupInitiativeService(
-                GroupInitiativeRepository(conn)
+                GroupInitiativeRepository(conn),
+                connector_resolver=runtime.connector_resolver,
             ),
+            connector_resolver=runtime.connector_resolver,
         ),
         interval_seconds=max(
             60,
