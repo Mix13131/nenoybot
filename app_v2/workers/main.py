@@ -359,6 +359,30 @@ def _apply_connector_preset_from_env(conn) -> dict[str, Any] | None:
     return result.as_public_dict()
 
 
+def _commit_startup_hook_boundary(conn) -> None:
+    """Persist earlier startup-hook work before optional preset onboarding.
+
+    Preset onboarding owns its own rollback semantics. Committing here ensures
+    a later onboarding failure cannot undo an earlier successful bootstrap,
+    profile patch or connector migration that shared the same psycopg
+    connection.
+    """
+    commit = getattr(conn, "commit", None)
+    if callable(commit):
+        commit()
+
+
+def _run_startup_hooks(conn) -> None:
+    _bootstrap_group_from_env(conn)
+    _enable_silence_wakeup_group_from_env(conn)
+    _migrate_connector_group_from_env(conn)
+
+    # Everything above is now durable before the optional onboarding hook,
+    # whose failure path may rollback the shared connection.
+    _commit_startup_hook_boundary(conn)
+    _apply_connector_preset_from_env(conn)
+
+
 @dataclass
 class WorkerLoop:
     event_worker: Any
@@ -463,10 +487,7 @@ def run_forever() -> None:
     )
 
     with connect(config.database_url) as conn:
-        _bootstrap_group_from_env(conn)
-        _enable_silence_wakeup_group_from_env(conn)
-        _migrate_connector_group_from_env(conn)
-        _apply_connector_preset_from_env(conn)
+        _run_startup_hooks(conn)
         loop = build_worker_loop(conn, config)
         logger.info("nenoy-v2-worker started")
         while True:
