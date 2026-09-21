@@ -205,3 +205,21 @@ def test_registry_scope_binding_type_mismatch_is_rejected_before_storage() -> No
             scope_id=context().telegram_chat_id,
             config=channel_config,
         )
+
+
+
+def test_persisted_group_resolver_rejects_channel_connector_type() -> None:
+    ctx = context()
+    persisted = migrated_legacy_connector(ctx)
+    record = PersistedConnectorRecord(
+        connector_id=persisted.connector_id,
+        scope_type="group",
+        scope_id=ctx.telegram_chat_id,
+        connector_type="telegram_channel",
+        status="live",
+        version=1,
+        config=encode_connector_payload(persisted),
+    )
+
+    with pytest.raises(ConnectorConfigurationError, match="telegram_group"):
+        PersistedGroupConnectorResolver(Repo(record)).resolve(ctx)
