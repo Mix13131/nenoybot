@@ -1,13 +1,17 @@
 from __future__ import annotations
 
 import os
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import replace
 
 import pytest
 
 from app_v2.db.migrations import run_migrations
 from app_v2.domain.connectors import ConnectorBehaviorProfile
-from app_v2.repositories.connector_repo import ConnectorRepository
+from app_v2.repositories.connector_repo import (
+    ConnectorRegistryCorruptionError,
+    ConnectorRepository,
+)
 from app_v2.repositories.group_context_repo import GroupContext, ParticipantContext
 from app_v2.services.connector_codec import decode_connector_payload
 from app_v2.services.connector_resolver import migrated_legacy_connector
@@ -124,6 +128,17 @@ def test_postgres_connector_registry_versions_are_durable_and_immutable():
                 created_by="stale-test",
             )
 
+        conn.execute(
+            "DELETE FROM connector_versions WHERE connector_id=%s AND version=2",
+            (v1.connector_id,),
+        )
+        conn.commit()
+        with pytest.raises(
+            ConnectorRegistryCorruptionError,
+            match="current snapshot is missing",
+        ):
+            repo.get_for_scope("group", scope_id)
+
         assert repo.delete_for_scope("group", scope_id) is True
         assert repo.get_for_scope("group", scope_id) is None
         remaining = conn.execute(
@@ -131,3 +146,44 @@ def test_postgres_connector_registry_versions_are_durable_and_immutable():
             (v1.connector_id,),
         ).fetchone()
         assert remaining[0] == 0
+
+
+
+def test_concurrent_connector_create_is_conflict_safe():
+    database_url = _database_url()
+    if not database_url:
+        pytest.skip("NENOY_V2_TEST_DATABASE_URL is not configured")
+
+    psycopg = pytest.importorskip("psycopg")
+    run_migrations(database_url)
+    scope_id = "-100910000036"
+    config = migrated_legacy_connector(_context(scope_id))
+
+    with psycopg.connect(database_url) as cleanup:
+        ConnectorRepository(cleanup).delete_for_scope("group", scope_id)
+
+    def create_once(label: str) -> bool:
+        with psycopg.connect(database_url) as conn:
+            return ConnectorRepository(conn).create(
+                scope_type="group",
+                scope_id=scope_id,
+                config=config,
+                created_by=label,
+            )
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        results = list(pool.map(create_once, ("a", "b")))
+
+    assert sorted(results) == [False, True]
+
+    with psycopg.connect(database_url) as cleanup:
+        repo = ConnectorRepository(cleanup)
+        record = repo.get_for_scope("group", scope_id)
+        assert record is not None
+        assert record.version == 1
+        rows = cleanup.execute(
+            "SELECT COUNT(*) FROM connector_versions WHERE connector_id=%s",
+            (config.connector_id,),
+        ).fetchone()
+        assert rows[0] == 1
+        assert repo.delete_for_scope("group", scope_id) is True
