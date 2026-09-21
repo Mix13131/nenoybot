@@ -146,6 +146,79 @@ def _bootstrap_group_from_env(conn, *, now: datetime | None = None) -> dict[str,
     return _activate_group(repo, matches[0], reason="recent_unwhitelisted")
 
 
+_SILENCE_WAKEUP_PROFILE_PATCH: dict[str, Any] = {
+    "unsolicited_enabled": True,
+    "timezone": "Europe/Moscow",
+    "silence_wakeup_enabled": True,
+    "silence_wakeup_after_minutes": 180,
+    "silence_wakeup_start_hour": 10,
+    "silence_wakeup_end_hour": 22,
+    "silence_wakeup_daily_limit": 1,
+}
+
+
+def _enable_silence_wakeup_group_from_env(conn) -> dict[str, Any] | None:
+    """One-shot profile patch for an already approved group.
+
+    This deliberately preserves all existing group-specific personality and
+    initiative fields. It only enables bounded silence wakeup settings.
+    Exact-title matching fails closed on zero/multiple matches, and the target
+    must already be whitelisted + active.
+    """
+
+    title = (os.getenv("NENOY_V2_ENABLE_SILENCE_WAKEUP_GROUP_TITLE") or "").strip()
+    if not title:
+        return None
+
+    repo = GroupContextRepository(conn)
+    matches = [
+        row
+        for row in repo.list_groups(limit=100)
+        if (row.title or "").strip() == title
+    ]
+    if not matches:
+        logger.warning(
+            "silence wakeup patch skipped: title not found title=%r",
+            title,
+        )
+        return None
+    if len(matches) != 1:
+        logger.error(
+            "silence wakeup patch skipped: ambiguous title=%r matches=%d",
+            title,
+            len(matches),
+        )
+        return None
+
+    match = matches[0]
+    if not match.is_whitelisted or not match.is_active:
+        logger.warning(
+            "silence wakeup patch skipped: group not approved title=%r whitelisted=%s active=%s",
+            title,
+            match.is_whitelisted,
+            match.is_active,
+        )
+        return None
+
+    merged_profile = dict(match.profile or {})
+    merged_profile.update(_SILENCE_WAKEUP_PROFILE_PATCH)
+    if not repo.set_group_profile(match.telegram_chat_id, merged_profile):
+        logger.error("silence wakeup patch failed title=%r", title)
+        return None
+
+    logger.warning(
+        "silence wakeup patch applied title=%r preserved_profile_keys=%d",
+        title,
+        len(set(match.profile or {}) - set(_SILENCE_WAKEUP_PROFILE_PATCH)),
+    )
+    return {
+        "title": title,
+        "whitelisted": True,
+        "active": True,
+        "profile": merged_profile,
+    }
+
+
 @dataclass
 class WorkerLoop:
     event_worker: Any
@@ -249,6 +322,7 @@ def run_forever() -> None:
 
     with connect(config.database_url) as conn:
         _bootstrap_group_from_env(conn)
+        _enable_silence_wakeup_group_from_env(conn)
         loop = build_worker_loop(conn, config)
         logger.info("nenoy-v2-worker started")
         while True:
