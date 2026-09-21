@@ -233,3 +233,25 @@ def test_onboarding_fails_closed_on_missing_ambiguous_or_inactive_group() -> Non
             title="Anna Lab",
             preset_name="education_community_v1",
         )
+
+
+
+def test_preset_builds_do_not_share_mutable_personality_mapping() -> None:
+    first = build_connector_preset(
+        "education_community_v1",
+        connector_id="conn_first",
+    )
+    second = build_connector_preset(
+        "education_community_v1",
+        connector_id="conn_second",
+    )
+
+    assert first.personality.values is not second.personality.values
+    first.personality.values["warmth"] = 1
+    assert second.personality.values["warmth"] == 9
+
+    third = build_connector_preset(
+        "education_community_v1",
+        connector_id="conn_third",
+    )
+    assert third.personality.values["warmth"] == 9
