@@ -107,6 +107,61 @@ _THIRD_PARTY_ROLE_PHRASE_RE = re.compile(
     flags=re.IGNORECASE,
 )
 
+_RESPONSE_DEPTH_DEEP_MARKERS = (
+    "разбери подробно",
+    "разбери детально",
+    "полный разбор",
+    "исследуй",
+    "изучи глубоко",
+    "все нюансы",
+    "все детали",
+    "пошагово",
+    "дай инструкцию",
+    "deep dive",
+    "step by step",
+    "research this",
+    "comprehensive",
+)
+_RESPONSE_DEPTH_CLARIFY_MARKERS = (
+    "не понял",
+    "не понимаю",
+    "непонятно",
+    "не понятно",
+    "поясни",
+    "объясни",
+    "проще",
+    "что это значит",
+    "что значит",
+    "i don't understand",
+    "i do not understand",
+    "not clear",
+    "explain simply",
+    "what does that mean",
+)
+_RESPONSE_DEPTH_DETAIL_MARKERS = (
+    "подробнее",
+    "подробней",
+    "детальнее",
+    "чуть подробнее",
+    "раскрой подробнее",
+    "more detail",
+    "in more detail",
+    "elaborate",
+)
+
+
+def _detect_response_depth(text: Any) -> str:
+    if not isinstance(text, str):
+        return "concise"
+    normalized = " ".join(text.casefold().replace("ё", "е").split())
+    if any(marker in normalized for marker in _RESPONSE_DEPTH_DEEP_MARKERS):
+        return "deep"
+    if any(marker in normalized for marker in _RESPONSE_DEPTH_CLARIFY_MARKERS):
+        return "clarify"
+    if any(marker in normalized for marker in _RESPONSE_DEPTH_DETAIL_MARKERS):
+        return "detail"
+    return "concise"
+
 
 class ResponseGenerator:
     def __init__(
@@ -388,6 +443,7 @@ class ResponseGenerator:
         return {
             "scope": {"type": context.scope_type.value, "id": context.scope_id},
             "event": context.event,
+            "response_depth": _detect_response_depth(context.event.get("text")),
             "scene": context.scene,
             "decision": {
                 "mode": context.decision.get("mode"),
