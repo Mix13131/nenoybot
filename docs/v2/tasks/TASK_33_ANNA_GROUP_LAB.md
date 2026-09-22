@@ -53,7 +53,13 @@ Required protections:
 - raw values never appear in canonical stats.
 
 Owner identification is supplied explicitly at import time (for example by
-display name) and becomes only an owner alias in output.
+display name) and becomes only an owner alias in output. If that display name
+belongs to more than one stable source ID, import fails closed and the operator
+must identify the owner by source ID instead.
+
+Canonical labels are neutral dataset classes only (`community_archive`,
+`friends_archive`, `work_archive`, `channel_archive`, `generic_archive`).
+Real community/person names stay outside the canonical dataset.
 
 ## CLI
 
@@ -62,7 +68,7 @@ Example:
     python -m app_v2.lab.telegram_importer \
       /local/private/export.json \
       --output /local/private/anna_lab.safe.json \
-      --label anna_diamond_voice \
+      --label community_archive \
       --owner-name "OWNER DISPLAY NAME"
 
 Run this only against a local/private source file. Do not commit the raw export,
