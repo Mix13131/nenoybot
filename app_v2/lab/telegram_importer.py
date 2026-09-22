@@ -464,7 +464,11 @@ class TelegramExportImporter:
         text: str,
         replacements: dict[str, str],
     ) -> str:
-        value = text
+        # Replace source identities in one pass before inserting any of our own
+        # redaction markers. Sequential substitutions could otherwise rewrite
+        # generated markers/aliases when a participant name happens to equal a
+        # marker token (for example "Person").
+        value = self._replace_known_names(text, replacements)
         value = _PAYMENT_LINE_RE.sub(
             self._redaction_replacer(
                 "payment_details",
@@ -501,25 +505,43 @@ class TelegramExportImporter:
         )
         value = _DIGIT_SEQUENCE_RE.sub(self._sanitize_long_number_match, value)
 
-        for source, alias in sorted(
-            replacements.items(),
-            key=lambda item: len(item[0]),
-            reverse=True,
-        ):
-            if not source:
-                continue
-            pattern = re.compile(
-                rf"(?<![\w]){re.escape(source)}(?![\w])",
-                flags=re.IGNORECASE,
-            )
-            value, count = pattern.subn(alias, value)
-            if count:
-                self.redactions["person_name"] += count
-
         return "\n".join(
             line.rstrip()
             for line in value.splitlines()
         ).strip()
+
+    def _replace_known_names(
+        self,
+        text: str,
+        replacements: dict[str, str],
+    ) -> str:
+        keys = [
+            key
+            for key in sorted(
+                replacements,
+                key=len,
+                reverse=True,
+            )
+            if key
+        ]
+        if not keys:
+            return text
+        pattern = re.compile(
+            r"(?<![\\w])(?:"
+            + "|".join(re.escape(key) for key in keys)
+            + r")(?![\\w])",
+            flags=re.IGNORECASE,
+        )
+
+        def replace(match: re.Match[str]) -> str:
+            normalized = " ".join(match.group(0).split()).strip().casefold()
+            replacement = replacements.get(normalized)
+            if replacement is None:
+                return match.group(0)
+            self.redactions["person_name"] += 1
+            return replacement
+
+        return pattern.sub(replace, text)
 
     def _sanitize_url_match(self, match: re.Match[str]) -> str:
         raw = match.group(0).rstrip(".,);]")
