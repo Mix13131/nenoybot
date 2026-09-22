@@ -27,12 +27,14 @@ _TELEGRAM_SOURCE_ID_RE = re.compile(r"(?i)(?<!\w)(?:user|channel)\d+(?!\w)")
 _PHONE_RE = re.compile(r"(?<!\w)\+?\d(?:[\s().-]*\d){9,}(?!\w)")
 _LONG_NUMBER_RE = re.compile(r"(?<!\d)\d{6,}(?!\d)")
 _PAYMENT_CUE_RE = re.compile(
-    r"(?i)\b(?:реквизит\w*|оплат\w*|перевод\w*|"
-    r"карт(?:а|ы|у|е|ой|ами)?|внес(?:ти|ли|ен|ена|ено)\s+оплат\w*)\b"
+    r"(?i)\b(?:реквизит\w*|оплат\w*|"
+    r"внес(?:ти|ли|ен|ена|ено)\s+оплат\w*|"
+    r"перевод\s+(?:на|по)\s+(?:карт\w*|сч[её]т\w*))\b"
 )
 _PAYMENT_IDENTIFIER_RE = re.compile(r"(?:\d[\s().-]*){6,}")
 _PAYMENT_RECIPIENT_RE = re.compile(
-    r"^[A-Za-zА-Яа-яЁё][A-Za-zА-Яа-яЁё .'-]{1,78}$"
+    r"(?i)^(?:(?:получатель|держатель|имя\s+получателя)\s*[:—-]\s*)?"
+    r"[A-Za-zА-Яа-яЁё][A-Za-zА-Яа-яЁё .'-]{1,78}$"
 )
 _SPACE_RE = re.compile(r"[ \t]+")
 
