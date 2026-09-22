@@ -126,7 +126,7 @@ def payload():
 def importer():
     return TelegramExportImporter(
         TelegramExportImportConfig(
-            label="anna_lab_fixture",
+            label="community_archive",
             owner_display_names=frozenset({"Alice Owner"}),
         )
     )
@@ -138,7 +138,7 @@ def test_importer_builds_canonical_dataset_without_source_chat_identity():
     dumped = json.dumps(data, ensure_ascii=False)
 
     assert data["schema_version"] == 1
-    assert data["label"] == "anna_lab_fixture"
+    assert data["label"] == "community_archive"
     assert data["source_kind"] == "telegram_desktop_json"
     assert data["source_chat_type"] == "private_supergroup"
     assert len(data["events"]) == 6
@@ -365,10 +365,30 @@ def test_root_chat_title_is_redacted_even_without_matching_actor():
         "Anna Terekhova",
         "anna/diamond",
         "anna@example.com",
+        "anna_diamond_voice",
+        "alice_owner",
+        "private_community_name",
     ],
 )
-def test_dataset_label_requires_privacy_safe_slug(unsafe_label):
-    with pytest.raises(ValueError, match="privacy-safe"):
+def test_dataset_label_requires_neutral_dataset_class(unsafe_label):
+    with pytest.raises(ValueError, match="neutral dataset class"):
         TelegramExportImporter(
             TelegramExportImportConfig(label=unsafe_label)
         )
+
+
+@pytest.mark.parametrize(
+    "safe_label",
+    [
+        "community_archive",
+        "friends_archive",
+        "work_archive",
+        "channel_archive",
+        "generic_archive",
+    ],
+)
+def test_neutral_dataset_classes_are_allowed(safe_label):
+    instance = TelegramExportImporter(
+        TelegramExportImportConfig(label=safe_label)
+    )
+    assert instance.config.label == safe_label
