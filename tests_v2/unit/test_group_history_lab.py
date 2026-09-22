@@ -280,3 +280,41 @@ def test_ambiguous_owner_name_fails_closed_but_source_id_can_disambiguate():
     )
     assert dataset["messages"][0]["actor"] == "member_001"
     assert dataset["messages"][1]["actor"] == "admin"
+
+
+
+@pytest.mark.parametrize(
+    "payment_text",
+    [
+        "Реквизиты: 1111 2222 3333 4444 Получатель Synthetic Recipient",
+        "Кто не вносил оплату за месяц, пожалуйста сюда:\n\n"
+        "1111 2222 3333 4444\nSynthetic Recipient",
+    ],
+)
+def test_payment_blocks_remove_identifiers_and_recipient_names(payment_text):
+    payload = _export()
+    payload["messages"][0]["text"] = payment_text
+
+    dataset = sanitize_telegram_export(payload)
+    text = dataset["messages"][0]["text"]
+    serialized = canonical_json_bytes(dataset).decode("utf-8")
+
+    assert "[payment]" in text
+    assert "1111 2222" not in serialized
+    assert "Synthetic Recipient" not in serialized
+
+
+def test_payment_redaction_does_not_consume_unrelated_following_message_text():
+    payload = _export()
+    payload["messages"][0]["text"] = (
+        "Оплата за месяц, реквизиты ниже:\n"
+        "1111 2222 3333 4444\n"
+        "Synthetic Recipient\n"
+        "Завтра занятие в 18:30."
+    )
+
+    dataset = sanitize_telegram_export(payload)
+    text = dataset["messages"][0]["text"]
+
+    assert "Synthetic Recipient" not in text
+    assert "Завтра занятие в 18:30." in text
