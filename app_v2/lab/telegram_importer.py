@@ -261,32 +261,70 @@ class TelegramExportImporter:
         )
 
     def _pre_register_participants(self, messages: list[Any]) -> None:
+        # Pass 1: register every identity that has a stable Telegram source id
+        # anywhere in the export. This makes aliases independent of whether a
+        # service member-name mention happens before the person's first message.
         for raw in messages:
             if not isinstance(raw, dict):
                 continue
-            self.aliases.alias_for(raw.get("from_id"), raw.get("from"))
-            self.aliases.alias_for(
-                raw.get("actor_id"),
-                raw.get("actor"),
-                kind_hint="channel"
-                if str(raw.get("actor_id") or "").startswith("channel")
-                else None,
-            )
-            self.aliases.alias_for(
-                raw.get("forwarded_from_id"),
-                raw.get("forwarded_from"),
-            )
+            for source_id, display_name, kind_hint in (
+                (raw.get("from_id"), raw.get("from"), None),
+                (
+                    raw.get("actor_id"),
+                    raw.get("actor"),
+                    "channel"
+                    if str(raw.get("actor_id") or "").startswith("channel")
+                    else None,
+                ),
+                (
+                    raw.get("forwarded_from_id"),
+                    raw.get("forwarded_from"),
+                    None,
+                ),
+            ):
+                if str(source_id or "").strip():
+                    self.aliases.alias_for(
+                        source_id,
+                        display_name,
+                        kind_hint=kind_hint,
+                    )
+            for reaction in raw.get("reactions") or ():
+                if not isinstance(reaction, dict):
+                    continue
+                for recent in reaction.get("recent") or ():
+                    if (
+                        isinstance(recent, dict)
+                        and str(recent.get("from_id") or "").strip()
+                    ):
+                        self.aliases.alias_for(
+                            recent.get("from_id"),
+                            recent.get("from"),
+                        )
+
+        # Pass 2: attach name-only references to already known identities where
+        # possible; allocate person aliases only for identities that truly have
+        # no source id anywhere in the export.
+        for raw in messages:
+            if not isinstance(raw, dict):
+                continue
+            for source_id, display_name in (
+                (raw.get("from_id"), raw.get("from")),
+                (raw.get("actor_id"), raw.get("actor")),
+                (raw.get("forwarded_from_id"), raw.get("forwarded_from")),
+            ):
+                if not str(source_id or "").strip():
+                    self.aliases.register_name(display_name)
             for member in raw.get("members") or ():
                 self.aliases.register_name(member)
             for reaction in raw.get("reactions") or ():
                 if not isinstance(reaction, dict):
                     continue
                 for recent in reaction.get("recent") or ():
-                    if isinstance(recent, dict):
-                        self.aliases.alias_for(
-                            recent.get("from_id"),
-                            recent.get("from"),
-                        )
+                    if (
+                        isinstance(recent, dict)
+                        and not str(recent.get("from_id") or "").strip()
+                    ):
+                        self.aliases.register_name(recent.get("from"))
 
     def _build_name_replacements(self) -> dict[str, str]:
         replacements = self.aliases.name_replacements()
