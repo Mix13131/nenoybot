@@ -40,7 +40,7 @@ _PAYMENT_LINE_RE = re.compile(
     r"(?:\d[\d\s-]{10,}\d)[^\n]*)$"
 )
 _NAME_TOKEN_RE = re.compile(r"[A-Za-zА-Яа-яЁё]{3,}")
-_SAFE_LABEL_RE = re.compile(r"[a-z0-9][a-z0-9_-]{0,63}\\Z")
+_SAFE_LABEL_RE = re.compile(r"[a-z0-9][a-z0-9_-]{0,63}\Z")
 _TRACKING_QUERY_KEYS = {
     "fbclid",
     "gclid",
