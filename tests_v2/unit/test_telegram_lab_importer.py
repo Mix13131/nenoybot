@@ -392,3 +392,98 @@ def test_neutral_dataset_classes_are_allowed(safe_label):
         TelegramExportImportConfig(label=safe_label)
     )
     assert instance.config.label == safe_label
+
+
+
+def test_distinct_source_ids_with_same_display_name_remain_distinct():
+    data = {
+        "name": "Synthetic Group",
+        "type": "private_supergroup",
+        "messages": [
+            {
+                "id": 1,
+                "type": "message",
+                "date_unixtime": "1704110400",
+                "from": "Alex Smith",
+                "from_id": "user1",
+                "text": "первый",
+            },
+            {
+                "id": 2,
+                "type": "message",
+                "date_unixtime": "1704110460",
+                "from": "Alex Smith",
+                "from_id": "user2",
+                "text": "второй",
+            },
+            {
+                "id": 3,
+                "type": "message",
+                "date_unixtime": "1704110520",
+                "from": "Other Person",
+                "from_id": "user3",
+                "text": "Alex Smith, вы оба здесь?",
+            },
+        ],
+    }
+    dataset = TelegramExportImporter(
+        TelegramExportImportConfig(label="community_archive")
+    ).import_payload(data)
+
+    assert dataset.events[0].actor_alias == "user_001"
+    assert dataset.events[1].actor_alias == "user_002"
+    assert dataset.events[0].actor_alias != dataset.events[1].actor_alias
+    assert "[PERSON]" in dataset.events[2].text
+    assert dataset.stats["participant_count"] == 3
+
+
+def test_ambiguous_owner_display_name_fails_closed():
+    data = {
+        "name": "Synthetic Group",
+        "type": "private_supergroup",
+        "messages": [
+            {
+                "id": 1,
+                "type": "message",
+                "date_unixtime": "1704110400",
+                "from": "Alex Smith",
+                "from_id": "user1",
+                "text": "one",
+            },
+            {
+                "id": 2,
+                "type": "message",
+                "date_unixtime": "1704110460",
+                "from": "Alex Smith",
+                "from_id": "user2",
+                "text": "two",
+            },
+        ],
+    }
+    instance = TelegramExportImporter(
+        TelegramExportImportConfig(
+            label="community_archive",
+            owner_display_names=frozenset({"Alex Smith"}),
+        )
+    )
+
+    with pytest.raises(ValueError, match="owner display name is ambiguous"):
+        instance.import_payload(data)
+
+
+@pytest.mark.parametrize(
+    "tracking_key",
+    ["wbraid", "gbraid", "srsltid", "li_fat_id", "_gl", "random_click_id"],
+)
+def test_unknown_and_additional_tracking_params_are_dropped(tracking_key):
+    data = payload()
+    data["messages"][0]["text"] = (
+        f"https://example.com/resource?chapter=1&{tracking_key}=unique-value"
+    )
+
+    dataset = importer().import_payload(data)
+    value = dataset.events[0].text
+
+    assert "unique-value" not in value
+    assert tracking_key not in value
+    assert "chapter=1" in value
