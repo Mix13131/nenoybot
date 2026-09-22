@@ -26,6 +26,14 @@ _HANDLE_RE = re.compile(r"(?<!\w)@[A-Za-z0-9_]{5,}")
 _TELEGRAM_SOURCE_ID_RE = re.compile(r"(?i)(?<!\w)(?:user|channel)\d+(?!\w)")
 _PHONE_RE = re.compile(r"(?<!\w)\+?\d(?:[\s().-]*\d){9,}(?!\w)")
 _LONG_NUMBER_RE = re.compile(r"(?<!\d)\d{6,}(?!\d)")
+_PAYMENT_CUE_RE = re.compile(
+    r"(?i)\b(?:реквизит\w*|оплат\w*|перевод\w*|"
+    r"карт(?:а|ы|у|е|ой|ами)?|внес(?:ти|ли|ен|ена|ено)\s+оплат\w*)\b"
+)
+_PAYMENT_IDENTIFIER_RE = re.compile(r"(?:\d[\s().-]*){6,}")
+_PAYMENT_RECIPIENT_RE = re.compile(
+    r"^[A-Za-zА-Яа-яЁё][A-Za-zА-Яа-яЁё .'-]{1,78}$"
+)
 _SPACE_RE = re.compile(r"[ \t]+")
 
 
@@ -182,8 +190,52 @@ def _name_replacements(
     return replacements
 
 
+def _redact_payment_blocks(text: str) -> str:
+    """Remove payment identifiers and adjacent recipient names from lab-visible text."""
+
+    output: list[str] = []
+    followup_budget = 0
+    identifier_redacted = False
+
+    for line in text.splitlines():
+        stripped = line.strip()
+
+        if stripped and _PAYMENT_CUE_RE.search(stripped):
+            output.append("[payment]")
+            followup_budget = 3
+            identifier_redacted = False
+            continue
+
+        if followup_budget > 0:
+            if not stripped:
+                output.append(line)
+                continue
+
+            if _PAYMENT_IDENTIFIER_RE.search(stripped):
+                output.append("[payment]")
+                identifier_redacted = True
+                followup_budget -= 1
+                continue
+
+            if (
+                identifier_redacted
+                and len(stripped) <= 80
+                and _PAYMENT_RECIPIENT_RE.fullmatch(stripped)
+            ):
+                output.append("[payment]")
+                followup_budget = 0
+                identifier_redacted = False
+                continue
+
+            followup_budget -= 1
+
+        output.append(line)
+
+    return "\n".join(output)
+
+
 def _sanitize_text(text: str, replacements: Iterable[tuple[re.Pattern[str], str]]) -> str:
-    value = text
+    value = _redact_payment_blocks(text)
     # Email first so the bare-domain pass cannot leave a local part behind.
     value = _EMAIL_RE.sub("[email]", value)
     value = _HANDLE_RE.sub("[handle]", value)
