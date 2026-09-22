@@ -272,6 +272,7 @@ def analyze_group_dna(
 
     review_pack = {
         "group_dna_review_pack_version": 1,
+        "lab_replay_version": replay.get("lab_replay_version"),
         "dataset_version": dataset.get("lab_dataset_version"),
         "source_replay_version": replay.get("lab_replay_version"),
         "sample_per_category": sample_per_category,
