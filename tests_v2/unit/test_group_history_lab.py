@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import json
 
+import pytest
+
 from app_v2.labs.group_history import (
     GroupLabOptions,
     ReplayOptions,
@@ -171,3 +173,110 @@ def test_service_rows_can_be_excluded_without_leaking_member_names():
 
     assert all(item["kind"] != "service" for item in dataset["messages"])
     assert "Иван Реальный" not in canonical_json_bytes(dataset).decode("utf-8")
+
+
+
+def test_short_display_name_does_not_corrupt_unrelated_words():
+    payload = {
+        "name": "Synthetic Group",
+        "type": "private_supergroup",
+        "messages": [
+            {
+                "id": 1,
+                "type": "message",
+                "date": "2024-01-01T10:00:00",
+                "from": "Ира",
+                "from_id": "user1",
+                "text": "Привет",
+            },
+            {
+                "id": 2,
+                "type": "message",
+                "date": "2024-01-01T10:01:00",
+                "from": "Саша",
+                "from_id": "user2",
+                "text": "Всем мира. Ира, привет.",
+            },
+        ],
+    }
+
+    dataset = sanitize_telegram_export(payload)
+    text = dataset["messages"][1]["text"]
+
+    assert "Всем мира." in text
+    assert "member_001, привет." in text
+    assert "мmember" not in text
+
+
+@pytest.mark.parametrize(
+    "unsafe_text",
+    [
+        "tg://join?invite=SECRET",
+        "telegram://join?invite=SECRET",
+        "example.com/private/path?token=SECRET",
+        "www.example.org/private",
+        "https://example.net/private",
+    ],
+)
+def test_common_url_forms_are_redacted(unsafe_text):
+    payload = _export()
+    payload["messages"][0]["text"] = unsafe_text
+
+    dataset = sanitize_telegram_export(payload)
+
+    assert dataset["messages"][0]["text"] == "[link]"
+    assert "SECRET" not in canonical_json_bytes(dataset).decode("utf-8")
+
+
+def test_source_ids_and_group_title_inside_text_are_redacted():
+    payload = _export()
+    payload["messages"][0]["text"] = (
+        "Sensitive Group Name: user729337440 и channel9988 обсуждали встречу"
+    )
+
+    dataset = sanitize_telegram_export(payload)
+    text = dataset["messages"][0]["text"]
+
+    assert "Sensitive Group Name" not in text
+    assert "user729337440" not in text
+    assert "channel9988" not in text
+    assert "[group]" in text
+    assert text.count("[id]") == 2
+
+
+def test_ambiguous_owner_name_fails_closed_but_source_id_can_disambiguate():
+    payload = {
+        "name": "Synthetic Group",
+        "type": "private_supergroup",
+        "messages": [
+            {
+                "id": 1,
+                "type": "message",
+                "date": "2024-01-01T10:00:00",
+                "from": "Анна",
+                "from_id": "user1",
+                "text": "one",
+            },
+            {
+                "id": 2,
+                "type": "message",
+                "date": "2024-01-01T10:01:00",
+                "from": "Анна",
+                "from_id": "user2",
+                "text": "two",
+            },
+        ],
+    }
+
+    with pytest.raises(ValueError, match="owner display name is ambiguous"):
+        sanitize_telegram_export(
+            payload,
+            options=GroupLabOptions(owner_display_name="Анна"),
+        )
+
+    dataset = sanitize_telegram_export(
+        payload,
+        options=GroupLabOptions(owner_source_id="user2"),
+    )
+    assert dataset["messages"][0]["actor"] == "member_001"
+    assert dataset["messages"][1]["actor"] == "admin"

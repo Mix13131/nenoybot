@@ -11,10 +11,19 @@ from typing import Any, Iterable, Mapping, Sequence
 LAB_DATASET_VERSION = 1
 LAB_REPLAY_VERSION = 1
 
-_URL_RE = re.compile(r"(?i)\b(?:https?://|www\.)\S+")
-_TELEGRAM_LINK_RE = re.compile(r"(?i)\b(?:t\.me|telegram\.me)/\S+")
+_SCHEME_URL_RE = re.compile(r"(?i)\b(?:https?://|tg://|telegram://)\S+")
+_WWW_URL_RE = re.compile(r"(?i)\bwww\.\S+")
+_BARE_URL_RE = re.compile(
+    r"(?i)(?<![@\w])"
+    r"(?:[a-z0-9](?:[a-z0-9-]{0,62}[a-z0-9])?\.)+"
+    r"(?:[a-z]{2,63}|рф)"
+    r"(?::\d{2,5})?"
+    r"(?:/[^\s<>()]*)?"
+    r"(?!\w)"
+)
 _EMAIL_RE = re.compile(r"(?i)(?<![\w.+-])[\w.+-]+@[\w.-]+\.[A-Z]{2,}(?!\w)")
 _HANDLE_RE = re.compile(r"(?<!\w)@[A-Za-z0-9_]{5,}")
+_TELEGRAM_SOURCE_ID_RE = re.compile(r"(?i)(?<!\w)(?:user|channel)\d+(?!\w)")
 _PHONE_RE = re.compile(r"(?<!\w)\+?\d(?:[\s().-]*\d){9,}(?!\w)")
 _LONG_NUMBER_RE = re.compile(r"(?<!\d)\d{6,}(?!\d)")
 _SPACE_RE = re.compile(r"[ \t]+")
@@ -131,6 +140,13 @@ def _participant_aliases(
     return aliases, names_by_key
 
 
+def _bounded_literal_pattern(value: str) -> re.Pattern[str]:
+    escaped = re.escape(value)
+    prefix = r"(?<!\w)" if value[:1].isalnum() or value.startswith("_") else ""
+    suffix = r"(?!\w)" if value[-1:].isalnum() or value.endswith("_") else ""
+    return re.compile(prefix + escaped + suffix, flags=re.IGNORECASE)
+
+
 def _name_replacements(
     aliases: Mapping[str, str],
     names_by_key: Mapping[str, set[str]],
@@ -155,7 +171,7 @@ def _name_replacements(
         if marker in seen:
             continue
         seen.add(marker)
-        replacements.append((re.compile(re.escape(name), flags=re.IGNORECASE), alias))
+        replacements.append((_bounded_literal_pattern(name), alias))
 
     for first_folded, owners in sorted(first_name_owners.items(), key=lambda item: len(item[0]), reverse=True):
         if len(owners) != 1:
@@ -168,10 +184,13 @@ def _name_replacements(
 
 def _sanitize_text(text: str, replacements: Iterable[tuple[re.Pattern[str], str]]) -> str:
     value = text
-    value = _URL_RE.sub("[link]", value)
-    value = _TELEGRAM_LINK_RE.sub("[link]", value)
+    # Email first so the bare-domain pass cannot leave a local part behind.
     value = _EMAIL_RE.sub("[email]", value)
     value = _HANDLE_RE.sub("[handle]", value)
+    value = _SCHEME_URL_RE.sub("[link]", value)
+    value = _WWW_URL_RE.sub("[link]", value)
+    value = _BARE_URL_RE.sub("[link]", value)
+    value = _TELEGRAM_SOURCE_ID_RE.sub("[id]", value)
     value = _PHONE_RE.sub("[phone]", value)
     value = _LONG_NUMBER_RE.sub("[number]", value)
     for pattern, alias in replacements:
@@ -234,12 +253,32 @@ def sanitize_telegram_export(
         raise ValueError("Telegram export must contain a messages list")
 
     rows = [row for row in raw_rows if isinstance(row, Mapping)]
+
+    owner_name = (
+        opts.owner_display_name.strip().casefold()
+        if opts.owner_display_name and opts.owner_display_name.strip()
+        else None
+    )
+    if owner_name and not opts.owner_source_id:
+        owner_source_ids = {
+            source_id
+            for row in rows
+            for source_id, display in [_source_actor(row)]
+            if source_id and display and display.casefold() == owner_name
+        }
+        if len(owner_source_ids) > 1:
+            raise ValueError("owner display name is ambiguous; use owner_source_id")
+
     aliases, names_by_key = _participant_aliases(
         rows,
         owner_source_id=opts.owner_source_id,
         owner_display_name=opts.owner_display_name,
     )
     replacements = _name_replacements(aliases, names_by_key)
+
+    source_title = _SPACE_RE.sub(" ", str(payload.get("name") or "")).strip()
+    if source_title:
+        replacements.insert(0, (_bounded_literal_pattern(source_title), "[group]"))
 
     id_map: dict[str, str] = {}
     for index, row in enumerate(rows, start=1):
