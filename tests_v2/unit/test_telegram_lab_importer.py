@@ -280,3 +280,95 @@ def test_writer_outputs_only_canonical_dataset(tmp_path):
 def test_invalid_export_shape_fails_closed(invalid):
     with pytest.raises(ValueError):
         importer().import_payload(invalid)
+
+
+
+def test_member_name_seen_before_source_id_reuses_same_alias():
+    data = payload()
+    data["messages"].insert(
+        0,
+        {
+            "id": 0,
+            "type": "service",
+            "date": "2024-01-01T11:59:00",
+            "date_unixtime": "1704110340",
+            "actor": "Private Community Name",
+            "actor_id": "channel999",
+            "action": "add_members",
+            "members": ["Alice Owner", "Bob Member"],
+            "text": "",
+            "text_entities": [],
+        },
+    )
+
+    dataset = importer().import_payload(data)
+    bob_message = next(
+        event for event in dataset.events if event.source_message_id == 2
+    )
+
+    assert bob_message.actor_alias == "user_001"
+    assert dataset.stats["participant_count"] == 5
+
+
+@pytest.mark.parametrize("tracking_key", ["fbclid", "gclid", "yclid", "msclkid", "ttclid"])
+def test_common_tracking_query_identifiers_are_removed(tracking_key):
+    data = payload()
+    data["messages"][0]["text"] = (
+        f"https://example.com/resource?chapter=1&{tracking_key}=participant-token"
+    )
+
+    dataset = importer().import_payload(data)
+    text = dataset.events[0].text
+
+    assert "participant-token" not in text
+    assert tracking_key not in text
+    assert "chapter=1" in text
+
+
+@pytest.mark.parametrize(
+    "url,marker",
+    [
+        ("https://t.me:443/+AbCdEfGhIjKl", "[REDACTED_INVITE_LINK]"),
+        ("https://vk.com:443/call/join/secret-path", "[REDACTED_CALL_LINK]"),
+        (
+            "https://example.zoom.us:443/j/123456789?pwd=secret",
+            "[REDACTED_MEETING_LINK]",
+        ),
+    ],
+)
+def test_sensitive_links_with_explicit_ports_are_redacted(url, marker):
+    data = payload()
+    data["messages"][0]["text"] = url
+
+    dataset = importer().import_payload(data)
+
+    assert dataset.events[0].text == marker
+    assert "secret" not in dataset.events[0].text
+
+
+def test_root_chat_title_is_redacted_even_without_matching_actor():
+    data = payload()
+    data["name"] = "Never Seen Root Title"
+    data["messages"][0]["text"] = "Обсуждаем Never Seen Root Title сегодня"
+
+    dataset = importer().import_payload(data)
+    dumped = json.dumps(dataset.as_dict(), ensure_ascii=False)
+
+    assert "Never Seen Root Title" not in dumped
+    assert "[SOURCE_CHAT]" in dataset.events[0].text
+
+
+@pytest.mark.parametrize(
+    "unsafe_label",
+    [
+        "Клуб БРИЛЛИАНТОВЫЙ ГОЛОС",
+        "Anna Terekhova",
+        "anna/diamond",
+        "anna@example.com",
+    ],
+)
+def test_dataset_label_requires_privacy_safe_slug(unsafe_label):
+    with pytest.raises(ValueError, match="privacy-safe"):
+        TelegramExportImporter(
+            TelegramExportImportConfig(label=unsafe_label)
+        )
