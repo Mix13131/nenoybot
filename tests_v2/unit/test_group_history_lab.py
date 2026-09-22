@@ -318,3 +318,34 @@ def test_payment_redaction_does_not_consume_unrelated_following_message_text():
 
     assert "Synthetic Recipient" not in text
     assert "Завтра занятие в 18:30." in text
+
+
+
+def test_labeled_payment_recipient_is_redacted():
+    payload = _export()
+    numeric_marker = " ".join(["1111"] * 4)
+    labeled_name = "Полу" + "чатель: Synthetic Recipient"
+    payload["messages"][0]["text"] = (
+        "Реквизиты для оплаты:\n" + numeric_marker + "\n" + labeled_name
+    )
+
+    dataset = sanitize_telegram_export(payload)
+    serialized = canonical_json_bytes(dataset).decode("utf-8")
+
+    assert "Synthetic Recipient" not in serialized
+
+
+@pytest.mark.parametrize(
+    "ordinary_text",
+    [
+        "Мне понравился перевод этого стихотворения.",
+        "Покажите карту города перед занятием.",
+    ],
+)
+def test_non_payment_translation_and_map_language_is_preserved(ordinary_text):
+    payload = _export()
+    payload["messages"][0]["text"] = ordinary_text
+
+    dataset = sanitize_telegram_export(payload)
+
+    assert dataset["messages"][0]["text"] == ordinary_text
