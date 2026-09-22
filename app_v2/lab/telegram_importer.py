@@ -40,24 +40,25 @@ _PAYMENT_LINE_RE = re.compile(
     r"(?:\d[\d\s-]{10,}\d)[^\n]*)$"
 )
 _NAME_TOKEN_RE = re.compile(r"[A-Za-zА-Яа-яЁё]{3,}")
-_SAFE_LABEL_RE = re.compile(r"[a-z0-9][a-z0-9_-]{0,63}\Z")
-_TRACKING_QUERY_KEYS = {
-    "fbclid",
-    "gclid",
-    "dclid",
-    "msclkid",
-    "yclid",
-    "ttclid",
-    "twclid",
-    "igshid",
-    "mc_cid",
-    "mc_eid",
-    "mkt_tok",
-    "_hsenc",
-    "_hsmi",
-    "vero_conv",
-    "vero_id",
-}
+_SAFE_DATASET_LABELS = frozenset({
+    "community_archive",
+    "friends_archive",
+    "work_archive",
+    "channel_archive",
+    "generic_archive",
+})
+_SAFE_RESOURCE_QUERY_KEYS = frozenset({
+    "chapter",
+    "page",
+    "section",
+    "lang",
+    "hl",
+    "gl",
+    "t",
+    "start",
+})
+_YOUTUBE_QUERY_KEYS = _SAFE_RESOURCE_QUERY_KEYS | {"v", "list", "index"}
+_PLAY_STORE_QUERY_KEYS = _SAFE_RESOURCE_QUERY_KEYS | {"id"}
 
 
 @dataclass(frozen=True)
@@ -101,16 +102,6 @@ class _AliasBook:
                 self._display_to_alias.setdefault(self._norm_name(display), existing)
             return existing
 
-        # A service event may mention a member by display name before the same
-        # person later appears with a stable Telegram source id. Reuse that
-        # name-only alias instead of inventing a second identity.
-        display_key = self._norm_name(display)
-        if source and display_key:
-            by_name = self._display_to_alias.get(display_key)
-            if by_name:
-                self._aliases[key] = by_name
-                return by_name
-
         is_owner = (
             source in self.config.owner_source_ids
             or self._norm_name(display)
@@ -134,7 +125,14 @@ class _AliasBook:
 
         self._aliases[key] = alias
         if display:
-            self._display_to_alias.setdefault(self._norm_name(display), alias)
+            display_key = self._norm_name(display)
+            existing_display = self._display_to_alias.get(display_key)
+            if existing_display is None:
+                self._display_to_alias[display_key] = alias
+            elif existing_display != alias:
+                # Same human-readable name belongs to multiple stable source
+                # identities. Text mentions using only that name are ambiguous.
+                self._display_to_alias[display_key] = "[PERSON]"
         return alias
 
     def register_name(
@@ -174,10 +172,10 @@ class TelegramExportImporter:
         label = str(config.label or "").strip()
         if not label:
             raise ValueError("label is required")
-        if not _SAFE_LABEL_RE.fullmatch(label):
+        if label not in _SAFE_DATASET_LABELS:
             raise ValueError(
-                "label must be a privacy-safe lowercase slug "
-                "(a-z, 0-9, underscore, hyphen; max 64 chars)"
+                "label must be a neutral dataset class: "
+                + ", ".join(sorted(_SAFE_DATASET_LABELS))
             )
         self.config = TelegramExportImportConfig(
             label=label,
@@ -266,6 +264,47 @@ class TelegramExportImporter:
         )
 
     def _pre_register_participants(self, messages: list[Any]) -> None:
+        source_ids_by_display: dict[str, set[str]] = {}
+        for raw in messages:
+            if not isinstance(raw, dict):
+                continue
+            pairs = [
+                (raw.get("from_id"), raw.get("from")),
+                (raw.get("actor_id"), raw.get("actor")),
+                (raw.get("forwarded_from_id"), raw.get("forwarded_from")),
+            ]
+            for reaction in raw.get("reactions") or ():
+                if not isinstance(reaction, dict):
+                    continue
+                for recent in reaction.get("recent") or ():
+                    if isinstance(recent, dict):
+                        pairs.append(
+                            (recent.get("from_id"), recent.get("from"))
+                        )
+            for source_id, display_name in pairs:
+                source = str(source_id or "").strip()
+                display_key = self.aliases._norm_name(display_name)
+                if source and display_key:
+                    source_ids_by_display.setdefault(
+                        display_key,
+                        set(),
+                    ).add(source)
+
+        owner_names = {
+            self.aliases._norm_name(name)
+            for name in self.config.owner_display_names
+        }
+        ambiguous_owner_names = sorted(
+            name
+            for name in owner_names
+            if len(source_ids_by_display.get(name, set())) > 1
+        )
+        if ambiguous_owner_names:
+            raise ValueError(
+                "owner display name is ambiguous; use owner_source_ids "
+                "without owner_display_names for that identity"
+            )
+
         # Pass 1: register every identity that has a stable Telegram source id
         # anywhere in the export. This makes aliases independent of whether a
         # service member-name mention happens before the person's first message.
@@ -496,7 +535,9 @@ class TelegramExportImporter:
         query_keys = {key.casefold() for key, _ in parse_qsl(parsed.query)}
         sensitive = False
         marker = "[REDACTED_CREDENTIAL_URL]"
-        if "zoom.us" in host and ("/j/" in path or "pwd" in query_keys):
+        if parsed.username is not None or parsed.password is not None:
+            sensitive = True
+        elif "zoom.us" in host and ("/j/" in path or "pwd" in query_keys):
             sensitive = True
             marker = "[REDACTED_MEETING_LINK]"
         elif host.endswith("t.me") and (
@@ -525,14 +566,17 @@ class TelegramExportImporter:
 
         # Public resources are useful for later material-index evaluation, but
         # strip query/fragment trackers from the canonical fixture.
+        allowed_query_keys = set(_SAFE_RESOURCE_QUERY_KEYS)
+        if host in {"youtube.com", "www.youtube.com", "m.youtube.com"}:
+            allowed_query_keys = set(_YOUTUBE_QUERY_KEYS)
+        elif host == "play.google.com":
+            allowed_query_keys = set(_PLAY_STORE_QUERY_KEYS)
+
         safe_query = urlencode(
             [
                 (key, value)
                 for key, value in parse_qsl(parsed.query)
-                if not (
-                    key.casefold().startswith("utm_")
-                    or key.casefold() in _TRACKING_QUERY_KEYS
-                )
+                if key.casefold() in allowed_query_keys
             ]
         )
         return urlunsplit(
