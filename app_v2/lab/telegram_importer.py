@@ -145,9 +145,14 @@ class _AliasBook:
         display = " ".join(str(display_name or "").split()).strip()
         if not display:
             return alias
+        display_key = self._norm_name(display)
+        if alias is None:
+            existing = self._display_to_alias.get(display_key)
+            if existing:
+                return existing
         resolved = alias or self.alias_for(None, display)
         if resolved:
-            self._display_to_alias.setdefault(self._norm_name(display), resolved)
+            self._display_to_alias.setdefault(display_key, resolved)
         return resolved
 
     def name_replacements(self) -> dict[str, str]:
