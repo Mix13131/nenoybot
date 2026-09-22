@@ -1,4 +1,4 @@
-# TASK 37 — Group Lab importer / anonymizer / frozen replay
+# TASK 37 — Group Lab / historical community replay
 
 Issue: #129
 
@@ -6,79 +6,68 @@ Issue: #129
 
 Сделать переиспользуемую offline-песочницу для исторических Telegram-экспортов. Первый реальный датасет — многолетняя история «Клуб БРИЛЛИАНТОВЫЙ ГОЛОС», но shared Brain не получает Anna-specific веток.
 
-## Phase A/B — текущий bounded scope
+Главный продуктовый вопрос:
 
-1. Telegram Desktop JSON importer.
-2. Детерминированная анонимизация.
-3. Удаление raw Telegram/group ids, имён, handles и явных чувствительных контактов/ссылок.
-4. Безопасное представление media/service/reactions.
-5. Remap message ids с сохранением reply topology.
-6. Деление истории на bounded episodes.
-7. Frozen replay cases с ограниченным контекстом и пустой ручной меткой:
-   - `join`;
-   - `stay_silent`;
-   - `assist_admin`;
-   - `uncertain`.
-8. Никаких model calls, production DB writes, Telegram outbox или reminders в A/B.
+> Какую повторяющуюся работу AI community co-host может забрать у администратора, сохранив её авторитет, культуру группы и право бота молчать?
 
-## CLI
+## Current checkpoint — 2026-09-22
 
-```bash
-python -m app_v2.group_lab prepare \
-  --input /path/to/result.json \
-  --output-dir /path/to/group-lab \
-  --owner-name "<admin display name>"
-```
+### Phase A/B — import / anonymize / frozen replay — DONE
 
-Результат:
+Merged PR #130.
 
-- `sanitized_history.json`;
-- `frozen_replay.json`.
+Реализовано:
 
-Raw export остаётся вне git.
+- Telegram Desktop JSON importer;
+- детерминированная анонимизация участников;
+- remap message ids с сохранением reply topology;
+- safe representation service/media/reactions;
+- bounded episode builder;
+- frozen replay cases с оригинальной human timeline;
+- CLI `prepare`.
 
-## Privacy invariants
+Privacy follow-ups:
 
-- source group id не попадает в lab artifact;
-- `user...` / `channel...` ids не попадают в lab artifact;
-- participant aliases стабильны только внутри данного frozen export;
-- exact names заменяются alias; уникальные first-name обращения заменяются, когда это однозначно;
-- URLs / Telegram invites / emails / phone-like values / длинные numeric identifiers редактируются;
-- filenames не сохраняются;
-- reaction `recent` actors отбрасываются;
-- real archive не используется в unit tests и не коммитится.
+- PR #133 — whole-name/token boundaries, URL/deep-link/source-id/title redaction, ambiguous owner fail-closed;
+- PR #135 — payment/requisites blocks, включая adjacent recipient line; false-positive guards для обычных слов «перевод/карта».
 
-## Phase C — следующий bounded шаг после green A/B
+Raw archive не коммитится и не импортируется в production DB/memory.
 
-На небольшой размеченной выборке прогнать текущие v2 Brain-компоненты в isolated lab path:
+### Phase C — isolated behavioral replay — DONE
+
+Merged PR #132.
+
+Lab reuse текущих production Brain-компонентов:
+
+- Scene Analyzer;
+- Dispatcher;
+- Personality Engine;
+- Response Generator;
+- ConnectorPreset (по умолчанию `education_community_v1`).
+
+Выход на каждый frozen case:
 
 - reply / ignore;
 - reason codes;
 - intervention score;
-- generated response только если Brain решил отвечать;
-- никаких live side effects.
+- generated response, только если Brain решил отвечать.
 
-Любая неполная parity с production должна быть явно обозначена в отчёте.
+Честные parity limits:
 
-## Acceptance A/B
+- LONG memory / callback retrieval — disabled;
+- statement watcher — disabled;
+- dynamic cooldown / feedback history — not replayed;
+- reminders/actions — disabled;
+- Telegram outbox — disabled;
+- simulated bot reply не меняет последующие historical turns.
 
-- synthetic unit tests покрывают реальные формы Telegram export;
-- byte-stable output при одинаковом input/options;
-- deterministic episode boundaries;
-- reply topology survives;
-- privacy regressions закрыты тестами;
-- full `tests_v2` green;
-- `main` и legacy `app/` не меняются.
+### Phase C.5 — Group DNA + representative review pack — DONE
 
-## Phase C status
+Merged PR #137.
 
-Isolated behavioral replay is implemented using current v2 Scene Analyzer, Dispatcher, Personality Engine, Response Generator and a selected ConnectorPreset. Replay records reply/ignore, reason codes, intervention score and generated text when applicable. LONG memory/callback retrieval, statement watcher, dynamic cooldown/feedback history, reminders/actions and Telegram outbox remain disabled in the lab and are reported as parity limits.
+Детерминированно выделяются только **операционные** паттерны:
 
-## Phase C.5 — Group DNA + review pack
-
-Before broad model replay, build a deterministic **operational** map of the group:
-
-- schedule announcements/reminders;
+- admin schedule announcements/reminders;
 - schedule corrections/changes;
 - access/join/link questions;
 - material/recording/text questions;
@@ -87,15 +76,80 @@ Before broad model replay, build a deterministic **operational** map of the grou
 - admin welcomes;
 - gratitude/feedback.
 
-No psychological profiling is produced.
-
-Command:
-
-    python -m app_v2.group_lab analyze --history /path/to/group-lab/sanitized_history.json --replay /path/to/group-lab/frozen_replay.json --output-dir /path/to/group-lab --sample-per-category 5
+Никакого психологического или sensitive profiling.
 
 Outputs:
 
-- `group_dna.json` — counts plus sanitized evidence ids;
-- `review_pack.json` — a bounded sample spread across the archive.
+- `group_dna.json` — counts + sanitized evidence ids;
+- `review_pack.json` — bounded sample, распределённый по архиву.
 
-Run behavioral replay on the review pack first. Do not automatically send the entire multi-year archive through the model.
+## CLI
+
+### 1. Prepare
+
+```bash
+python -m app_v2.group_lab prepare \
+  --input /private/result.json \
+  --output-dir /private/group-lab \
+  --owner-name "<admin display name>"
+```
+
+Outputs:
+
+- `sanitized_history.json`;
+- `frozen_replay.json`.
+
+### 2. Analyze Group DNA
+
+```bash
+python -m app_v2.group_lab analyze \
+  --history /private/group-lab/sanitized_history.json \
+  --replay /private/group-lab/frozen_replay.json \
+  --output-dir /private/group-lab \
+  --sample-per-category 5
+```
+
+Outputs:
+
+- `group_dna.json`;
+- `review_pack.json`.
+
+### 3. Run selected behavioral replay
+
+```bash
+python -m app_v2.group_lab run \
+  --replay /private/group-lab/review_pack.json \
+  --output /private/group-lab/behavior_review.json \
+  --preset education_community_v1
+```
+
+## Privacy invariants
+
+- source group id/title не попадают в lab-visible artifacts;
+- raw Telegram `user...` / `channel...` ids не попадают в lab-visible artifacts;
+- exact participant identities заменяются aliases;
+- URLs/invite/deep links, handles, emails, phone-like values и long numeric identifiers редактируются;
+- payment/requisites blocks редактируются;
+- original filenames и reaction-user identities не сохраняются;
+- real archive не используется в unit tests и не коммитится;
+- Group Lab не пишет в production DB, memory, outbox или reminders.
+
+## Что ещё НЕ сделано
+
+- реальный многолетний архив ещё не прогнан целиком через текущий merged Group Lab;
+- реальные `group_dna.json` / `review_pack.json` ещё не получены;
+- representative cases ещё не размечены `join / stay_silent / assist_admin / uncertain`;
+- current `education_community_v1` ещё не оценён на реальном review pack;
+- clean Telegram sandbox для демонстрации администратору ещё не создаётся на этом этапе.
+
+## Следующий gate
+
+1. Запустить **реальный private export** через `prepare`.
+2. Проверить privacy-safe output и статистику.
+3. Построить `group_dna.json` + `review_pack.json`.
+4. Сначала вручную проверить representative pack.
+5. Только после этого запускать LLM behavioral replay на этой выборке.
+6. По результатам уточнить профиль community co-host.
+7. Затем — clean Telegram sandbox и acceptance перед приглашением администратора.
+
+Не прогонять весь многолетний архив через LLM автоматически: сначала representative review pack.
