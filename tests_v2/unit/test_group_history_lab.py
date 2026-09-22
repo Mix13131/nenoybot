@@ -1,0 +1,173 @@
+from __future__ import annotations
+
+import json
+
+from app_v2.labs.group_history import (
+    GroupLabOptions,
+    ReplayOptions,
+    build_frozen_replay,
+    canonical_json_bytes,
+    sanitize_telegram_export,
+)
+
+
+def _export():
+    return {
+        "name": "Sensitive Group Name",
+        "type": "private_supergroup",
+        "id": 1600927081,
+        "messages": [
+            {
+                "id": 10,
+                "type": "message",
+                "date": "2022-02-07T14:16:39",
+                "from": "Анна Тестова",
+                "from_id": "user729337440",
+                "text": [
+                    "Встреча: ",
+                    {"type": "link", "text": "https://example.com/join?secret=abc"},
+                    "\nКод 510223, звоните +7 999 123-45-67",
+                ],
+                "reactions": [
+                    {
+                        "type": "emoji",
+                        "count": 1,
+                        "emoji": "👍",
+                        "recent": [{"from": "Мария Участник", "from_id": "user2"}],
+                    }
+                ],
+            },
+            {
+                "id": 11,
+                "type": "message",
+                "date": "2022-02-07T14:17:40",
+                "from": "Мария Участник",
+                "from_id": "user2",
+                "reply_to_message_id": 10,
+                "text": "Анна, мой email maria@example.org, поясните?",
+            },
+            {
+                "id": 12,
+                "type": "service",
+                "date": "2022-02-07T14:18:00",
+                "actor": "Мария Участник",
+                "actor_id": "user2",
+                "action": "join_group_by_link",
+                "members": ["Иван Реальный"],
+                "text": "",
+            },
+            {
+                "id": 13,
+                "type": "message",
+                "date": "2022-02-07T17:00:00",
+                "from": None,
+                "from_id": "user3",
+                "file": "(File not included.)",
+                "file_name": "private-name.mp4",
+                "media_type": "video_file",
+                "mime_type": "video/mp4",
+                "duration_seconds": 30,
+                "text": "Смотрите @secret_user",
+            },
+        ],
+    }
+
+
+def test_sanitize_export_removes_raw_ids_names_and_sensitive_tokens():
+    dataset = sanitize_telegram_export(
+        _export(),
+        options=GroupLabOptions(owner_display_name="Анна Тестова"),
+    )
+
+    serialized = canonical_json_bytes(dataset).decode("utf-8")
+    assert "1600927081" not in serialized
+    assert "user729337440" not in serialized
+    assert "user2" not in serialized
+    assert "Анна Тестова" not in serialized
+    assert "Мария Участник" not in serialized
+    assert "example.com" not in serialized
+    assert "maria@example.org" not in serialized
+    assert "+7 999 123-45-67" not in serialized
+    assert "510223" not in serialized
+    assert "@secret_user" not in serialized
+
+    assert dataset["messages"][0]["actor"] == "admin"
+    assert dataset["messages"][1]["actor"] == "member_001"
+    assert "[link]" in dataset["messages"][0]["text"]
+    assert "[number]" in dataset["messages"][0]["text"]
+    assert "[phone]" in dataset["messages"][0]["text"]
+    assert "[email]" in dataset["messages"][1]["text"]
+    assert "[handle]" in dataset["messages"][3]["text"]
+
+
+def test_reply_topology_and_reactions_survive_remapping_without_recent_actors():
+    dataset = sanitize_telegram_export(
+        _export(),
+        options=GroupLabOptions(owner_source_id="user729337440"),
+    )
+
+    assert dataset["messages"][0]["id"] == "m000001"
+    assert dataset["messages"][1]["id"] == "m000002"
+    assert dataset["messages"][1]["reply_to"] == "m000001"
+    assert dataset["messages"][0]["reactions"] == [{"emoji": "👍", "count": 1}]
+    serialized = json.dumps(dataset["messages"][0]["reactions"], ensure_ascii=False)
+    assert "Мария" not in serialized
+    assert "user2" not in serialized
+
+
+def test_media_is_safe_metadata_only():
+    dataset = sanitize_telegram_export(_export())
+    media = dataset["messages"][3]["media"]
+
+    assert media["present"] is True
+    assert media["media_type"] == "video_file"
+    assert media["mime_type"] == "video/mp4"
+    assert media["duration_seconds"] == 30
+    serialized = json.dumps(media, ensure_ascii=False)
+    assert "private-name.mp4" not in serialized
+    assert "File not included" not in serialized
+
+
+def test_same_input_and_options_are_byte_stable():
+    options = GroupLabOptions(owner_display_name="Анна Тестова")
+    first = sanitize_telegram_export(_export(), options=options)
+    second = sanitize_telegram_export(_export(), options=options)
+
+    assert canonical_json_bytes(first) == canonical_json_bytes(second)
+
+
+def test_frozen_replay_splits_on_gap_and_preserves_bounded_context():
+    dataset = sanitize_telegram_export(
+        _export(),
+        options=GroupLabOptions(owner_display_name="Анна Тестова"),
+    )
+    replay = build_frozen_replay(
+        dataset,
+        options=ReplayOptions(
+            inactivity_gap_minutes=60,
+            max_episode_messages=10,
+            context_messages=1,
+        ),
+    )
+
+    assert replay["stats"]["episode_count"] == 2
+    assert replay["stats"]["case_count"] == 3
+
+    first_case, second_case, third_case = replay["cases"]
+    assert first_case["context"] == []
+    assert second_case["context"][0]["id"] == "m000001"
+    assert second_case["current"]["reply_to"] == "m000001"
+    assert third_case["episode_id"] != second_case["episode_id"]
+    assert third_case["context"] == []
+    assert all(case["review_label"] == "uncertain" for case in replay["cases"])
+    assert all(case["expected_bot_text"] is None for case in replay["cases"])
+
+
+def test_service_rows_can_be_excluded_without_leaking_member_names():
+    dataset = sanitize_telegram_export(
+        _export(),
+        options=GroupLabOptions(include_service_messages=False),
+    )
+
+    assert all(item["kind"] != "service" for item in dataset["messages"])
+    assert "Иван Реальный" not in canonical_json_bytes(dataset).decode("utf-8")
