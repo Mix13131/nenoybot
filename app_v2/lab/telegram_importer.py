@@ -40,6 +40,24 @@ _PAYMENT_LINE_RE = re.compile(
     r"(?:\d[\d\s-]{10,}\d)[^\n]*)$"
 )
 _NAME_TOKEN_RE = re.compile(r"[A-Za-zА-Яа-яЁё]{3,}")
+_SAFE_LABEL_RE = re.compile(r"[a-z0-9][a-z0-9_-]{0,63}\\Z")
+_TRACKING_QUERY_KEYS = {
+    "fbclid",
+    "gclid",
+    "dclid",
+    "msclkid",
+    "yclid",
+    "ttclid",
+    "twclid",
+    "igshid",
+    "mc_cid",
+    "mc_eid",
+    "mkt_tok",
+    "_hsenc",
+    "_hsmi",
+    "vero_conv",
+    "vero_id",
+}
 
 
 @dataclass(frozen=True)
@@ -82,6 +100,16 @@ class _AliasBook:
             if display:
                 self._display_to_alias.setdefault(self._norm_name(display), existing)
             return existing
+
+        # A service event may mention a member by display name before the same
+        # person later appears with a stable Telegram source id. Reuse that
+        # name-only alias instead of inventing a second identity.
+        display_key = self._norm_name(display)
+        if source and display_key:
+            by_name = self._display_to_alias.get(display_key)
+            if by_name:
+                self._aliases[key] = by_name
+                return by_name
 
         is_owner = (
             source in self.config.owner_source_ids
@@ -141,6 +169,11 @@ class TelegramExportImporter:
         label = str(config.label or "").strip()
         if not label:
             raise ValueError("label is required")
+        if not _SAFE_LABEL_RE.fullmatch(label):
+            raise ValueError(
+                "label must be a privacy-safe lowercase slug "
+                "(a-z, 0-9, underscore, hyphen; max 64 chars)"
+            )
         self.config = TelegramExportImportConfig(
             label=label,
             owner_source_ids=frozenset(
@@ -171,6 +204,10 @@ class TelegramExportImporter:
 
         self._pre_register_participants(messages)
         replacements = self._build_name_replacements()
+        source_title = " ".join(str(payload.get("name") or "").split()).strip()
+        if source_title:
+            # Root chat identity is source metadata, never model-visible data.
+            replacements[source_title.casefold()] = "[SOURCE_CHAT]"
 
         events: list[CanonicalLabEvent] = []
         message_count = 0
@@ -411,7 +448,7 @@ class TelegramExportImporter:
             self.redactions["url"] += 1
             return "[REDACTED_URL]" + trailing
 
-        host = parsed.netloc.casefold()
+        host = (parsed.hostname or "").casefold()
         path = parsed.path.casefold()
         query_keys = {key.casefold() for key, _ in parse_qsl(parsed.query)}
         sensitive = False
@@ -449,13 +486,10 @@ class TelegramExportImporter:
             [
                 (key, value)
                 for key, value in parse_qsl(parsed.query)
-                if key.casefold() not in {
-                    "utm_source",
-                    "utm_medium",
-                    "utm_campaign",
-                    "utm_term",
-                    "utm_content",
-                }
+                if not (
+                    key.casefold().startswith("utm_")
+                    or key.casefold() in _TRACKING_QUERY_KEYS
+                )
             ]
         )
         return urlunsplit(
