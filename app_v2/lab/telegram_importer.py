@@ -43,14 +43,14 @@ _NAME_TOKEN_RE = re.compile(r"[A-Za-zА-Яа-яЁё]{3,}")
 
 
 @dataclass(frozen=True)
-class TelegramImportConfig:
+class TelegramExportImportConfig:
     label: str
     owner_source_ids: frozenset[str] = frozenset()
     owner_display_names: frozenset[str] = frozenset()
 
 
 class _AliasBook:
-    def __init__(self, config: TelegramImportConfig) -> None:
+    def __init__(self, config: TelegramExportImportConfig) -> None:
         self.config = config
         self._aliases: dict[str, str] = {}
         self._display_to_alias: dict[str, str] = {}
@@ -137,11 +137,11 @@ class TelegramExportImporter:
     requests and no production-memory writes.
     """
 
-    def __init__(self, config: TelegramImportConfig) -> None:
+    def __init__(self, config: TelegramExportImportConfig) -> None:
         label = str(config.label or "").strip()
         if not label:
             raise ValueError("label is required")
-        self.config = TelegramImportConfig(
+        self.config = TelegramExportImportConfig(
             label=label,
             owner_source_ids=frozenset(
                 str(item).strip()
@@ -628,7 +628,7 @@ def _parser() -> argparse.ArgumentParser:
 def main(argv: list[str] | None = None) -> int:
     args = _parser().parse_args(argv)
     importer = TelegramExportImporter(
-        TelegramImportConfig(
+        TelegramExportImportConfig(
             label=args.label,
             owner_display_names=frozenset(args.owner_name),
         )
