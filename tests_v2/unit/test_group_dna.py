@@ -114,3 +114,40 @@ def test_group_dna_is_deterministic_for_same_inputs():
     second = analyze_group_dna(dataset, replay, sample_per_category=3)
 
     assert first == second
+
+
+
+def test_access_category_requires_access_context_for_ne_vizhu():
+    dataset = _dataset()
+    dataset["messages"].extend(
+        [
+            _message("m016", "2025-09-02T10:00:00Z", "member_013", "Не вижу смысла спорить."),
+            _message("m017", "2025-09-02T10:01:00Z", "member_014", "Не вижу кнопку подключения."),
+        ]
+    )
+    replay = build_frozen_replay(dataset)
+
+    dna, _ = analyze_group_dna(dataset, replay, sample_per_category=20)
+    ids = dna["categories"]["access_or_link_question"]["sample_message_ids"]
+
+    assert "m016" not in ids
+    assert "m017" in ids
+
+
+def test_attendance_category_does_not_match_generic_future_tense():
+    dataset = _dataset()
+    dataset["messages"].extend(
+        [
+            _message("m016", "2025-09-02T10:00:00Z", "member_013", "Я буду делать домашнее задание."),
+            _message("m017", "2025-09-02T10:01:00Z", "member_014", "Я буду."),
+            _message("m018", "2025-09-02T10:02:00Z", "member_015", "Буду присутствовать на встрече."),
+        ]
+    )
+    replay = build_frozen_replay(dataset)
+
+    dna, _ = analyze_group_dna(dataset, replay, sample_per_category=20)
+    ids = dna["categories"]["attendance_or_availability"]["sample_message_ids"]
+
+    assert "m016" not in ids
+    assert "m017" in ids
+    assert "m018" in ids
