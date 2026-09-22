@@ -72,6 +72,7 @@ def test_group_dna_counts_operational_patterns_and_candidate_roles():
     assert roles["newcomer_host"]["evidence_count"] == 2
 
     assert pack["stats"]["selected_unique_cases"] > 0
+    assert pack["lab_replay_version"] == replay["lab_replay_version"]
     assert all("current" in case for case in pack["cases"])
 
 
