@@ -27,7 +27,8 @@ _ACCESS_RE = re.compile(
     r"нужн\w*\s+ссылк\w*|"
     r"как\s+.*(?:подключ|зайти|войти|вступить|найти)|"
     r"куда\s+.*(?:заход|вход|подключ)|"
-    r"не\s+вижу|"
+    r"не\s+вижу\s+(?:ссылк\w*|кнопк\w*|видео|эфир\w*|встреч\w*|трансляц\w*|подключ\w*)|"
+    r"(?:ссылк\w*|кнопк\w*|видео|эфир\w*|встреч\w*|трансляц\w*|подключ\w*).*не\s+вижу|"
     r"в\s+телеграм\w*\s+будет|"
     r"как\s+вас\s+там\s+найти"
     r")"
@@ -46,8 +47,13 @@ _ATTENDANCE_RE = re.compile(
     r"не\s+смогу|не\s+успева\w*|опозда\w*|пропуска\w*|"
     r"присоединюсь|не\s+смог\w*\s+присоедин\w*|"
     r"посмотрю\s+(?:в\s+)?запис\w*|"
-    r"обязательно\s+буду|я\s+буду"
+    r"буду\s+присутствовать|смогу\s+присутствовать"
     r")\b"
+)
+_SHORT_ATTENDANCE_RE = re.compile(
+    r"(?i)^(?:(?:добрый\s+(?:день|вечер))[,!. ]*)?"
+    r"(?:(?:я\s+)?(?:обязательно\s+)?буду(?:\s+обязательно)?)"
+    r"[.! )🙏❤❤️😊🙂]*$"
 )
 _WELCOME_RE = re.compile(
     r"(?i)\b(?:приветству\w*|добро\s+пожаловать|рады\s+видеть|"
@@ -117,7 +123,9 @@ def _matches_category(item: Mapping[str, Any], category: str) -> bool:
         return (not is_admin) and bool(_MATERIAL_RE.search(text))
 
     if category == "attendance_or_availability":
-        return (not is_admin) and bool(_ATTENDANCE_RE.search(text))
+        return (not is_admin) and bool(
+            _ATTENDANCE_RE.search(text) or _SHORT_ATTENDANCE_RE.fullmatch(text)
+        )
 
     if category == "admin_welcome":
         return is_admin and bool(_WELCOME_RE.search(text))
