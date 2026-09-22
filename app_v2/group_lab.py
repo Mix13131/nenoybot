@@ -11,6 +11,7 @@ from app_v2.labs.behavior_replay import (
     GroupBehaviorReplayRunner,
     run_behavior_replay,
 )
+from app_v2.labs.group_dna import analyze_group_dna
 from app_v2.labs.group_history import (
     GroupLabOptions,
     ReplayOptions,
@@ -51,6 +52,15 @@ def _parser() -> argparse.ArgumentParser:
     run.add_argument("--case-id", action="append", default=None, help="evaluate one case id; repeatable")
     run.add_argument("--limit", type=int, default=None)
 
+    analyze = sub.add_parser(
+        "analyze",
+        help="build deterministic operational Group DNA and a representative review pack",
+    )
+    analyze.add_argument("--history", required=True, help="sanitized_history.json path")
+    analyze.add_argument("--replay", required=True, help="frozen_replay.json path")
+    analyze.add_argument("--output-dir", required=True, help="directory for Group DNA artifacts")
+    analyze.add_argument("--sample-per-category", type=int, default=5)
+
     return parser
 
 
@@ -86,6 +96,24 @@ def main(argv: list[str] | None = None) -> int:
             f"participants={dataset['stats']['participant_count']} "
             f"episodes={replay['stats']['episode_count']} "
             f"cases={replay['stats']['case_count']}"
+        )
+        return 0
+
+    if args.command == "analyze":
+        history = load_json(args.history)
+        replay = load_json(args.replay)
+        dna, review_pack = analyze_group_dna(
+            history,
+            replay,
+            sample_per_category=args.sample_per_category,
+        )
+        output_dir = Path(args.output_dir)
+        write_json(output_dir / "group_dna.json", dna)
+        write_json(output_dir / "review_pack.json", review_pack)
+        print(
+            "Group Lab DNA complete: "
+            f"messages={dna['stats']['messages_total']} "
+            f"selected_cases={review_pack['stats']['selected_unique_cases']}"
         )
         return 0
 
