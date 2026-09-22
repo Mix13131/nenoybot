@@ -69,3 +69,33 @@ Raw export остаётся вне git.
 - privacy regressions закрыты тестами;
 - full `tests_v2` green;
 - `main` и legacy `app/` не меняются.
+
+## Phase C status
+
+Isolated behavioral replay is implemented using current v2 Scene Analyzer, Dispatcher, Personality Engine, Response Generator and a selected ConnectorPreset. Replay records reply/ignore, reason codes, intervention score and generated text when applicable. LONG memory/callback retrieval, statement watcher, dynamic cooldown/feedback history, reminders/actions and Telegram outbox remain disabled in the lab and are reported as parity limits.
+
+## Phase C.5 — Group DNA + review pack
+
+Before broad model replay, build a deterministic **operational** map of the group:
+
+- schedule announcements/reminders;
+- schedule corrections/changes;
+- access/join/link questions;
+- material/recording/text questions;
+- attendance/availability;
+- newcomer joins;
+- admin welcomes;
+- gratitude/feedback.
+
+No psychological profiling is produced.
+
+Command:
+
+    python -m app_v2.group_lab analyze --history /path/to/group-lab/sanitized_history.json --replay /path/to/group-lab/frozen_replay.json --output-dir /path/to/group-lab --sample-per-category 5
+
+Outputs:
+
+- `group_dna.json` — counts plus sanitized evidence ids;
+- `review_pack.json` — a bounded sample spread across the archive.
+
+Run behavioral replay on the review pack first. Do not automatically send the entire multi-year archive through the model.
