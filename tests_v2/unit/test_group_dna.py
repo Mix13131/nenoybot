@@ -57,7 +57,7 @@ def test_group_dna_counts_operational_patterns_and_candidate_roles():
     assert dna["scope"] == "operational_patterns_only"
     assert dna["categories"]["admin_schedule_announcement"]["count"] == 2
     assert dna["categories"]["admin_schedule_change"]["count"] == 1
-    assert dna["categories"]["access_or_link_question"]["count"] == 7
+    assert dna["categories"]["access_or_link_question"]["count"] == 8
     assert dna["categories"]["materials_or_recording_question"]["count"] == 1
     assert dna["categories"]["attendance_or_availability"]["count"] == 1
     assert dna["categories"]["newcomer_join"]["count"] == 1
@@ -66,7 +66,7 @@ def test_group_dna_counts_operational_patterns_and_candidate_roles():
 
     roles = {item["role"]: item for item in dna["candidate_roles"]}
     assert roles["schedule_helper"]["evidence_count"] == 3
-    assert roles["access_helper"]["evidence_count"] == 7
+    assert roles["access_helper"]["evidence_count"] == 8
     assert roles["materials_curator"]["evidence_count"] == 1
     assert roles["attendance_assistant"]["evidence_count"] == 1
     assert roles["newcomer_host"]["evidence_count"] == 2
