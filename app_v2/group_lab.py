@@ -1,8 +1,16 @@
 from __future__ import annotations
 
 import argparse
+import os
 from pathlib import Path
 
+from app_v2.adapters.openai_adapter import OpenAIAdapter
+from app_v2.config import load_config
+from app_v2.labs.behavior_replay import (
+    BehaviorReplayOptions,
+    GroupBehaviorReplayRunner,
+    run_behavior_replay,
+)
 from app_v2.labs.group_history import (
     GroupLabOptions,
     ReplayOptions,
@@ -11,6 +19,9 @@ from app_v2.labs.group_history import (
     sanitize_telegram_export,
     write_json,
 )
+from app_v2.services.personality_engine import PersonalityEngine
+from app_v2.services.response_generator import ResponseGenerator
+from app_v2.services.scene_analyzer import SceneAnalyzer
 
 
 def _parser() -> argparse.ArgumentParser:
@@ -29,6 +40,16 @@ def _parser() -> argparse.ArgumentParser:
     prepare.add_argument("--gap-minutes", type=int, default=90)
     prepare.add_argument("--max-episode-messages", type=int, default=60)
     prepare.add_argument("--context-messages", type=int, default=12)
+
+    run = sub.add_parser(
+        "run",
+        help="run selected frozen cases through current v2 Brain components without live side effects",
+    )
+    run.add_argument("--replay", required=True, help="frozen_replay.json path")
+    run.add_argument("--output", required=True, help="behavior replay result path")
+    run.add_argument("--preset", default="education_community_v1")
+    run.add_argument("--case-id", action="append", default=None, help="evaluate one case id; repeatable")
+    run.add_argument("--limit", type=int, default=None)
 
     return parser
 
@@ -65,6 +86,33 @@ def main(argv: list[str] | None = None) -> int:
             f"participants={dataset['stats']['participant_count']} "
             f"episodes={replay['stats']['episode_count']} "
             f"cases={replay['stats']['case_count']}"
+        )
+        return 0
+
+    if args.command == "run":
+        replay = load_json(args.replay)
+        lab_env = dict(os.environ)
+        lab_env["NENOY_V2_ENV"] = "development"
+        config = load_config(lab_env)
+        adapter = OpenAIAdapter(config)
+        runner = GroupBehaviorReplayRunner(
+            scene_analyzer=SceneAnalyzer(adapter),
+            personality_engine=PersonalityEngine(),
+            response_generator=ResponseGenerator(adapter=adapter),
+            options=BehaviorReplayOptions(preset_name=args.preset),
+        )
+        result = run_behavior_replay(
+            replay,
+            runner=runner,
+            case_ids=set(args.case_id) if args.case_id else None,
+            limit=args.limit,
+        )
+        write_json(args.output, result)
+        print(
+            "Group Lab behavior replay complete: "
+            f"cases={result['stats']['evaluated_cases']} "
+            f"reply={result['stats']['reply_cases']} "
+            f"ignore={result['stats']['ignore_cases']}"
         )
         return 0
 
