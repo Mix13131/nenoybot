@@ -9,7 +9,6 @@ from datetime import datetime, timedelta, timezone
 from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field
-
 from app_v2.services.model_router import ModelRole
 
 REVISION = "lab_request_resolution_v1"
@@ -53,8 +52,10 @@ INQUIRY_PROMPT = """Извлеки организационные обращен
 question — конкретный недостающий ответ, entity — конкретное занятие/курс с датой, не просто 'курс'.
 request_span — ДОСЛОВНЫЙ фрагмент current, который действительно содержит просьбу.
 Пересказ опубликованных цен/условий/сроков — information, в том числе enrollment и billing.
+Вопрос о возможности присоединиться после даты при неизвестных условиях — information/terms:
+сначала нужно найти правила. Не называй любой вопрос об участии персональным исключением.
 Фактическая выдача доступа, проверка покупки, изменение оплаты — personal_action.
-Индивидуальное исключение из правил или персональное разрешение — exception.
+Явно запрошенное индивидуальное исключение из правил, скидка или личное разрешение — exception.
 Не путай 'где ссылка на занятие' с персональной выдачей прав. 'Можно' в предложении участникам,
 благодарность, стихотворение, прощание, поддержка друг друга — не обращение, needs=[].
 Явная боль/опасная практика — safety, needs=[]; не превращай её в организационный FAQ.
@@ -98,7 +99,7 @@ def words(value: str) -> set[str]:
 
 
 def reviewed_corpus(pack: dict[str, Any]) -> list[dict[str, Any]]:
-    """Earliest OBSERVATION of each reviewed version, never assume creation = availability."""
+    """Earliest OBSERVATION of each reviewed version, not creation = availability."""
     records: dict[tuple[str, str], dict[str, Any]] = {}
     for case in pack["cases"]:
         cutoff = case["current"]["occurred_at"]
@@ -123,13 +124,13 @@ def new_session(sid: str, at: str, *, mode: str = "historical") -> dict[str, Any
     if mode not in {"historical", "live"}:
         raise ValueError("invalid session mode")
     return {"id": sid, "at": at, "mode": mode, "sources": [], "tickets": {}, "context": [],
-            "queries": [], "model_calls": 0, "owner_clarifications": 0}
+            "queries": [], "blocked_sources": [], "model_calls": 0, "owner_clarifications": 0}
 
 
 def visible_sources(session: dict[str, Any], corpus: list[dict[str, Any]], actor: str) -> list[dict[str, Any]]:
     at = stamp(session["at"])
     pool = (corpus if session["mode"] == "historical" else []) + session["sources"]
-    return [s for s in pool if not s.get("disabled")
+    return [s for s in pool if not s.get("disabled") and s["id"] not in session.get("blocked_sources", [])
             and (s.get("session") is None or s["session"] == session["id"])
             and (s.get("recipient") is None or s["recipient"] == actor)
             and stamp(s["available_at"]) <= at and stamp(s["occurred_at"]) <= at
@@ -139,7 +140,10 @@ def visible_sources(session: dict[str, Any], corpus: list[dict[str, Any]], actor
 def search_sources(session: dict[str, Any], corpus: list[dict[str, Any]], actor: str,
                    need: Need, ticket: str, limit: int = 12) -> tuple[list[dict[str, Any]], int]:
     pool = visible_sources(session, corpus, actor)
-    query = words(need.question + " " + need.entity)
+    expansion = {"link": "ссылка подключение занятие", "terms": "условия участие стоимость оплата набор",
+                 "time": "расписание время занятие начало", "change_scope": "перенос разовый постоянно",
+                 "material": "материал запись текст"}.get(need.aspect, "")
+    query = words(need.question + " " + need.entity + " " + expansion)
     ranked = [(len(query & words(s["text"])) + (100 if s.get("ticket") == ticket else 0), s) for s in pool]
     ranked = [(score, s) for score, s in ranked if score > 0]
     ranked.sort(key=lambda v: (v[0], v[1]["available_at"], v[1]["id"]), reverse=True)
@@ -231,10 +235,8 @@ class ResolutionEngine:
                 session["tickets"][tid] = ticket
             tid = ticket["id"]
             requested.append(tid)
-            prior = ticket["waiters"].get(actor)
-            if prior and prior["status"] in {"answer_ready", "answered", "confirmed"}:
-                deliveries.append({"kind": "notice", "text": f"{tid}: ответ уже подготовлен. Его можно посмотреть в /lab_ops_report."})
-                continue
+            # A fresh question is not a duplicate update. Recheck availability and answer it,
+            # even for the same participant. Transport deduplication is the controller's job.
             ticket["waiters"][actor] = {"status": "waiting_admin", "message_ref": message_ref,
                                         "answer": None, "source_ids": [], "after_admin": False}
             deliveries.extend(self._attempt(session, ticket, actor))
@@ -252,7 +254,6 @@ class ResolutionEngine:
                    Finding(coverage="none", evidence=[], missing=need.question))
         finding = checked_finding(finding, sources, need)
         if need.kind != "information":
-            # A group-only lab cannot restore accounts, verify purchases or disclose personal links.
             finding = Finding(coverage="none", evidence=[], missing=need.question)
         ticket["last_missing"] = finding.missing or need.question
         if finding.coverage == "complete":
@@ -278,7 +279,6 @@ class ResolutionEngine:
         session = copy.deepcopy(original)
         ticket = session["tickets"][tid]
         if ticket["need"]["kind"] != "information":
-            # Do not put a private organizer reply into shared sources or group output.
             return session, [{"kind": "notice", "text": f"{tid}: персональный доступ лаборатория не выдаёт. Нужна приватная проверка организатора; обращение остаётся открытым."}]
         session["owner_clarifications"] += 1
         ticket["owner_inputs"] += 1
@@ -292,7 +292,6 @@ class ResolutionEngine:
               "origin": "sandbox_owner", "session": session["id"], "ticket": tid,
               "recipient": None, "disabled": False})
         deliveries = []
-        # Organizer updates are rechecked, not blindly called a solved request.
         for actor, waiter in ticket["waiters"].items():
             waiter["status"] = "waiting_admin"
             deliveries.extend(self._attempt(session, ticket, actor))
@@ -315,6 +314,7 @@ def acknowledge(session: dict[str, Any], tid: str, actor: str, *, helped: bool) 
     waiter["status"] = "confirmed" if helped else "waiting_admin"
     if not helped:
         bad = set(waiter["source_ids"])
+        session["blocked_sources"] = sorted(set(session.get("blocked_sources", [])) | bad)
         for source in session["sources"]:
             if source["id"] in bad:
                 source["disabled"] = True
