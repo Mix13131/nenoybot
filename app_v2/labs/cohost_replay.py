@@ -74,6 +74,11 @@ class CohostPlan(BaseModel):
     reason: Literal["grounded_help", "missing_information", "owner_required", "safety_boundary", "social_silence", "admin_announcement", "quoted_material", "off_topic"]
 
 
+class PlanEvidenceError(ValueError):
+    """Safe diagnostic code, without model text or private identifiers."""
+    code = "unknown_evidence_id"
+
+
 def case_time(value: str) -> datetime:
     parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
     return parsed.replace(tzinfo=timezone.utc) if parsed.tzinfo is None else parsed.astimezone(timezone.utc)
@@ -105,15 +110,19 @@ def clean_case(case: Mapping[str, Any]) -> dict[str, Any]:
 
 
 def validate_plan(plan: CohostPlan, case: Mapping[str, Any]) -> CohostPlan:
-    """A model-selected source must exist, be in the past and have a trusted role."""
+    """Current input can explain a classification, never substantiate an answer."""
     sources = {str(row["id"]): row for row in case["context"]}
-    if any(mid not in sources for mid in plan.evidence_ids):
-        raise ValueError("unknown evidence id")
-    update: dict[str, Any] = {}
+    current_id = str(case["current"]["id"])
+    # A planner may cite the current announcement as the reason to stay silent.
+    # It is a known input, not fabricated history. Still reject genuinely unknown IDs.
+    if any(mid not in sources and mid != current_id for mid in plan.evidence_ids):
+        raise PlanEvidenceError("unknown evidence id")
+    past_ids = [mid for mid in plan.evidence_ids if mid in sources]
+    update: dict[str, Any] = {"evidence_ids": past_ids}
     if plan.topic in {"enrollment", "billing"} and plan.action != "silent":
-        update.update(action="route_admin", reason="owner_required")
+        update.update(action="route_admin", reason="owner_required", evidence_ids=[])
     elif plan.action == "answer":
-        trusted = [mid for mid in plan.evidence_ids if sources[mid].get("actor") == "admin"
+        trusted = [mid for mid in past_ids if sources[mid].get("actor") == "admin"
                    or (plan.topic == "access" and sources[mid].get("actor") == "group_system"
                        and sources[mid].get("kind") == "service")]
         if not trusted:
@@ -122,6 +131,8 @@ def validate_plan(plan: CohostPlan, case: Mapping[str, Any]) -> CohostPlan:
             update["evidence_ids"] = trusted
     if case["current"].get("actor") == "admin" and not plan.direct_to_bot:
         update.update(action="silent", reason="admin_announcement", evidence_ids=[])
+    if update.get("action", plan.action) == "silent":
+        update["evidence_ids"] = []
     return plan.model_copy(update=update)
 
 
