@@ -17,12 +17,16 @@ from html import escape
 
 from app_v2.labs.cohost_replay import REVISION, make_cohost_runner, revision_manifest
 from app_v2.labs.telegram_lab import LabBot, LabError, Telegram, atomic_json, render_report
+from app_v2.labs.round_recovery import (
+    VERSION_KEYS, effective_manifest, prepare_resume, safe_error, same_implementation,
+)
 
 LOG = logging.getLogger("group_lab_rounds")
 ROUND_BUTTONS = {"inline_keyboard": [
     [{"text": "Второй раунд", "callback_data": "lab_round2"}],
     [{"text": "Следующий кейс", "callback_data": "lab_next"},
      {"text": "Прогнать выборку", "callback_data": "lab_run"}],
+    [{"text": "Продолжить после ошибки", "callback_data": "lab_resume"}],
     [{"text": "Статус", "callback_data": "lab_status"},
      {"text": "Отчёт текущего раунда", "callback_data": "lab_report"}],
     [{"text": "Первый отчёт — До", "callback_data": "lab_before"}],
@@ -69,7 +73,19 @@ def round_report(root: Path, pack: dict[str, Any], results: dict[str, Any]) -> b
              "Одинаковые исходные кейсы. Память, реальные действия и динамические лимиты не воспроизводятся. "
              "Во втором раунде используется отдельная лабораторная политика выбора помощи и инструкция cohost; "
              "это не неизменённый production routing и не автоматическая оценка качества.</p>"
-             "<details><summary>Версия проверки</summary><pre>" + escape(json.dumps(meta, ensure_ascii=False, indent=2)) + "</pre></details>")
+             "<details><summary>Исходная версия проверки</summary><pre>" + escape(json.dumps(meta, ensure_ascii=False, indent=2)) + "</pre></details>")
+    if (root / "continuation.json").exists():
+        continuation = read_json(root / "continuation.json")
+        intro += ("<p><strong>Продолжение после технического исправления.</strong> "
+                  "Успешные результаты до исправления сохранены, а не пересчитаны. "
+                  "Остальные ситуации проверены новой версией; это явно размеченный составной отчёт.</p>"
+                  "<details><summary>Версия продолжения и происхождение сохранённых результатов</summary><pre>"
+                  + escape(json.dumps(continuation, ensure_ascii=False, indent=2)) + "</pre></details>")
+    diagnostics = {cid: {key: result[key] for key in ("error_type", "error_code", "execution_version") if key in result}
+                   for cid, result in results.items() if result.get("status") in {"error", "interrupted"}}
+    if diagnostics:
+        intro += ("<details open><summary>Технические ошибки (не решения промолчать)</summary><pre>"
+                  + escape(json.dumps(diagnostics, ensure_ascii=False, indent=2)) + "</pre></details>")
     return (page[:start] + intro + page[end:]).encode("utf-8")
 
 
@@ -151,12 +167,14 @@ class RoundLabBot(LabBot):
                 super().handle(update)
             return
         msg, command, chat = authorized
-        if command in {"/lab_round2", "/lab_before", "/lab_report", "/lab_status", "/start", "/help", "/lab_help"}:
+        if command in {"/lab_resume", "/lab_round2", "/lab_before", "/lab_report", "/lab_status", "/start", "/help", "/lab_help"}:
             cb = update.get("callback_query")
             if cb:
                 self.tg.call("answerCallbackQuery", callback_query_id=cb["id"])
             try:
-                if command == "/lab_round2":
+                if command == "/lab_resume":
+                    self.resume_run(chat)
+                elif command == "/lab_round2":
                     self.select_round2()
                     self.tg.message(chat, "Второй раунд выбран. Первый отчёт не изменён.\nНажми «Прогнать выборку».\n" + self.status(), True)
                 elif command in {"/lab_before", "/lab_report"}:
@@ -166,7 +184,7 @@ class RoundLabBot(LabBot):
                         report = round_report(report_root, pack, results)
                     self.tg.document(chat, f"group_lab_{report_root.name}.html", report)
                 else:
-                    self.tg.message(chat, self.status() + "\nДля новой проверки выбери «Второй раунд», затем «Прогнать выборку». Повторная загрузка файла не нужна.", True)
+                    self.tg.message(chat, self.status() + "\nПосле ошибки: /lab_resume. Успешные кейсы не повторяются. Повторная загрузка файла не нужна.", True)
             except LabError as exc:
                 self.tg.message(chat, str(exc))
             return
@@ -179,30 +197,55 @@ class RoundLabBot(LabBot):
         if self.active_round != "round02":
             self.tg.message(chat, "Первый прогон сохранён как «До». Нажми «Второй раунд», затем «Прогнать выборку».", True)
             return
-        stored = read_json(self.root / "manifest.json")
-        live = revision_manifest()
-        if any(stored.get(key) != live.get(key) for key in ("revision", "policy_sha256", "classifier_model", "generator_model")):
+        if any(r.get("status") in {"error", "interrupted"} for r in self.results.values()):
+            raise LabError("Есть остановленный кейс. Отправь /lab_resume — повторим только ошибки и необработанные ситуации.")
+        if not same_implementation(effective_manifest(self.root), revision_manifest()):
             raise LabError("Конфигурация отличается от сохранённого раунда. Смешивать версии нельзя.")
         super().start_run(chat, only_one)
+
+    def resume_run(self, chat: int) -> None:
+        with self.lock:
+            if self.busy:
+                raise LabError("Прогон уже идёт. Повторный запуск не выполнен.")
+            if self.active_round != "round02":
+                raise LabError("Восстановление доступно только для второго раунда.")
+            if not self.pack["cases"]:
+                raise LabError("Нет проверенной выборки.")
+            selected = [c for c in self.pack["cases"] if self.results.get(c["id"], {}).get("status") != "done"]
+            if not selected:
+                self.tg.message(chat, "Все ситуации уже обработаны. Повторных вызовов нет.", True)
+                return
+            retried = sum(c["id"] in self.results for c in selected)
+            prepare_resume(self.root, self.results, revision_manifest())
+            self.tg.message(chat, f"Продолжаю {len(selected)} ситуаций: повтор после ошибки — {retried}, новых — {len(selected) - retried}. Успешные ответы и первый раунд сохранены.")
+            self.busy = True
+            worker = threading.Thread(target=self.run_cases, args=(chat, selected, False), daemon=True)
+            try:
+                worker.start()
+            except Exception:
+                self.busy = False
+                raise
 
     def run_cases(self, chat: int, cases: list[dict[str, Any]], only_one: bool) -> None:
         # All saves go only to the active round directory, never legacy /data/results.json.
         try:
             runner, adapter = self.runner_factory()
+            execution = {key: revision_manifest().get(key) for key in VERSION_KEYS}
             for case in cases:
                 with self.lock:
-                    self.results[case["id"]] = {"status": "running", "revision": REVISION}
+                    self.results[case["id"]] = {"status": "running", "revision": REVISION, "execution_version": execution}
                     atomic_json(self.root / "results.json", self.results)
                 prior = adapter.failures
                 try:
                     result = runner.evaluate_case(case)
                     if adapter.failures != prior:
                         raise LabError("API fallback is not a valid test result")
-                    result.update(status="done", revision=REVISION)
+                    result.update(status="done", revision=REVISION, execution_version=execution)
                 except Exception as exc:
+                    code, explanation = safe_error(exc)
                     result = {"status": "error", "revision": REVISION, "error_type": type(exc).__name__,
-                              "error": "Вызов модели не завершён; это не решение промолчать."}
-                    LOG.warning("case_failed type=%s", type(exc).__name__)
+                              "error_code": code, "error": explanation, "execution_version": execution}
+                    LOG.warning("case_failed case=%s type=%s code=%s", case["id"], type(exc).__name__, code)
                 with self.lock:
                     self.results[case["id"]] = result
                     atomic_json(self.root / "results.json", self.results)
@@ -213,11 +256,17 @@ class RoundLabBot(LabBot):
                     break
             with self.lock:
                 report = round_report(self.root, self.pack, self.results)
+                done = sum(r.get("status") == "done" for r in self.results.values())
+                errors = sum(r.get("status") in {"error", "interrupted"} for r in self.results.values())
             self.tg.document(chat, "group_lab_round02.html", report)
-            LOG.info("round_complete round=2 completed=%s errors=%s",
-                     sum(r.get("status") == "done" for r in self.results.values()),
-                     sum(r.get("status") == "error" for r in self.results.values()))
-            self.tg.message(chat, "Второй прогон остановлен или завершён. Отчёт выше.\n" + self.status().replace("Прогон идёт.", ""), True)
+            LOG.info("round_complete round=2 completed=%s errors=%s", done, errors)
+            if errors:
+                label = "Прогон остановлен на технической ошибке. Остальные ситуации не оценены.\nПосле исправления: /lab_resume."
+            elif done == len(self.pack["cases"]):
+                label = "Второй прогон завершён. Все ситуации обработаны. Отчёт выше."
+            else:
+                label = "Выбранные ситуации обработаны. Остальные ещё не запускались."
+            self.tg.message(chat, label + "\n" + self.status().replace("Прогон идёт.", ""), True)
         except Exception as exc:
             LOG.error("round_job_failed type=%s", type(exc).__name__)
             try:
@@ -252,6 +301,9 @@ def main() -> None:
     bot.username = me["username"]
     LOG.info("rounds_ready revision=%s active=%s bound=%s cases=%s baseline_preserved=true",
              REVISION, bot.active_round, bool(bot.state.get("chat_id")), len(bot.pack["cases"]))
+    LOG.info("resume_ready done=%s errors=%s automatic_replay=false",
+             sum(r.get("status") == "done" for r in bot.results.values()),
+             sum(r.get("status") in {"error", "interrupted"} for r in bot.results.values()))
 
     class Health(BaseHTTPRequestHandler):
         def do_GET(self) -> None:
