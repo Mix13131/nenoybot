@@ -123,18 +123,31 @@ def new_session(sid: str, at: str, *, mode: str = "historical") -> dict[str, Any
     stamp(at)
     if mode not in {"historical", "live"}:
         raise ValueError("invalid session mode")
-    return {"id": sid, "at": at, "mode": mode, "sources": [], "tickets": {}, "context": [],
+    return {"id": sid, "at": at, "mode": mode,
+            "archive_cutoff": at if mode == "historical" else None,
+            "sources": [], "tickets": {}, "context": [],
             "queries": [], "blocked_sources": [], "model_calls": 0, "owner_clarifications": 0}
 
 
 def visible_sources(session: dict[str, Any], corpus: list[dict[str, Any]], actor: str) -> list[dict[str, Any]]:
+    # Synthetic steps can advance their own clock, but never expose later archive data.
     at = stamp(session["at"])
-    pool = (corpus if session["mode"] == "historical" else []) + session["sources"]
-    return [s for s in pool if not s.get("disabled") and s["id"] not in session.get("blocked_sources", [])
-            and (s.get("session") is None or s["session"] == session["id"])
-            and (s.get("recipient") is None or s["recipient"] == actor)
-            and stamp(s["available_at"]) <= at and stamp(s["occurred_at"]) <= at
-            and (not s.get("valid_until") or at < stamp(s["valid_until"]))]
+    historical = session["mode"] == "historical"
+    if historical and not session.get("archive_cutoff"):
+        raise ValueError("historical cutoff missing")
+    archive_at = stamp(session["archive_cutoff"]) if historical else at
+    pool = (corpus if historical else []) + session["sources"]
+    visible = []
+    for s in pool:
+        cutoff = min(at, archive_at) if s["origin"] == "reviewed_excerpt" else at
+        if (s.get("disabled") or s["id"] in session.get("blocked_sources", [])
+                or (s.get("session") is not None and s["session"] != session["id"])
+                or (s.get("recipient") is not None and s["recipient"] != actor)
+                or stamp(s["available_at"]) > cutoff or stamp(s["occurred_at"]) > cutoff
+                or (s.get("valid_until") and at >= stamp(s["valid_until"]))):
+            continue
+        visible.append(s)
+    return visible
 
 
 def search_sources(session: dict[str, Any], corpus: list[dict[str, Any]], actor: str,
@@ -161,8 +174,14 @@ def checked_finding(finding: Finding, sources: list[dict[str, Any]], need: Need)
         return finding.model_copy(update={"evidence": []})
     if need.aspect == "link" and not any(re.search(r"https?://[^\s<>]+", e.quote) for e in finding.evidence):
         return Finding(coverage="none", evidence=[], missing="Нужен сам разрешённый адрес ссылки, а не его скрытый маркер.")
-    if any("[link]" in e.quote or "[Вложение:" in e.quote for e in finding.evidence):
-        return Finding(coverage="none", evidence=[], missing="Нужен доступный текст или разрешённая ссылка; содержимое скрыто.")
+    has_hidden = any("[link]" in e.quote or "[Вложение:" in e.quote for e in finding.evidence)
+    if has_hidden:
+        independent_text = " ".join(re.sub(r"\[link\]|\[Вложение:[^\]]*\]", "", e.quote) for e in finding.evidence)
+        # Known textual time/terms can stand on their own beside a redacted artifact.
+        # Hidden material content is never reconstructed from its placeholder.
+        independent = need.aspect in {"time", "change_scope", "terms", "link"} and bool(re.search(r"[А-Яа-яA-Za-z0-9]{3,}", independent_text))
+        if not independent:
+            return Finding(coverage="none", evidence=[], missing="Нужен доступный текст или разрешённая ссылка; содержимое скрыто.")
     return finding
 
 
