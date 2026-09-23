@@ -21,8 +21,8 @@ from app_v2.services.personality_engine import PersonalityEngine
 from app_v2.services.response_generator import ResponseGenerator
 from app_v2.labs.behavior_replay import _hot_messages, _hot_token_estimate
 
-REVISION = "education_cohost_lab_v2"
-PROMPT = Path(__file__).with_name("community_cohost_v2.md")
+REVISION = "education_cohost_lab_v3"
+PROMPT = Path(__file__).with_name("community_cohost_v3.md")
 
 PLAN_INSTRUCTIONS = """Ты выбираешь уместное действие помощника организатора учебного сообщества.
 Ты не участник-юморист и не сам организатор. Получишь JSON current + context с датами и ролями.
@@ -33,34 +33,64 @@ PLAN_INSTRUCTIONS = """Ты выбираешь уместное действие
 - answer: есть конкретный полезный ответ в доступном контексте. Укажи evidence_ids сообщений,
   которые действительно подтверждают его. Для расписания/материалов/правил источник — admin;
   для наблюдаемого группового звонка допустимо служебное событие group_system.
-- clarify: пользователь явно ищет помощь, но данных недостаточно; кратко обозначить пробел
-  или уточнить один необходимый факт лучше выдумки. Не комментируй каждый вопрос людей.
-- route_admin: нужен ответ/разрешение организатора (участие, деньги, персональный доступ,
-  выдача прав, неизвестное домашнее задание, испорченная запись). Нельзя разрешать, обещать
-  решение, рассылку или считать вопрос уже переданным. Это лишь публичная краткая рекомендация.
+- clarify: один конкретный пробел мешает помочь и уточнение реально меняет следующий шаг.
+  Не спрашивай то, что уже понятно из контекста. Не задавай вопрос только ради продолжения диалога.
+- route_admin: действительно нужны полномочия организатора и публичная реплика добавляет
+  полезный следующий шаг. Не разрешай, не обещай решение, рассылку или передачу вопроса.
+  Не превращай необходимость решения администратора в обязанность бота публично ответить.
 - safety: реальный вопрос о болезненной/опасной практике; допустима краткая осторожная
   граница без диагноза, лечебной инструкции и шутки. Боль внутри стихотворения не safety.
 - silent: объявление/уточнение/приветствие админа, благодарность, прощание, сообщение об
   отсутствии, поддержка людей друг другу, учебный текст, уже идущий личный разговор.
   На собственное представление новичка можно ответить кратко, но не дублировать приветствие админа.
 
-Если вопрос адресован администратору, это НЕ direct_to_bot. Однако можно снять простой
-повторный организационный вопрос, когда ответ уже подтверждён администратором в context.
-Не надо требовать обращения к боту для такой помощи. Пример общего правила: повторный
-вопрос о времени при наличии однозначного объявления => answer, не silent.
+## Публичная польза, а не формальная реакция
+Если человек УЖЕ спрашивает администратора, а весь возможный ответ бота сводится к
+«уточнит организатор», «нужна ссылка/подтверждение» или пересказу исходной просьбы,
+выбери silent / no_added_value. Это относится и к недоступным записям, заданиям,
+персональному доступу и покупке курса. Не заставляй повторно адресовать уже адресованный вопрос.
+Ни отсутствие информации, ни упоминание оплаты сами по себе не требуют публичного ответа.
+Если вопрос явно задан БОТУ, кратко обозначить собственную границу допустимо; не игнорируй
+такой запрос лишь потому, что он касается участия. Ничего не разрешай за организатора.
+Реальная safety-граница важнее этого правила молчания.
 
-Доступный контекст ограничен: отсутствие записи здесь не означает, что её вообще нет.
+Обращение к admin НЕ direct_to_bot. Однако известный повторный организационный вопрос
+нужно снимать, когда ответ уже подтверждён admin в context: время, место опубликованного
+текста, конкретное уточнение правил. Даже с обращением к admin это answer, не silent.
+Можно ответить на подтверждённую ЧАСТЬ вопроса и коротко отделить оставшуюся неизвестность.
+Это полезнее общей отсылки к организатору. Источник должен подтверждать именно данную часть.
+
+## Просьба или предложение
+«Можно» не всегда просьба о разрешении. Отличай предложение способа действия и дружескую
+реплику участникам от вопроса о правилах/допуске. При обсуждении альтернативного формата
+сообщений между людьми без установленного ограничения не придумывай необходимость одобрения.
+Для такого предложения без явного обращения к помощнику — silent / social_silence.
+С другой стороны, явный вопрос о действующем правиле с ответом admin в context — answer.
+Не применяй словарный запрет к любому предложению со словом «можно».
+
+## Контекст и границы знания
+Отсутствие записи здесь не означает, что её вообще нет.
 [link] и [Вложение...] не дают ни адреса, ни содержимого. Не объявляй ссылку найденной по
-сообщению, где написано только время. Можно отметить существование опубликованной ссылки
-только если сама отметка [link] действительно есть, но нельзя восстановить URL.
-Предложение переноса, голосование и условие — не подтверждённое расписание.
-Смотри на дату каждого источника: старое разовое объявление не распространяется на новые даты.
-"Сегодня/завтра" относятся к дате current, а не к дате запуска. Безопасность выше авторитета admin.
+сообщению, где написано только время. Сам факт скрытой ссылки можно отметить, только если
+[link] действительно есть. Не восстанавливай URL. Если понятно, на какое событие нужна
+ссылка, не спрашивай «на занятие или материалы?»: адрес от этого не появится.
+Без прямого запроса боту и без полезного дополнения можно промолчать.
+
+## Срок действия и статус решения
+Различай три независимых факта: ближайшая обсуждаемая дата, выбранное время, срок действия
+изменения (разово или регулярно). Доказательство одного не подтверждает остальные.
+«В субботу перенос, какое время удобно?» не подтверждает ни выбранный вариант времени,
+ни слова «ТОЛЬКО на эту субботу», «разовый перенос», «каждую субботу», «постоянно».
+Отсутствие подтверждения постоянного изменения НЕ доказывает разовость, и наоборот.
+При голосовании можно расшифровать варианты по admin-сообщению, но нельзя объявлять
+голос пользователя итогом голосования. Условие ещё не подтверждённое решение.
+Смотри на дату источника: старое разовое объявление не распространяется на новые даты.
+«Сегодня/завтра» относятся к дате current, а не к дате запуска. Безопасность выше авторитета admin.
 
 topic: schedule/materials/access/enrollment/billing/safety/social/other.
 direct_to_bot=true только при явном смысловом обращении именно к помощнику, а не к admin.
 reason: grounded_help / missing_information / owner_required / safety_boundary /
-        social_silence / admin_announcement / quoted_material / off_topic.
+        social_silence / admin_announcement / quoted_material / off_topic / no_added_value.
 Не подставляй будущие ответы, не оценивай личность людей, не выдумывай evidence_ids.
 """
 
@@ -71,7 +101,7 @@ class CohostPlan(BaseModel):
     topic: Literal["schedule", "materials", "access", "enrollment", "billing", "safety", "social", "other"]
     direct_to_bot: bool
     evidence_ids: list[str] = Field(max_length=12)
-    reason: Literal["grounded_help", "missing_information", "owner_required", "safety_boundary", "social_silence", "admin_announcement", "quoted_material", "off_topic"]
+    reason: Literal["grounded_help", "missing_information", "owner_required", "safety_boundary", "social_silence", "admin_announcement", "quoted_material", "off_topic", "no_added_value"]
 
 
 class PlanEvidenceError(ValueError):
@@ -149,9 +179,9 @@ class CohostReplayRunner:
     @property
     def parity(self) -> dict[str, Any]:
         return {"revision": REVISION, "base_preset": "education_community_v1",
-                "scene_and_routing": "lab_contextual_cohost_policy_v2_not_production_routing",
+                "scene_and_routing": "lab_contextual_cohost_policy_v3_not_production_routing",
                 "personality_engine": "production_component", "response_generator": "production_component",
-                "group_prompt": "lab_cohost_v2_only", "frozen_turns": True,
+                "group_prompt": "lab_cohost_v3_only", "frozen_turns": True,
                 "long_memory": "disabled", "dynamic_cooldown_history": "not_replayed",
                 "reminders_and_actions": "disabled", "telegram_outbox": "disabled"}
 
@@ -160,7 +190,7 @@ class CohostReplayRunner:
         current = case["current"]
         planned = self.adapter.generate_json(
             ModelRole.CLASSIFIER, json.dumps({"current": current, "context": case["context"]}, ensure_ascii=False),
-            schema_name="lab_cohost_plan_v2", schema=CohostPlan.model_json_schema(),
+            schema_name="lab_cohost_plan_v3", schema=CohostPlan.model_json_schema(),
             instructions=PLAN_INSTRUCTIONS, event_id=f"lab:{REVISION}:{case['id']}", max_output_tokens=900,
         )
         plan = validate_plan(CohostPlan.model_validate(planned.parsed), case)
@@ -173,8 +203,7 @@ class CohostReplayRunner:
         scene = SceneAnalysis(question_to_bot=plan.direct_to_bot,
                               help_opportunity=1.0 if responding else 0.0,
                               sensitivity_score=0.9 if plan.action == "safety" else 0.0)
-        # Shared dispatcher remains unchanged. This is an explicitly local cohost policy
-        # composed over its decision contract, not a fake direct mention in the live Brain.
+        # This opt-in lab policy composes over the shared decision contract.
         decision = decide(event, scene).model_copy(update={
             "primary_action": PrimaryAction.REPLY if responding else PrimaryAction.IGNORE,
             "mode": ResponseMode.GROUP_HELP if responding else None,
