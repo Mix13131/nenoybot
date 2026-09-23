@@ -15,7 +15,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any
 
-from app_v2.labs.cohost_replay import REVISION, make_cohost_runner, revision_manifest
+from app_v2.labs.cohost_helpfulness import REVISION, make_cohost_runner, revision_manifest
 from app_v2.labs.round_recovery import VERSION_KEYS, prepare_resume, safe_error, same_implementation
 from app_v2.labs.telegram_lab import LabBot, LabError, Telegram, atomic_json, render_report
 from app_v2.labs.telegram_lab_rounds import RoundLabBot, read_json, round_report
