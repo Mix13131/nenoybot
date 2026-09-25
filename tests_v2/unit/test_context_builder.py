@@ -217,7 +217,7 @@ def test_external_url_context_is_bounded_and_kept_separate_from_memory() -> None
     builder = ContextBuilder(
         message_repo=FakeMessageRepo([]),
         retrieval_engine=FakeRetrieval([]),
-        external_token_budget=320,
+        external_token_budget=500,
     )
     context = builder.build(
         event=_event(),
@@ -248,4 +248,4 @@ def test_external_url_context_is_bounded_and_kept_separate_from_memory() -> None
     assert "external context clipped" in context.external_context[0]["content"]
     assert len(context.external_context[0]["content"]) < 2000
     assert context.memories == ()
-    assert 0 < context.estimated_external_tokens <= 320
+    assert 0 < context.estimated_external_tokens <= 500
