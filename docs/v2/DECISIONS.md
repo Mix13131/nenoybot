@@ -303,3 +303,29 @@ Live-тест НеНой v2 показал конкретный UX-дефект:
 Продуктовый анти-паттерн: **не превращать каждый экспертный вопрос в мини-статью**.
 
 Нормативное описание добавлено в [PERSONALITY_SPEC.md](PERSONALITY_SPEC.md), §2.1. Это live-driven conversational tuning, а не новая функция и не повод для широкого архитектурного hardening.
+
+## 2026-09-25
+
+### D-053 — НеНой получает bounded URL Reader, но не Web Search/browser-agent
+
+Пользователь одобрил узкую способность читать одну явно переданную публичную ссылку как экономически оправданную capability.
+
+Продуктовая граница:
+- Personal: URL в текущем сообщении можно считать явной передачей НеНою; URL из replied-to сообщения требует явного намерения прочитать/проверить;
+- Group: читать ссылку только при direct mention/reply к НеНою; ambient Group links не должны вызывать outbound fetch;
+- одно событие — максимум одна ссылка; несколько ссылок fail closed с просьбой прислать одну;
+- direct HTTP extraction — основной путь; Firecrawl допускается только как optional fallback;
+- это **не** разрешение на autonomous web search, multi-link crawling, Playwright/browser automation, authenticated/private pages или deep web research.
+
+Безопасность и приватность:
+- разрешены только public `http/https` targets на 80/443;
+- private/loopback/link-local/non-global IP, unsafe redirects и DNS rebinding блокируются до соединения;
+- page content считается untrusted evidence и никогда не переопределяет system/product instructions;
+- page body и полный URL не становятся durable telemetry или memory;
+- durable telemetry может хранить только sanitized host/status/reason/source/cache/truncation/size metrics без URL path/query и текста страницы.
+
+Экономика должна проверяться по факту использования, а не оцениваться заранее: analytics фиксирует URL request/success/failure/cache/Firecrawl/content size и generator input tokens/cost.
+
+Реализация: TASK 38 / PR #148, squash-merge `68cd8e003765c80111628f5650f9b5b9ca4dd09e`. Full CI — **627 passed** на isolated PostgreSQL 16. Railway web/worker — `SUCCESS`; migration `0006` применена; webhook healthy; `/ready` → 200.
+
+Code/deploy acceptance не заменяет live product acceptance: перед статусом `LIVE PASS` нужен bounded Telegram smoke на реальной публичной статье.
