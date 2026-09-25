@@ -25,7 +25,7 @@ _READ_INTENT_RE = re.compile(
     r"(?i)\b(?:"
     r"глянь|посмотри|прочитай|открой|проверь|разбери|проанализируй|"
     r"что\s+(?:там|думаешь|скажешь)|о\s+ч[её]м\s+(?:там|это)|"
-    r"это\s+(?:правда|что)|правда\s+ли|верить|достоверн|"
+    r"это\s+(?:правда|что)|правда\s+ли|верить|достоверн\\w*|"
     r"summar(?:y|ize)|read|check|look\s+at|what\s+do\s+you\s+think"
     r")\b"
 )
@@ -498,15 +498,19 @@ class UrlReader:
         if literal_ip is not None:
             if not literal_ip.is_global:
                 raise UrlReadError("blocked_host", hostname)
+            normalized_host = hostname
         else:
-            ascii_host = hostname.encode("idna").decode("ascii")
+            try:
+                ascii_host = hostname.encode("idna").decode("ascii")
+            except UnicodeError as exc:
+                raise UrlReadError("invalid_url", "invalid_hostname") from exc
             addresses = self._resolver(ascii_host, effective_port)
             if not addresses or any(not _public_ip(item) for item in addresses):
                 raise UrlReadError("blocked_host", hostname)
+            normalized_host = ascii_host
 
-        normalized_host = hostname
-        if ":" in hostname and not hostname.startswith("["):
-            normalized_host = f"[{hostname}]"
+        if ":" in normalized_host and not normalized_host.startswith("["):
+            normalized_host = f"[{normalized_host}]"
         netloc = normalized_host
         if port is not None:
             netloc = f"{normalized_host}:{port}"
