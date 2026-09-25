@@ -487,14 +487,52 @@ class UrlReader:
             )
         )
 
+    def _pinned_request_target(
+        self,
+        url: str,
+    ) -> tuple[httpx.URL, dict[str, str], dict[str, Any]]:
+        parts = urlsplit(url)
+        hostname = (parts.hostname or "").rstrip(".").lower()
+        port = parts.port or (443 if parts.scheme.lower() == "https" else 80)
+
+        try:
+            literal = ipaddress.ip_address(hostname)
+        except ValueError:
+            literal = None
+
+        if literal is not None:
+            addresses = (str(literal),)
+        else:
+            ascii_host = hostname.encode("idna").decode("ascii")
+            addresses = self._resolver(ascii_host, port)
+
+        if not addresses or any(not _public_ip(item) for item in addresses):
+            raise UrlReadError("blocked_host", hostname)
+
+        # Connect to a validated IP instead of resolving the hostname again
+        # inside httpx. This closes the DNS-rebinding TOCTOU gap while Host/SNI
+        # preserve normal virtual-host and TLS certificate behavior.
+        target = httpx.URL(url).copy_with(host=addresses[0])
+        host_header = hostname
+        if parts.port is not None:
+            host_header = f"{hostname}:{parts.port}"
+        return (
+            target,
+            {"Host": host_header},
+            {"sni_hostname": hostname},
+        )
+
     def _fetch_direct(self, url: str) -> UrlReadResult:
         current = url
         for hop in range(self.max_redirects + 1):
             current = self._validate_public_url(current)
+            target_url, pinned_headers, extensions = self._pinned_request_target(current)
             try:
                 with self._client.stream(
                     "GET",
-                    current,
+                    target_url,
+                    headers=pinned_headers,
+                    extensions=extensions,
                     timeout=self.timeout_seconds,
                     follow_redirects=False,
                 ) as response:
