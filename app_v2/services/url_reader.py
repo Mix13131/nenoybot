@@ -513,9 +513,9 @@ class UrlReader:
         # inside httpx. This closes the DNS-rebinding TOCTOU gap while Host/SNI
         # preserve normal virtual-host and TLS certificate behavior.
         target = httpx.URL(url).copy_with(host=addresses[0])
-        host_header = hostname
+        host_header = f"[{hostname}]" if ":" in hostname else hostname
         if parts.port is not None:
-            host_header = f"{hostname}:{parts.port}"
+            host_header = f"{host_header}:{parts.port}"
         return (
             target,
             {"Host": host_header},
