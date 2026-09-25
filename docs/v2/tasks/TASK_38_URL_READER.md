@@ -44,12 +44,14 @@ Defaults:
 7. Proxy environment variables are ignored by the owned HTTP client.
 8. Page content is untrusted evidence, never model instructions.
 9. Page body is not persisted in intervention metadata; only bounded operational metrics are stored.
+10. Durable URL telemetry never stores the URL path or query string; only host + status/reason/source/cache/truncation/size fields are eligible.
 
 ## Generation behavior
 
 The generation package gets:
 - `external_context`: current-turn page content only;
-- `action_state.url_read`: status/URL/source/cache/truncation/size metadata only.
+- `action_state.url_read`: current-turn status/URL/source/cache/truncation/size metadata for generation;
+- `interventions.metadata.url_read`: durable sanitized telemetry only (no page body, URL path or query).
 
 The generator must:
 - use the page when it was actually read;
@@ -91,4 +93,5 @@ After merge/deploy:
 3. Group: address НеНой with the URL — answer reflects the actual page.
 4. Reply to another participant’s message containing a URL and ask НеНой to inspect it.
 5. Send two URLs — НеНой asks for one at a time.
-6. Confirm intervention metadata contains URL metrics but not page body.
+6. Confirm intervention metadata contains URL metrics but not page body/path/query.
+7. Confirm analytics report exposes URL request/success/failure/cache/Firecrawl/content-size/generator-token/generator-cost metrics.
