@@ -116,11 +116,12 @@ def test_live_postgres_migrations_are_repeat_safe() -> None:
 
     assert second == []
     assert first in (
-        [1, 2, 3, 4, 5],
-        [2, 3, 4, 5],
-        [3, 4, 5],
-        [4, 5],
-        [5],
+        [1, 2, 3, 4, 5, 6],
+        [2, 3, 4, 5, 6],
+        [3, 4, 5, 6],
+        [4, 5, 6],
+        [5, 6],
+        [6],
         [],
     )
 
@@ -147,6 +148,7 @@ def test_live_postgres_schema_constraints_and_indexes() -> None:
         "idx_outbox_telegram_message", "idx_feedback_events_feedback_id",
         "idx_pending_calendar_intents_lookup", "idx_reminders_source_event",
         "idx_connectors_scope", "idx_connector_versions_created_at",
+        "idx_interventions_url_read_status",
     }
 
     with psycopg.connect(database_url) as conn:
@@ -156,9 +158,17 @@ def test_live_postgres_schema_constraints_and_indexes() -> None:
         index_rows = conn.execute(
             "SELECT indexname FROM pg_indexes WHERE schemaname = 'public'"
         ).fetchall()
+        intervention_columns = conn.execute(
+            """
+            SELECT column_name
+            FROM information_schema.columns
+            WHERE table_schema='public' AND table_name='interventions'
+            """
+        ).fetchall()
 
         assert expected_tables <= {row[0] for row in table_rows}
         assert expected_indexes <= {row[0] for row in index_rows}
+        assert "metadata" in {row[0] for row in intervention_columns}
 
         conn.execute("DELETE FROM users WHERE telegram_user_id = 910000001")
         conn.execute("INSERT INTO users(telegram_user_id) VALUES (910000001)")
