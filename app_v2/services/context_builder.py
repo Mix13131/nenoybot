@@ -225,15 +225,27 @@ class ContextBuilder:
                 break
             content_cost = estimate_tokens(content)
             if content_cost > remaining:
-                clipped = content[: max(100, remaining * 4)]
+                marker = "\n[…external context clipped…]"
+                marker_cost = estimate_tokens(marker)
+                payload_budget = remaining - marker_cost
+                if payload_budget <= 0:
+                    break
+                clipped = content[: max(1, payload_budget * 4)]
                 boundary = clipped.rfind("\n")
                 if boundary < len(clipped) // 2:
                     boundary = clipped.rfind(" ")
                 if boundary > 0:
                     clipped = clipped[:boundary]
-                item["content"] = clipped.rstrip() + "\n[…external context clipped…]"
+                bounded = clipped.rstrip() + marker
+                while clipped and estimate_tokens(bounded) > remaining:
+                    overflow = estimate_tokens(bounded) - remaining
+                    clipped = clipped[: max(0, len(clipped) - max(4, overflow * 4))]
+                    bounded = clipped.rstrip() + marker
+                if not clipped or estimate_tokens(bounded) > remaining:
+                    break
+                item["content"] = bounded
                 item["truncated"] = True
-                content_cost = estimate_tokens(item["content"])
+                content_cost = estimate_tokens(bounded)
             selected.append(item)
             used += metadata_cost + content_cost
             if used >= self.external_token_budget:
