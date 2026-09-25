@@ -434,17 +434,19 @@ class GroupPipeline:
         if event.event_type is EventType.REMINDER_DUE:
             action_state["reminder_due"] = dict(event.metadata.get("reminder_payload") or {})
 
-        context = self.context_builder.build(
-            event=event,
-            scene=scene,
-            decision=decision,
-            personality=personality,
-            subject_keys=subject_keys,
-            memory_usage=memory_usage,
-            callback_fatigue_minutes=callback_fatigue_minutes,
-            action_state=action_state,
-            external_context=external_context,
-        )
+        context_kwargs: dict[str, Any] = {
+            "event": event,
+            "scene": scene,
+            "decision": decision,
+            "personality": personality,
+            "subject_keys": subject_keys,
+            "memory_usage": memory_usage,
+            "callback_fatigue_minutes": callback_fatigue_minutes,
+            "action_state": action_state,
+        }
+        if external_context:
+            context_kwargs["external_context"] = external_context
+        context = self.context_builder.build(**context_kwargs)
         if context.scope_type is not ScopeType.GROUP or context.scope_id != event.scope_id:
             raise GroupPipelineError("Context Builder returned cross-scope Group context")
 
