@@ -63,3 +63,48 @@ def test_production_with_complete_credentials_loads() -> None:
 def test_invalid_environment_fails_clearly() -> None:
     with pytest.raises(ConfigurationError, match="Invalid NENOY_V2_ENV"):
         load_config({"NENOY_V2_ENV": "staging"})
+
+
+
+def test_url_reader_defaults_are_bounded_and_enabled() -> None:
+    config = load_config({"NENOY_V2_ENV": "development"})
+
+    assert config.url_reader_enabled is True
+    assert config.url_reader_timeout_seconds == 8.0
+    assert config.url_reader_max_download_bytes == 5_000_000
+    assert config.url_reader_max_content_chars == 30_000
+    assert config.url_reader_cache_ttl_seconds == 86_400
+    assert config.firecrawl_api_key is None
+
+
+def test_url_reader_config_can_be_disabled_and_firecrawl_is_optional() -> None:
+    config = load_config(
+        {
+            "NENOY_V2_ENV": "development",
+            "NENOY_V2_URL_READER_ENABLED": "false",
+            "NENOY_V2_URL_READER_TIMEOUT_SECONDS": "4.5",
+            "NENOY_V2_URL_READER_MAX_DOWNLOAD_BYTES": "123456",
+            "NENOY_V2_URL_READER_MAX_CONTENT_CHARS": "9876",
+            "NENOY_V2_URL_READER_CACHE_TTL_SECONDS": "600",
+            "NENOY_V2_FIRECRAWL_API_KEY": "fc-test",
+            "NENOY_V2_FIRECRAWL_TIMEOUT_SECONDS": "12",
+        }
+    )
+
+    assert config.url_reader_enabled is False
+    assert config.url_reader_timeout_seconds == 4.5
+    assert config.url_reader_max_download_bytes == 123456
+    assert config.url_reader_max_content_chars == 9876
+    assert config.url_reader_cache_ttl_seconds == 600
+    assert config.firecrawl_api_key == "fc-test"
+    assert config.firecrawl_timeout_seconds == 12.0
+
+
+def test_invalid_url_reader_boolean_fails_clearly() -> None:
+    with pytest.raises(ConfigurationError, match="NENOY_V2_URL_READER_ENABLED must be a boolean"):
+        load_config(
+            {
+                "NENOY_V2_ENV": "development",
+                "NENOY_V2_URL_READER_ENABLED": "sometimes",
+            }
+        )

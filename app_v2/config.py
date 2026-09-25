@@ -22,6 +22,13 @@ class AppConfig:
     model_generator: str = "gpt-5.6-terra"
     model_deep: str = "gpt-5.6-sol"
     openai_timeout_seconds: float = 30.0
+    url_reader_enabled: bool = True
+    url_reader_timeout_seconds: float = 8.0
+    url_reader_max_download_bytes: int = 5_000_000
+    url_reader_max_content_chars: int = 30_000
+    url_reader_cache_ttl_seconds: int = 86_400
+    firecrawl_api_key: str | None = None
+    firecrawl_timeout_seconds: float = 20.0
     telegram_bot_username: str | None = None
     telegram_bot_user_id: str | None = None
     telegram_bot_token: str | None = None
@@ -43,6 +50,34 @@ def _positive_float(source: dict[str, str] | os._Environ[str], name: str, defaul
     if value <= 0:
         raise ConfigurationError(f"{name} must be > 0")
     return value
+
+
+def _positive_int(source: dict[str, str] | os._Environ[str], name: str, default: int) -> int:
+    raw = (source.get(name) or "").strip()
+    if not raw:
+        return default
+    try:
+        value = int(raw)
+    except ValueError as exc:
+        raise ConfigurationError(f"{name} must be an integer") from exc
+    if value <= 0:
+        raise ConfigurationError(f"{name} must be > 0")
+    return value
+
+
+def _bool_value(
+    source: dict[str, str] | os._Environ[str],
+    name: str,
+    default: bool,
+) -> bool:
+    raw = (source.get(name) or "").strip().lower()
+    if not raw:
+        return default
+    if raw in {"1", "true", "yes", "on"}:
+        return True
+    if raw in {"0", "false", "no", "off"}:
+        return False
+    raise ConfigurationError(f"{name} must be a boolean")
 
 
 def load_config(environ: dict[str, str] | None = None) -> AppConfig:
@@ -69,6 +104,7 @@ def load_config(environ: dict[str, str] | None = None) -> AppConfig:
     openai_api_key = (source.get("NENOY_V2_OPENAI_API_KEY") or "").strip() or None
     telegram_bot_token = (source.get("NENOY_V2_TELEGRAM_BOT_TOKEN") or "").strip() or None
     database_url = (source.get("NENOY_V2_DATABASE_URL") or "").strip() or None
+    firecrawl_api_key = (source.get("NENOY_V2_FIRECRAWL_API_KEY") or "").strip() or None
 
     bot_username = (source.get("NENOY_V2_TELEGRAM_BOT_USERNAME") or "").strip().lstrip("@") or None
     bot_user_id = (source.get("NENOY_V2_TELEGRAM_BOT_USER_ID") or "").strip() or None
@@ -109,6 +145,37 @@ def load_config(environ: dict[str, str] | None = None) -> AppConfig:
             source,
             "NENOY_V2_OPENAI_TIMEOUT_SECONDS",
             30.0,
+        ),
+        url_reader_enabled=_bool_value(
+            source,
+            "NENOY_V2_URL_READER_ENABLED",
+            True,
+        ),
+        url_reader_timeout_seconds=_positive_float(
+            source,
+            "NENOY_V2_URL_READER_TIMEOUT_SECONDS",
+            8.0,
+        ),
+        url_reader_max_download_bytes=_positive_int(
+            source,
+            "NENOY_V2_URL_READER_MAX_DOWNLOAD_BYTES",
+            5_000_000,
+        ),
+        url_reader_max_content_chars=_positive_int(
+            source,
+            "NENOY_V2_URL_READER_MAX_CONTENT_CHARS",
+            30_000,
+        ),
+        url_reader_cache_ttl_seconds=_positive_int(
+            source,
+            "NENOY_V2_URL_READER_CACHE_TTL_SECONDS",
+            86_400,
+        ),
+        firecrawl_api_key=firecrawl_api_key,
+        firecrawl_timeout_seconds=_positive_float(
+            source,
+            "NENOY_V2_FIRECRAWL_TIMEOUT_SECONDS",
+            20.0,
         ),
         telegram_bot_username=bot_username,
         telegram_bot_user_id=bot_user_id,

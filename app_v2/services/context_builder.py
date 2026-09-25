@@ -42,6 +42,8 @@ class GenerationContext:
     action_state: dict[str, Any]
     estimated_hot_tokens: int
     estimated_memory_tokens: int
+    external_context: tuple[dict[str, Any], ...] = ()
+    estimated_external_tokens: int = 0
 
     def as_dict(self) -> dict[str, Any]:
         data = asdict(self)
@@ -60,6 +62,7 @@ class ContextBuilder:
         memory_min_cards: int = 3,
         memory_max_cards: int = 8,
         memory_token_budget: int = 1200,
+        external_token_budget: int = 8000,
     ) -> None:
         self.message_repo = message_repo
         self.retrieval_engine = retrieval_engine
@@ -68,6 +71,7 @@ class ContextBuilder:
         self.memory_min_cards = max(1, memory_min_cards)
         self.memory_max_cards = max(self.memory_min_cards, memory_max_cards)
         self.memory_token_budget = max(100, memory_token_budget)
+        self.external_token_budget = max(500, external_token_budget)
 
     def mapper_context(
         self,
@@ -138,6 +142,7 @@ class ContextBuilder:
         memory_usage: str = "assist",
         callback_fatigue_minutes: int = 60,
         action_state: dict[str, Any] | None = None,
+        external_context: Iterable[dict[str, Any]] = (),
     ) -> GenerationContext:
         if not event.scope_id.strip():
             raise ValueError("event.scope_id must not be empty")
@@ -173,6 +178,8 @@ class ContextBuilder:
             memories, memory_tokens = [], 0
             degraded["memory_unavailable"] = True
 
+        external_items, external_tokens = self._fit_external(external_context)
+
         effective_action_state = dict(action_state or {})
         if degraded:
             effective_action_state["_degraded_context"] = degraded
@@ -190,7 +197,60 @@ class ContextBuilder:
             action_state=effective_action_state,
             estimated_hot_tokens=hot_tokens,
             estimated_memory_tokens=memory_tokens,
+            external_context=tuple(external_items),
+            estimated_external_tokens=external_tokens,
         )
+
+    def _fit_external(
+        self,
+        items: Iterable[dict[str, Any]],
+    ) -> tuple[list[dict[str, Any]], int]:
+        selected: list[dict[str, Any]] = []
+        used = 0
+        for raw in items:
+            if not isinstance(raw, dict):
+                continue
+            item = dict(raw)
+            content = str(item.get("content") or "").strip()
+            if not content:
+                continue
+            metadata_cost = estimate_tokens(
+                " ".join(
+                    str(item.get(key) or "")
+                    for key in ("url", "final_url", "title", "source", "content_type")
+                )
+            ) + 32
+            remaining = self.external_token_budget - used - metadata_cost
+            if remaining <= 0:
+                break
+            content_cost = estimate_tokens(content)
+            if content_cost > remaining:
+                marker = "\n[…external context clipped…]"
+                marker_cost = estimate_tokens(marker)
+                payload_budget = remaining - marker_cost
+                if payload_budget <= 0:
+                    break
+                clipped = content[: max(1, payload_budget * 4)]
+                boundary = clipped.rfind("\n")
+                if boundary < len(clipped) // 2:
+                    boundary = clipped.rfind(" ")
+                if boundary > 0:
+                    clipped = clipped[:boundary]
+                bounded = clipped.rstrip() + marker
+                while clipped and estimate_tokens(bounded) > remaining:
+                    overflow = estimate_tokens(bounded) - remaining
+                    clipped = clipped[: max(0, len(clipped) - max(4, overflow * 4))]
+                    bounded = clipped.rstrip() + marker
+                if not clipped or estimate_tokens(bounded) > remaining:
+                    break
+                item["content"] = bounded
+                item["truncated"] = True
+                content_cost = estimate_tokens(bounded)
+            selected.append(item)
+            used += metadata_cost + content_cost
+            if used >= self.external_token_budget:
+                break
+        return selected, used
 
     def _fit_hot(self, messages: list[HotMessage]) -> tuple[list[dict[str, Any]], int]:
         selected: list[dict[str, Any]] = []

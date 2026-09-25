@@ -39,6 +39,7 @@ class PersonalPipeline:
         response_generator: Any,
         intervention_repo: Any,
         outbox_repo: Any,
+        url_reader: Any | None = None,
     ) -> None:
         self.scene_analyzer = scene_analyzer
         self.memory_mapper = memory_mapper
@@ -47,6 +48,7 @@ class PersonalPipeline:
         self.response_generator = response_generator
         self.intervention_repo = intervention_repo
         self.outbox_repo = outbox_repo
+        self.url_reader = url_reader
 
     def process(self, event: EventEnvelope) -> PersonalPipelineResult:
         if event.scope_type is not ScopeType.PERSONAL:
@@ -86,15 +88,43 @@ class PersonalPipeline:
             mode=decision.mode or ResponseMode.ASSISTANT,
             scene=scene,
         )
-        context = self.context_builder.build(
-            event=event,
-            scene=scene,
-            decision=decision,
-            personality=personality,
-            subject_keys=self._subject_keys(event),
-            memory_usage=memory_usage,
-            action_state={"operation_receipts": operation_receipts},
-        )
+
+        url_read_state: dict[str, Any] | None = None
+        url_read_telemetry: dict[str, Any] | None = None
+        external_context: tuple[dict[str, Any], ...] = ()
+        if self.url_reader is not None:
+            try:
+                url_bundle = self.url_reader.read_for_event(event)
+                if url_bundle.status != "not_requested":
+                    url_read_state = url_bundle.as_action_state()
+                    url_read_telemetry = url_bundle.as_telemetry()
+                    external_context = url_bundle.external_context()
+            except Exception as exc:
+                url_read_state = {
+                    "status": "failed",
+                    "reason": "reader_error",
+                    "detail": type(exc).__name__,
+                }
+                url_read_telemetry = dict(url_read_state)
+
+        action_state: dict[str, Any] = {
+            "operation_receipts": operation_receipts,
+        }
+        if url_read_state is not None:
+            action_state["url_read"] = url_read_state
+
+        context_kwargs: dict[str, Any] = {
+            "event": event,
+            "scene": scene,
+            "decision": decision,
+            "personality": personality,
+            "subject_keys": self._subject_keys(event),
+            "memory_usage": memory_usage,
+            "action_state": action_state,
+        }
+        if external_context:
+            context_kwargs["external_context"] = external_context
+        context = self.context_builder.build(**context_kwargs)
 
         selected_memory_ids = [memory.id for memory in context.memories]
         try:
@@ -111,6 +141,7 @@ class PersonalPipeline:
                     "generation_failed": True,
                     "error_type": type(exc).__name__,
                     "operation_receipts": operation_receipts,
+                    "url_read": url_read_telemetry,
                 },
             )
             return PersonalPipelineResult(
@@ -131,7 +162,10 @@ class PersonalPipeline:
             decision=decision,
             selected_memory_ids=selected_memory_ids,
             generated_text=generated.text,
-            extra_metadata={"operation_receipts": operation_receipts},
+            extra_metadata={
+                "operation_receipts": operation_receipts,
+                "url_read": url_read_telemetry,
+            },
         )
 
         outbound = OutboundMessage(

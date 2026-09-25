@@ -36,14 +36,22 @@ class InterventionRepository:
         metadata.update(extra_metadata or {})
         reason_codes = [reason.value for reason in decision.reason_codes]
         policy_version = str(metadata.get("policy_version") or "unknown")
+
+        # Historically extra_metadata was operational-only and was not stored.
+        # Keep the new persistence boundary narrow: only sanitized capability
+        # telemetry is durable, never arbitrary context/evidence payloads.
+        persisted_metadata: dict[str, Any] = {}
+        url_read = metadata.get("url_read")
+        if isinstance(url_read, dict):
+            persisted_metadata["url_read"] = dict(url_read)
         row = self.conn.execute(
             """
             INSERT INTO interventions(
                 event_id, scope_type, scope_id, primary_action, mode,
                 intervention_score, reason_codes, policy_version,
-                selected_memory_ids, generated_text
+                selected_memory_ids, generated_text, metadata
             )
-            VALUES (%s,%s,%s,%s,%s,%s,%s::jsonb,%s,%s::jsonb,%s)
+            VALUES (%s,%s,%s,%s,%s,%s,%s::jsonb,%s,%s::jsonb,%s,%s::jsonb)
             RETURNING id
             """,
             (
@@ -57,6 +65,7 @@ class InterventionRepository:
                 policy_version,
                 json.dumps(selected_memory_ids, ensure_ascii=False),
                 generated_text,
+                json.dumps(persisted_metadata, ensure_ascii=False, default=str),
             ),
         ).fetchone()
         self.conn.commit()
