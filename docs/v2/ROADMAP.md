@@ -1,8 +1,8 @@
 # ROADMAP — НеНой 2.0
 
-## Актуальная контрольная точка — 2026-09-21
+## Актуальная контрольная точка — 2026-09-25
 
-Рабочая линия — `v2`. Текущий production/code checkpoint: `9697171b1bcf927bce465dedec052859a209f6fc` (merge PR #126).
+Рабочая линия — `v2`. Текущий production/code checkpoint: `68cd8e003765c80111628f5650f9b5b9ca4dd09e` (squash-merge PR #148).
 
 После прежнего checkpoint `aae85be...` завершён не только code hardening, но и bounded production acceptance:
 
@@ -14,17 +14,20 @@
 - semantic action прошёл live acceptance на фразе `в течение следующих пяти минут каждую минуту удивляй меня`: серия реально сохранилась и выдала разные generated actions по минутным fire;
 - live-диалог 2026-09-21 выявил conversational UX overshoot: обычный экспертный вопрос превратился в многоэкранный разбор, а `поясни детальнее, не понятно` расширило тему вместо упрощения;
 - **TASK 32 / PR #126** реализовал D-052: Generator получает `concise / clarify / detail / deep`, а Personal/Group prompts применяют progressive disclosure;
-- финальная CI PR #126: **570 passed, 1 warning** на isolated PostgreSQL 16.
+- финальная CI PR #126: **570 passed, 1 warning** на isolated PostgreSQL 16;
+- **TASK 38 / PR #148 — bounded URL Reader** реализован как отдельная узкая capability: одна явная публичная ссылка, direct HTTP extraction, optional Firecrawl fallback, SSRF/DNS-rebinding guards, untrusted-content boundary, bounded context и sanitized telemetry;
+- URL Reader не означает Web Search/browser-agent: ambient Group links не читаются, multi-link crawling/autonomous search/Playwright остаются вне scope;
+- финальная CI PR #148: **627 passed** на isolated PostgreSQL 16; production migration `0006` применена.
 
-Railway production на `9697171b...` подтверждён: web/worker `SUCCESS`, `No pending migrations`, webhook healthy (`pending_update_count=0`, last error absent), `/ready` → 200.
+Railway production на `68cd8e0...` подтверждён: web/worker `SUCCESS`, worker применил migration `0006`, webhook healthy (`pending_update_count=0`, last error absent), `/ready` → 200.
 
 **TASK 27 / #76 — Friends Test Preflight: PASS.** Исторически 2026-09-14 была выбрана и активирована ровно одна контролируемая тестовая группа с friends-profile и `initiative=3`; ordinary non-mention message дошёл до v2 и был оставлен без unsolicited reply, direct mention получил ответ. Privacy/scope, serious/sensitive, mute/silence, reactions/feedback и analytics boundaries покрыты текущим зелёным test suite. PR #84 подтверждает post-token-rotation webhook recovery path. Это закрывает preflight, но **не закрывает сам 7-дневный Friends Test**.
 
-Следующий продуктовый gate остаётся **Controlled Friends Test — TASK 28 / Phase 9**. Bounded fix D-052 уже реализован и deployed; перед продолжением нужен только повтор исходного Telegram regression-case, без нового широкого hardening-cycle.
+Следующий продуктовый gate остаётся **Controlled Friends Test — TASK 28 / Phase 9**. Перед продолжением нужен короткий live smoke уже развёрнутого URL Reader и незакрытый regression re-test response depth; ни один из них не является поводом для нового широкого hardening-cycle.
 
 Полный Friends Test пока не объявлен завершённым. **Кнопку «🛑 Стоп» под напоминаниями не добавляем**: D-046 остаётся в силе.
 
-Источник текущего состояния: [LIVE_TEST_STATUS.md](LIVE_TEST_STATUS.md). Принятые решения: [DECISIONS.md](DECISIONS.md), включая D-046–D-052.
+Источник текущего состояния: [LIVE_TEST_STATUS.md](LIVE_TEST_STATUS.md). Принятые решения: [DECISIONS.md](DECISIONS.md), включая D-046–D-053.
 
 ## Phase 0 — Product Vision
 
@@ -356,6 +359,6 @@ Group: roast, sarcasm, profanity level/frequency, initiative, callbacks, max int
 
 # Critical Path
 
-`Vision ✅ → Personality ✅ → Memory ✅ → Dispatcher ✅ → Architecture ✅ → Build 01–24 ✅ → Railway / Personal Smoke ✅ → TASK 29 trusted memory/receipts ✅ → TASK 30 calendar/timezone ✅ → Semantic Scheduled Actions ✅ → Friends Preflight ✅ → D-052 response-depth tuning ✅ → Telegram regression re-test ⏭️ → Controlled Friends Test 🚧 → Product Review v0.2 → Settings UX → Closed Beta → Monetization`
+`Vision ✅ → Personality ✅ → Memory ✅ → Dispatcher ✅ → Architecture ✅ → Build 01–24 ✅ → Railway / Personal Smoke ✅ → TASK 29 trusted memory/receipts ✅ → TASK 30 calendar/timezone ✅ → Semantic Scheduled Actions ✅ → Friends Preflight ✅ → D-052 response-depth tuning ✅ → TASK 38 bounded URL Reader ✅ → bounded Telegram smokes ⏭️ → Controlled Friends Test 🚧 → Product Review v0.2 → Settings UX → Closed Beta → Monetization`
 
-Проверенная production/code точка: `v2@9697171b1bcf927bce465dedec052859a209f6fc` (PR #126), full CI **570 passed, 1 warning**. Ближайший шаг — один живой regression re-test исходного диалога; при PASS продолжаем 7-дневный Controlled Friends Test.
+Проверенная production/code точка: `v2@68cd8e003765c80111628f5650f9b5b9ca4dd09e` (PR #148), full CI **627 passed**. Ближайший шаг — bounded Telegram smoke URL Reader + незакрытый response-depth regression re-test; затем продолжаем 7-дневный Controlled Friends Test.
