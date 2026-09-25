@@ -375,3 +375,28 @@ def test_content_is_truncated_to_configured_character_limit() -> None:
     assert result.truncated is True
     assert len(result.content) < 1300
     assert "страница обрезана" in result.content
+
+
+
+def test_persistable_telemetry_omits_url_path_query_and_page_body() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            headers={"content-type": "text/plain"},
+            text="Safe article body " * 20,
+        )
+
+    reader = make_reader(handler)
+    bundle = reader.read_for_event(
+        event("https://example.com/private/path?token=super-secret")
+    )
+
+    assert bundle.status == "succeeded"
+    telemetry = bundle.as_telemetry()
+    assert telemetry["host"] == "example.com"
+    serialized = repr(telemetry)
+    assert "private/path" not in serialized
+    assert "super-secret" not in serialized
+    assert "Safe article body" not in serialized
+    assert "requested_url" not in telemetry
+    assert "final_url" not in telemetry
