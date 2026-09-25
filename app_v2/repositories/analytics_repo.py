@@ -475,32 +475,7 @@ class AnalyticsRepository:
                     COALESCE(
                         SUM(
                             CASE
-                                WHEN (i.metadata -> 'url_read' ->> 'content_chars') ~ '^[0-9]+
-    def _group_cost(self, start: datetime, end: datetime, scope_id: str | None) -> float:
-        return self._scope_cost("group", start, end, scope_id)
-
-    def _scope_cost(self, scope_type: str, start: datetime, end: datetime, scope_id: str | None) -> float:
-        scope_sql = ""
-        params: list[object] = [scope_type, start, end]
-        if scope_id is not None:
-            scope_sql = " AND e.scope_id=%s"
-            params.append(scope_id)
-        row = self.conn.execute(
-            f"""SELECT COALESCE(SUM(u.estimated_cost_usd),0)
-                FROM llm_usage u JOIN events e ON e.event_id=u.event_id
-                WHERE e.scope_type=%s AND u.created_at >= %s AND u.created_at < %s
-                {scope_sql}""",
-            tuple(params),
-        ).fetchone()
-        return float(row[0] or 0) if row else 0.0
-
-    def _scalar(self, sql: str, params: list[object]) -> int:
-        row = self.conn.execute(sql, tuple(params)).fetchone()
-        value = row[0] if row else 0
-        if isinstance(value, Decimal):
-            return int(value)
-        return int(value or 0)
-
+                                WHEN (i.metadata -> 'url_read' ->> 'content_chars') ~ '^[0-9]+$'
                                 THEN (i.metadata -> 'url_read' ->> 'content_chars')::bigint
                                 ELSE 0
                             END
