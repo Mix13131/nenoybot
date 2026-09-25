@@ -90,12 +90,14 @@ class PersonalPipeline:
         )
 
         url_read_state: dict[str, Any] | None = None
+        url_read_telemetry: dict[str, Any] | None = None
         external_context: tuple[dict[str, Any], ...] = ()
         if self.url_reader is not None:
             try:
                 url_bundle = self.url_reader.read_for_event(event)
                 if url_bundle.status != "not_requested":
                     url_read_state = url_bundle.as_action_state()
+                    url_read_telemetry = url_bundle.as_telemetry()
                     external_context = url_bundle.external_context()
             except Exception as exc:
                 url_read_state = {
@@ -103,6 +105,7 @@ class PersonalPipeline:
                     "reason": "reader_error",
                     "detail": type(exc).__name__,
                 }
+                url_read_telemetry = dict(url_read_state)
 
         action_state: dict[str, Any] = {
             "operation_receipts": operation_receipts,
@@ -138,7 +141,7 @@ class PersonalPipeline:
                     "generation_failed": True,
                     "error_type": type(exc).__name__,
                     "operation_receipts": operation_receipts,
-                    "url_read": url_read_state,
+                    "url_read": url_read_telemetry,
                 },
             )
             return PersonalPipelineResult(
@@ -161,7 +164,7 @@ class PersonalPipeline:
             generated_text=generated.text,
             extra_metadata={
                 "operation_receipts": operation_receipts,
-                "url_read": url_read_state,
+                "url_read": url_read_telemetry,
             },
         )
 
