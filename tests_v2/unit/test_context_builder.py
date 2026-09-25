@@ -210,3 +210,42 @@ def test_hot_history_failure_does_not_block_direct_context_build():
     )
     assert context.hot_messages == ()
     assert context.action_state["_degraded_context"]["hot_messages_unavailable"] is True
+
+
+
+def test_external_url_context_is_bounded_and_kept_separate_from_memory() -> None:
+    builder = ContextBuilder(
+        message_repo=FakeMessageRepo([]),
+        retrieval_engine=FakeRetrieval([]),
+        external_token_budget=320,
+    )
+    context = builder.build(
+        event=_event(),
+        scene=SceneAnalysis(),
+        decision=_decision(),
+        personality=PersonalityEngine().build(
+            scope_type=ScopeType.PERSONAL,
+            mode=ResponseMode.ASSISTANT,
+        ),
+        external_context=[
+            {
+                "kind": "web_page",
+                "url": "https://example.com/article",
+                "final_url": "https://example.com/article",
+                "title": "Long article",
+                "source": "direct",
+                "content_type": "text/html",
+                "truncated": False,
+                "content": "useful external evidence " * 3000,
+            }
+        ],
+    )
+
+    assert len(context.external_context) == 1
+    assert context.external_context[0]["kind"] == "web_page"
+    assert context.external_context[0]["url"] == "https://example.com/article"
+    assert context.external_context[0]["truncated"] is True
+    assert "external context clipped" in context.external_context[0]["content"]
+    assert len(context.external_context[0]["content"]) < 2000
+    assert context.memories == ()
+    assert context.estimated_external_tokens > 0
