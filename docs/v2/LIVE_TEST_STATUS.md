@@ -1,12 +1,12 @@
 # НеНой 2.0 — Live Test Status
 
-Updated: 2026-09-21
+Updated: 2026-09-25
 
 ## Current checkpoint
 
 Рабочая линия — `v2`; `main`, legacy `app/` и legacy `tests/` без отдельного прямого решения не меняются.
 
-Текущая production/code точка: `9697171b1bcf927bce465dedec052859a209f6fc` — merge PR #126 в `v2`.
+Текущая production/code точка: `68cd8e003765c80111628f5650f9b5b9ca4dd09e` — squash-merge PR #148 в `v2`.
 
 ### Что принято и доказано
 
@@ -19,16 +19,39 @@ Updated: 2026-09-21
 | #107 / #108 | bounded 1-minute burst in finite window | implemented |
 | #109 / #110 | Scheduled Action Interpreter v1 | **LIVE PASS** on novel verb `удивляй` |
 | TASK 32 / #126 | response depth / progressive disclosure | **IMPLEMENTED + DEPLOYED**; live Telegram regression re-test pending |
+| TASK 38 / #148 | bounded explicit URL Reader | **IMPLEMENTED + DEPLOYED**; production runtime healthy, live Telegram URL smoke pending |
 
-Последняя подтверждённая полная CI-проверка финального PR #126 head — **570 passed, 1 warning** на isolated PostgreSQL 16.
+Последняя подтверждённая полная CI-проверка финального PR #148 head — **627 passed** на isolated PostgreSQL 16.
 
-Railway после merge PR #126:
+Railway после merge PR #148:
 - `nenoy-v2-web` — `SUCCESS`;
 - `nenoy-v2-worker` — `SUCCESS`;
-- worker startup: `No pending migrations`, worker started;
+- worker применил migration `0006_intervention_metadata.sql` и затем стартовал штатно;
 - Telegram webhook configured, `pending_update_count=0`, Telegram last error absent;
-- `/ready` → 200.
+- `/ready` → 200;
+- deploy обоих сервисов выполнен из `v2@68cd8e003765c80111628f5650f9b5b9ca4dd09e`.
 
+
+### TASK 38 / PR #148 — bounded URL Reader
+
+Пользователь отдельно одобрил bounded capability: НеНой умеет читать **одну явно переданную публичную ссылку**, но это не Web Search и не browser-agent.
+
+Принятые границы:
+- Personal: URL в текущем сообщении считается явной передачей НеНою; URL из replied-to сообщения читается при явном read/check intent;
+- Group: только direct mention/reply к НеНою; обычные ambient links не вызывают fetch;
+- одна ссылка на event;
+- direct HTTP extraction; Firecrawl — только optional fallback при наличии ключа;
+- нет autonomous search, multi-link crawling, Playwright/browser automation или authenticated/private pages;
+- page body живёт только в current generation context и не сохраняется в memory/intervention telemetry;
+- durable telemetry хранит только sanitized host/status/source/cache/truncation/size metrics без URL path/query и текста страницы;
+- SSRF guard блокирует private/loopback/link-local/non-global targets и повторно проверяет redirects; direct fetch pin-ится к проверенному IP с сохранением Host/TLS SNI;
+- generation prompt трактует page content как untrusted evidence, а не инструкцию.
+
+Экономика наблюдаема через существующий analytics report: URL requests/success/failure/cache/Firecrawl/content size + generator input tokens/cost.
+
+**Code/CI/deploy status:** merged + deployed; full CI **627 passed**; migration `0006` применена; web/worker `SUCCESS`; webhook healthy; `/ready` → 200.
+
+**Live product status:** ещё не `LIVE PASS`. Нужен bounded Telegram smoke на реальной публичной статье: Personal read, Group ambient silence и explicit Group read.
 
 ### Controlled live acceptance уже пройден
 
@@ -137,7 +160,7 @@ Observed real path:
 
 ## Continuation boundary
 
-Следующий gate — **Controlled Friends Test**, а не новый hardening cycle.
+Следующий gate — **bounded live URL smoke**, затем продолжение **Controlled Friends Test**, а не новый hardening cycle.
 
 На этом этапе:
 1. Days 1–2: low initiative, observation + direct replies;
