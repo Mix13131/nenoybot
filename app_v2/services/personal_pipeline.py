@@ -110,16 +110,18 @@ class PersonalPipeline:
         if url_read_state is not None:
             action_state["url_read"] = url_read_state
 
-        context = self.context_builder.build(
-            event=event,
-            scene=scene,
-            decision=decision,
-            personality=personality,
-            subject_keys=self._subject_keys(event),
-            memory_usage=memory_usage,
-            action_state=action_state,
-            external_context=external_context,
-        )
+        context_kwargs: dict[str, Any] = {
+            "event": event,
+            "scene": scene,
+            "decision": decision,
+            "personality": personality,
+            "subject_keys": self._subject_keys(event),
+            "memory_usage": memory_usage,
+            "action_state": action_state,
+        }
+        if external_context:
+            context_kwargs["external_context"] = external_context
+        context = self.context_builder.build(**context_kwargs)
 
         selected_memory_ids = [memory.id for memory in context.memories]
         try:
