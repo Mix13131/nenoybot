@@ -106,7 +106,7 @@ class FakeOutbox:
         return outbox_id, True
 
 
-def pipeline(*, scene=None, mapper=None, memories=(), generator=None, outbox=None, mapper_context=()):
+def pipeline(*, scene=None, mapper=None, memories=(), generator=None, outbox=None, mapper_context=(), url_reader=None):
     return PersonalPipeline(
         scene_analyzer=FakeSceneAnalyzer(scene),
         memory_mapper=mapper or FakeMapper(),
@@ -115,6 +115,7 @@ def pipeline(*, scene=None, mapper=None, memories=(), generator=None, outbox=Non
         response_generator=generator or FakeGenerator(),
         intervention_repo=FakeInterventions(),
         outbox_repo=outbox or FakeOutbox(),
+        url_reader=url_reader,
     )
 
 
@@ -229,3 +230,67 @@ def test_event_worker_compatible_handler_processes_only_personal_scope():
             payload=source.model_dump(mode="json"),
         ))
     assert len(p.response_generator.calls) == 1
+
+
+
+class FakeUrlBundle:
+    status = "succeeded"
+
+    def as_action_state(self):
+        return {
+            "status": "succeeded",
+            "requested_url": "https://example.com/private?token=secret",
+            "final_url": "https://example.com/private?token=secret",
+            "source": "direct",
+            "content_chars": 14,
+        }
+
+    def as_telemetry(self):
+        return {
+            "status": "succeeded",
+            "host": "example.com",
+            "source": "direct",
+            "cache_hit": False,
+            "content_chars": 14,
+        }
+
+    def external_context(self):
+        return (
+            {
+                "kind": "web_page",
+                "url": "https://example.com/private?token=secret",
+                "content": "page evidence",
+                "source": "direct",
+            },
+        )
+
+
+class FakeUrlReader:
+    def __init__(self):
+        self.calls = []
+
+    def read_for_event(self, event):
+        self.calls.append(event)
+        return FakeUrlBundle()
+
+
+def test_personal_pipeline_keeps_page_content_ephemeral_and_persists_sanitized_telemetry():
+    reader = FakeUrlReader()
+    p = pipeline(url_reader=reader)
+
+    p.process(evt("https://example.com/private?token=secret"))
+
+    assert len(reader.calls) == 1
+    context_call = p.context_builder.calls[0]
+    assert context_call["external_context"][0]["content"] == "page evidence"
+    assert context_call["action_state"]["url_read"]["requested_url"].endswith("token=secret")
+
+    persisted = p.intervention_repo.rows[-1]["extra_metadata"]["url_read"]
+    assert persisted == {
+        "status": "succeeded",
+        "host": "example.com",
+        "source": "direct",
+        "cache_hit": False,
+        "content_chars": 14,
+    }
+    assert "secret" not in repr(persisted)
