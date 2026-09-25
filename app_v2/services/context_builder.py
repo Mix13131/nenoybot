@@ -71,7 +71,7 @@ class ContextBuilder:
         self.memory_min_cards = max(1, memory_min_cards)
         self.memory_max_cards = max(self.memory_min_cards, memory_max_cards)
         self.memory_token_budget = max(100, memory_token_budget)
-        self.external_token_budget = max(500, external_token_budget)
+        self.external_token_budget = max(100, external_token_budget)
 
     def mapper_context(
         self,
