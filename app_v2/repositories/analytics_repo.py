@@ -77,6 +77,7 @@ class AnalyticsRepository:
             [start, end, *intervention_params],
         )
         cost = self._personal_cost(start, end, scope_id)
+        url_metrics = self._url_metrics("personal", start, end, scope_id)
         return {
             "messages": messages,
             "replies": replies,
@@ -84,6 +85,7 @@ class AnalyticsRepository:
             "memory_writes": memory_writes,
             "grounded_callbacks": callbacks,
             "llm_cost_usd": cost,
+            **url_metrics,
         }
 
     def group_counts(self, start: datetime, end: datetime, scope_id: str | None = None) -> dict[str, int | float]:
@@ -283,6 +285,7 @@ class AnalyticsRepository:
             [start, end, *feedback_params],
         )
         cost = self._group_cost(start, end, scope_id)
+        url_metrics = self._url_metrics("group", start, end, scope_id)
         return {
             "participant_count": participants,
             "organic_participants": organic,
@@ -299,6 +302,7 @@ class AnalyticsRepository:
             "negative_feedback": negative,
             "mute_events": mute,
             "llm_cost_usd": cost,
+            **url_metrics,
         }
 
     def reaction_quality_by_mode(
@@ -436,6 +440,127 @@ class AnalyticsRepository:
             {"day": row[0], "scope_id": str(row[1]), "llm_cost_usd": float(row[2] or 0)}
             for row in rows
         ]
+
+    def _url_metrics(
+        self,
+        scope_type: str,
+        start: datetime,
+        end: datetime,
+        scope_id: str | None,
+    ) -> dict[str, int | float]:
+        scope_sql = ""
+        params: list[object] = [scope_type, start, end]
+        if scope_id is not None:
+            scope_sql = " AND i.scope_id=%s"
+            params.append(scope_id)
+
+        row = self.conn.execute(
+            f"""SELECT
+                    COUNT(*) AS requests,
+                    COUNT(*) FILTER (
+                        WHERE i.metadata -> 'url_read' ->> 'status' = 'succeeded'
+                    ) AS succeeded,
+                    COUNT(*) FILTER (
+                        WHERE i.metadata -> 'url_read' ->> 'status' = 'failed'
+                    ) AS failed,
+                    COUNT(*) FILTER (
+                        WHERE COALESCE(
+                            (i.metadata -> 'url_read' ->> 'cache_hit')::boolean,
+                            FALSE
+                        )
+                    ) AS cache_hits,
+                    COUNT(*) FILTER (
+                        WHERE i.metadata -> 'url_read' ->> 'source' = 'firecrawl'
+                    ) AS firecrawl_reads,
+                    COALESCE(
+                        SUM(
+                            CASE
+                                WHEN (i.metadata -> 'url_read' ->> 'content_chars') ~ '^[0-9]+
+    def _group_cost(self, start: datetime, end: datetime, scope_id: str | None) -> float:
+        return self._scope_cost("group", start, end, scope_id)
+
+    def _scope_cost(self, scope_type: str, start: datetime, end: datetime, scope_id: str | None) -> float:
+        scope_sql = ""
+        params: list[object] = [scope_type, start, end]
+        if scope_id is not None:
+            scope_sql = " AND e.scope_id=%s"
+            params.append(scope_id)
+        row = self.conn.execute(
+            f"""SELECT COALESCE(SUM(u.estimated_cost_usd),0)
+                FROM llm_usage u JOIN events e ON e.event_id=u.event_id
+                WHERE e.scope_type=%s AND u.created_at >= %s AND u.created_at < %s
+                {scope_sql}""",
+            tuple(params),
+        ).fetchone()
+        return float(row[0] or 0) if row else 0.0
+
+    def _scalar(self, sql: str, params: list[object]) -> int:
+        row = self.conn.execute(sql, tuple(params)).fetchone()
+        value = row[0] if row else 0
+        if isinstance(value, Decimal):
+            return int(value)
+        return int(value or 0)
+
+                                THEN (i.metadata -> 'url_read' ->> 'content_chars')::bigint
+                                ELSE 0
+                            END
+                        ),
+                        0
+                    ) AS content_chars
+                FROM interventions i
+                WHERE i.scope_type=%s
+                  AND i.created_at >= %s AND i.created_at < %s
+                  AND i.metadata ? 'url_read'
+                  {scope_sql}""",
+            tuple(params),
+        ).fetchone()
+        requests = int(row[0] or 0) if row else 0
+        succeeded = int(row[1] or 0) if row else 0
+        failed = int(row[2] or 0) if row else 0
+        cache_hits = int(row[3] or 0) if row else 0
+        firecrawl_reads = int(row[4] or 0) if row else 0
+        content_chars = int(row[5] or 0) if row else 0
+
+        cost_params: list[object] = [scope_type, start, end]
+        cost_scope_sql = ""
+        if scope_id is not None:
+            cost_scope_sql = " AND i.scope_id=%s"
+            cost_params.append(scope_id)
+        cost_row = self.conn.execute(
+            f"""WITH url_events AS (
+                    SELECT DISTINCT i.event_id
+                    FROM interventions i
+                    WHERE i.scope_type=%s
+                      AND i.created_at >= %s AND i.created_at < %s
+                      AND i.metadata ? 'url_read'
+                      AND i.event_id IS NOT NULL
+                      {cost_scope_sql}
+                )
+                SELECT
+                    COALESCE(SUM(u.input_tokens), 0),
+                    COALESCE(SUM(u.estimated_cost_usd), 0)
+                FROM llm_usage u
+                JOIN url_events e ON e.event_id=u.event_id
+                WHERE u.task_kind='generator'""",
+            tuple(cost_params),
+        ).fetchone()
+        generator_input_tokens = int(cost_row[0] or 0) if cost_row else 0
+        generator_cost = float(cost_row[1] or 0) if cost_row else 0.0
+
+        return {
+            "url_read_requests": requests,
+            "url_read_successes": succeeded,
+            "url_read_failures": failed,
+            "url_read_success_rate": succeeded / requests if requests else 0.0,
+            "url_read_cache_hits": cache_hits,
+            "url_read_firecrawl_reads": firecrawl_reads,
+            "url_read_content_chars": content_chars,
+            "url_read_avg_content_chars": (
+                content_chars / succeeded if succeeded else 0.0
+            ),
+            "url_read_generator_input_tokens": generator_input_tokens,
+            "url_read_generator_cost_usd": generator_cost,
+        }
 
     def _personal_cost(self, start: datetime, end: datetime, scope_id: str | None) -> float:
         return self._scope_cost("personal", start, end, scope_id)
