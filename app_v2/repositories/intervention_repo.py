@@ -41,9 +41,9 @@ class InterventionRepository:
             INSERT INTO interventions(
                 event_id, scope_type, scope_id, primary_action, mode,
                 intervention_score, reason_codes, policy_version,
-                selected_memory_ids, generated_text
+                selected_memory_ids, generated_text, metadata
             )
-            VALUES (%s,%s,%s,%s,%s,%s,%s::jsonb,%s,%s::jsonb,%s)
+            VALUES (%s,%s,%s,%s,%s,%s,%s::jsonb,%s,%s::jsonb,%s,%s::jsonb)
             RETURNING id
             """,
             (
@@ -57,6 +57,7 @@ class InterventionRepository:
                 policy_version,
                 json.dumps(selected_memory_ids, ensure_ascii=False),
                 generated_text,
+                json.dumps(metadata, ensure_ascii=False, default=str),
             ),
         ).fetchone()
         self.conn.commit()
