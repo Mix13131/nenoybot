@@ -69,6 +69,7 @@ class GroupPipeline:
         scheduled_action_interpreter: Any | None = None,
         silence_wakeup_guard: Any | None = None,
         connector_resolver: Any | None = None,
+        url_reader: Any | None = None,
         unsolicited_enabled: bool = False,
     ) -> None:
         self.access_service = access_service
@@ -85,6 +86,7 @@ class GroupPipeline:
         self.scheduled_action_interpreter = scheduled_action_interpreter
         self.silence_wakeup_guard = silence_wakeup_guard
         self.connector_resolver = connector_resolver
+        self.url_reader = url_reader
         self.unsolicited_enabled = unsolicited_enabled
 
     def _mapper_context(self, event: EventEnvelope) -> tuple[dict[str, Any], ...]:
@@ -384,6 +386,21 @@ class GroupPipeline:
                 mapped_memory_ids=mapped_memory_ids,
             )
 
+        url_read_state: dict[str, Any] | None = None
+        external_context: tuple[dict[str, Any], ...] = ()
+        if self.url_reader is not None:
+            try:
+                url_bundle = self.url_reader.read_for_event(event)
+                if url_bundle.status != "not_requested":
+                    url_read_state = url_bundle.as_action_state()
+                    external_context = url_bundle.external_context()
+            except Exception as exc:
+                url_read_state = {
+                    "status": "failed",
+                    "reason": "reader_error",
+                    "detail": type(exc).__name__,
+                }
+
         personality = self.personality_engine.build(
             scope_type=ScopeType.GROUP,
             mode=decision.mode or ResponseMode.GROUP_DIRECT_REPLY,
@@ -404,6 +421,8 @@ class GroupPipeline:
             "mapped_memory_ids": list(mapped_memory_ids),
             "operation_receipts": operation_receipts,
         }
+        if url_read_state is not None:
+            action_state["url_read"] = url_read_state
         if reminder_action_state is not None:
             action_state["group_reminder"] = reminder_action_state
         if scheduled_action_interpretation is not None:
@@ -424,6 +443,7 @@ class GroupPipeline:
             memory_usage=memory_usage,
             callback_fatigue_minutes=callback_fatigue_minutes,
             action_state=action_state,
+            external_context=external_context,
         )
         if context.scope_type is not ScopeType.GROUP or context.scope_id != event.scope_id:
             raise GroupPipelineError("Context Builder returned cross-scope Group context")
@@ -454,6 +474,7 @@ class GroupPipeline:
                     ),
                     "statement_watch": statement_watch_state,
                     "operation_receipts": operation_receipts,
+                    "url_read": url_read_state,
                 },
             )
             return GroupPipelineResult(
@@ -481,6 +502,7 @@ class GroupPipeline:
                 "reminder_action": reminder_action_state,
                 "statement_watch": statement_watch_state,
                 "operation_receipts": operation_receipts,
+                "url_read": url_read_state,
             },
         )
         outbound = OutboundMessage(
