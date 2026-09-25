@@ -41,6 +41,7 @@ from app_v2.services.retrieval_engine import RetrievalEngine
 from app_v2.services.scene_analyzer import SceneAnalyzer
 from app_v2.services.scheduled_action_interpreter import ScheduledActionInterpreter
 from app_v2.services.statement_watcher import StatementWatcher
+from app_v2.services.url_reader import UrlReader
 
 
 @dataclass(frozen=True)
@@ -126,6 +127,15 @@ def build_runtime(conn: Any, config: AppConfig) -> RuntimeComponents:
         connector_repo,
         fallback=LegacyGroupConnectorResolver(),
     )
+    url_reader = UrlReader(
+        enabled=config.url_reader_enabled,
+        timeout_seconds=config.url_reader_timeout_seconds,
+        max_download_bytes=config.url_reader_max_download_bytes,
+        max_content_chars=config.url_reader_max_content_chars,
+        cache_ttl_seconds=config.url_reader_cache_ttl_seconds,
+        firecrawl_api_key=config.firecrawl_api_key,
+        firecrawl_timeout_seconds=config.firecrawl_timeout_seconds,
+    )
 
     personal_pipeline = PersonalPipeline(
         scene_analyzer=scene_analyzer,
@@ -135,6 +145,7 @@ def build_runtime(conn: Any, config: AppConfig) -> RuntimeComponents:
         response_generator=response_generator,
         intervention_repo=intervention_repo,
         outbox_repo=outbox_repo,
+        url_reader=url_reader,
     )
 
     group_pipeline = GroupPipeline(
@@ -159,6 +170,7 @@ def build_runtime(conn: Any, config: AppConfig) -> RuntimeComponents:
         scheduled_action_interpreter=ScheduledActionInterpreter(adapter),
         silence_wakeup_guard=silence_wakeup_repo,
         connector_resolver=connector_resolver,
+        url_reader=url_reader,
     )
 
     action_engine = ActionEngine(task_repo=task_repo, reminder_repo=reminder_repo)
