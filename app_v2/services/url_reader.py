@@ -95,6 +95,19 @@ class UrlReadResult:
             "download_bytes": self.download_bytes,
         }
 
+    def as_telemetry(self) -> dict[str, Any]:
+        final_host = (urlsplit(self.final_url).hostname or "").lower() or None
+        return {
+            "status": "succeeded",
+            "host": final_host,
+            "source": self.source,
+            "content_type": self.content_type,
+            "cache_hit": self.cache_hit,
+            "truncated": self.truncated,
+            "content_chars": len(self.content),
+            "download_bytes": self.download_bytes,
+        }
+
 
 @dataclass(frozen=True)
 class UrlReadBundle:
@@ -120,6 +133,27 @@ class UrlReadBundle:
         value: dict[str, Any] = {
             "status": self.status,
             "requested_url": self.requested_url,
+        }
+        if self.reason:
+            value["reason"] = self.reason
+        if self.detail:
+            value["detail"] = self.detail
+        if self.url_count:
+            value["url_count"] = self.url_count
+        return value
+
+    def as_telemetry(self) -> dict[str, Any]:
+        if self.status == "succeeded" and self.result is not None:
+            return self.result.as_telemetry()
+        host = None
+        if self.requested_url:
+            try:
+                host = (urlsplit(self.requested_url).hostname or "").lower() or None
+            except ValueError:
+                host = None
+        value: dict[str, Any] = {
+            "status": self.status,
+            "host": host,
         }
         if self.reason:
             value["reason"] = self.reason
