@@ -551,3 +551,79 @@ def test_competing_calendar_kinds_fail_closed():
         assert action.status == "not_scheduled"
         assert action.reason == "unsupported_time_expression"
         assert repo.created == []
+
+
+
+def test_one_shot_schedule_ignores_contextual_event_time():
+    repo = FakeReminderRepo()
+    service = GroupReminderService(repo)
+    now = datetime(2026, 9, 27, 18, 55, tzinfo=timezone.utc)
+    event = make_event(
+        text=(
+            "НеНой, завтра в 15:00 по Москве напомни @olgaserprof "
+            "про спектакль и встречу в метро Китай-город в 18:30"
+        ),
+        event_type=EventType.DIRECT_MENTION,
+    ).model_copy(update={"occurred_at": now})
+
+    action = service.maybe_schedule(event, now=now)
+
+    assert action.status == "scheduled"
+    assert action.target_username == "olgaserprof"
+    assert action.timezone == "Europe/Moscow"
+    assert action.due_at == datetime(2026, 9, 28, 12, 0, tzinfo=timezone.utc)
+    assert len(repo.created) == 1
+    assert "18:30" in repo.created[0]["payload"]["reminder_context"]
+
+
+def test_absolute_russian_date_with_contextual_event_time():
+    repo = FakeReminderRepo()
+    service = GroupReminderService(repo)
+    now = datetime(2026, 9, 27, 18, 55, tzinfo=timezone.utc)
+    event = make_event(
+        text=(
+            "28-го сентября в 15:00 МСК напомни @olgaserprof "
+            "про спектакль и встречу в метро Китай-город в 18:30"
+        ),
+        event_type=EventType.DIRECT_MENTION,
+    ).model_copy(update={"occurred_at": now})
+
+    action = service.maybe_schedule(event, now=now)
+
+    assert action.status == "scheduled"
+    assert action.target_username == "olgaserprof"
+    assert action.timezone == "Europe/Moscow"
+    assert action.due_at == datetime(2026, 9, 28, 12, 0, tzinfo=timezone.utc)
+    assert len(repo.created) == 1
+
+
+def test_absolute_date_without_year_rolls_to_next_year_only_if_date_has_passed():
+    repo = FakeReminderRepo()
+    service = GroupReminderService(repo)
+    now = datetime(2026, 12, 30, 12, 0, tzinfo=timezone.utc)
+    event = make_event(
+        text="2 января в 09:00 МСК напомни @alice проверить билеты",
+        event_type=EventType.DIRECT_MENTION,
+    ).model_copy(update={"occurred_at": now})
+
+    action = service.maybe_schedule(event, now=now)
+
+    assert action.status == "scheduled"
+    assert action.due_at == datetime(2027, 1, 2, 6, 0, tzinfo=timezone.utc)
+
+
+def test_absolute_date_competing_times_still_fail_closed():
+    repo = FakeReminderRepo()
+    service = GroupReminderService(repo)
+    now = datetime(2026, 9, 27, 12, 0, tzinfo=timezone.utc)
+    action = service.maybe_schedule(
+        make_event(
+            text="28 сентября в 15:00 или в 16:00 МСК напомни @alice про встречу",
+            event_type=EventType.DIRECT_MENTION,
+        ).model_copy(update={"occurred_at": now}),
+        now=now,
+    )
+
+    assert action.status == "not_scheduled"
+    assert action.reason == "unsupported_time_expression"
+    assert repo.created == []
