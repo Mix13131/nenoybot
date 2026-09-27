@@ -249,6 +249,12 @@ def decode_connector_payload(
                 low=0,
                 high=5,
             ),
+            birthday_hour=_int(
+                behavior.get("birthday_hour", 9),
+                "behavior.birthday_hour",
+                low=0,
+                high=23,
+            ),
         ),
         personality=ConnectorPersonalityProfile(values=personality_values),
         memory=ConnectorMemoryProfile(
@@ -273,6 +279,10 @@ def decode_connector_payload(
             silence_wakeup=_bool(
                 capabilities.get("silence_wakeup"),
                 "capabilities.silence_wakeup",
+            ),
+            birthdays=_bool(
+                capabilities.get("birthdays", True),
+                "capabilities.birthdays",
             ),
         ),
         authority=ConnectorAuthorityProfile(
