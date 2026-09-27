@@ -219,6 +219,12 @@ class LegacyGroupConnectorResolver:
                     low=0,
                     high=5,
                 ),
+                birthday_hour=_int(
+                    profile.get("birthday_hour"),
+                    9,
+                    low=0,
+                    high=23,
+                ),
             ),
             personality=ConnectorPersonalityProfile(
                 values=personality_values,
@@ -234,6 +240,7 @@ class LegacyGroupConnectorResolver:
                 scheduled_actions=True,
                 statement_watch=True,
                 silence_wakeup=silence_wakeup_enabled,
+                birthdays=_bool(profile.get("birthday_enabled"), True),
             ),
             authority=ConnectorAuthorityProfile(
                 policy=_text(
