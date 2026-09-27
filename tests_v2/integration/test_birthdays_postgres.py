@@ -116,6 +116,20 @@ def test_birthday_repository_persists_group_scoped_profile_and_dedupes_due_event
         assert event[2]["metadata"]["age_allowed"] is False
         assert "year" not in event[2]["metadata"]
 
+        assert repo.clear_birthday(
+            scope_id=str(chat_id),
+            telegram_user_id=str(user_id),
+            now=now,
+        ) is True
+        cleared=repo.get_participant_profile(str(chat_id), str(user_id))
+        assert "birthday" not in cleared
+        assert cleared["birthday_discovery"]["enabled"] is False
+        assert repo.telegram_refresh_due(
+            scope_id=str(chat_id),
+            telegram_user_id=str(user_id),
+            now=now.replace(year=2027),
+        ) is False
+
         conn.execute("DELETE FROM events WHERE scope_id=%s", (str(chat_id),))
         conn.execute("DELETE FROM chats WHERE telegram_chat_id=%s", (chat_id,))
         conn.execute("DELETE FROM users WHERE telegram_user_id=%s", (user_id,))
