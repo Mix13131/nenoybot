@@ -377,11 +377,18 @@ class GroupPipeline:
         mapped_memory_ids: tuple[str, ...] = ()
         mapper_result: Any | None = None
         memory_attempted = False
+        explicit_memory_request = (event.text or "").strip().lower().startswith(
+            ("запомни", "remember")
+        )
+        reminder_operation = reminder_action_state is not None
         should_map_memory = (
             birthday_action_state is None
             and (
                 event.event_type is EventType.EDITED_MESSAGE
-                or _should_map_group_memory(event, scene)
+                or (
+                    _should_map_group_memory(event, scene)
+                    and (not reminder_operation or explicit_memory_request)
+                )
             )
         )
         if self.memory_mapper is not None and should_map_memory:
