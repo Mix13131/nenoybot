@@ -151,21 +151,20 @@ class GroupSilenceWakeupService:
                 continue
             if candidate.silent_until and candidate.silent_until > current:
                 continue
-            if (
-                candidate.last_successful_wakeup_message_id
-                == candidate.last_human_message_id
-            ):
-                # One successful wakeup per exact human silence episode.
-                continue
-            if candidate.last_attempt_message_id == candidate.last_human_message_id:
-                # One attempt per exact episode even if later policy/generation
-                # decides not to speak. A newer human message opens a new episode.
-                continue
-
             local_now = current.astimezone(local_tz)
             local_day_start = local_now.replace(
                 hour=0, minute=0, second=0, microsecond=0
             ).astimezone(timezone.utc)
+
+            # Long silence is not a one-shot episode forever. Allow at most one
+            # proactive attempt per local day while the same human-silence
+            # episode continues. A new human message still opens a fresh episode.
+            if (
+                candidate.last_attempt_at is not None
+                and candidate.last_attempt_at >= local_day_start
+                and candidate.last_attempt_message_id == candidate.last_human_message_id
+            ):
+                continue
             if self.repo.count_successful_since(
                 candidate.scope_id,
                 local_day_start,
@@ -214,6 +213,7 @@ class GroupSilenceWakeupService:
                 candidate,
                 now=current,
                 silence_minutes=silence_minutes,
+                local_day=local_now.date().isoformat(),
             ):
                 return True
         return False
