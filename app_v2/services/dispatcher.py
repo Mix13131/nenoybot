@@ -186,6 +186,21 @@ def decide(
             metadata={"policy_version": POLICY_VERSION, "unsolicited": True, **state.metadata},
         )
 
+    if event.event_type is EventType.BIRTHDAY_DUE:
+        return DispatcherDecision(
+            primary_action=PrimaryAction.REPLY,
+            mode=ResponseMode.GROUP_BANTER,
+            intervention_score=100,
+            reason_codes=[ReasonCode.BIRTHDAY],
+            target_user_id=event.actor_user_id,
+            metadata={
+                "policy_version": POLICY_VERSION,
+                "unsolicited": False,
+                "birthday_due": True,
+                **state.metadata,
+            },
+        )
+
     if event.event_type is EventType.REMINDER_DUE:
         return DispatcherDecision(
             primary_action=PrimaryAction.REPLY,
