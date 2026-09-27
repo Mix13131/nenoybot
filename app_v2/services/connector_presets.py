@@ -82,6 +82,7 @@ _EDUCATION_COMMUNITY_V1 = ConnectorPresetDefinition(
         silence_wakeup_start_hour=10,
         silence_wakeup_end_hour=22,
         silence_wakeup_daily_limit=0,
+        birthday_hour=9,
     ),
     personality=ConnectorPersonalityProfile(
         values={
@@ -113,6 +114,7 @@ _EDUCATION_COMMUNITY_V1 = ConnectorPresetDefinition(
         scheduled_actions=True,
         statement_watch=True,
         silence_wakeup=False,
+        birthdays=True,
     ),
     authority_policy="owner_authoritative",
 )
