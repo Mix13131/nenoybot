@@ -58,7 +58,7 @@ For human messages in an approved active group:
 No 365 reminder rows.
 
 A bounded birthday worker runs inside the existing `nenoy-v2-worker`:
-- scan cadence default: 60 seconds;
+- scan cadence default: 300 seconds;
 - per-group local timezone is mandatory;
 - default birthday hour: 09:00 local;
 - if worker was unavailable at 09:00, greeting may still fire later that day, but never at/after 21:00;
