@@ -32,6 +32,7 @@ def candidate(**overrides):
         "last_human_excerpt": "ну всё, разбежались по делам",
         "last_successful_wakeup_message_id": None,
         "last_attempt_message_id": None,
+        "last_attempt_at": None,
     }
     base.update(overrides)
     return SilenceWakeupCandidate(**base)
@@ -49,8 +50,8 @@ class Repo:
     def count_successful_since(self, scope_id, since):
         return self.successful_today
 
-    def enqueue(self, item, *, now, silence_minutes):
-        self.enqueued.append((item, now, silence_minutes))
+    def enqueue(self, item, *, now, silence_minutes, local_day):
+        self.enqueued.append((item, now, silence_minutes, local_day))
         return True
 
 
@@ -101,8 +102,9 @@ def test_eligible_silence_enqueues_one_durable_wakeup():
     assert service(repo=repo).run_once(now=NOW) is True
 
     assert len(repo.enqueued) == 1
-    _, _, silence_minutes = repo.enqueued[0]
+    _, _, silence_minutes, local_day = repo.enqueued[0]
     assert silence_minutes == 240
+    assert local_day == "2026-09-20"
 
 
 def test_same_silence_episode_never_gets_second_successful_wakeup():
