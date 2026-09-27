@@ -481,7 +481,7 @@ def build_worker_loop(conn, config=None) -> WorkerLoop:
         runtime.birthday_service,
         interval_seconds=max(
             60,
-            _int_env("NENOY_V2_BIRTHDAY_SCAN_SECONDS", 60),
+            _int_env("NENOY_V2_BIRTHDAY_SCAN_SECONDS", 300),
         ),
     )
     return WorkerLoop(
