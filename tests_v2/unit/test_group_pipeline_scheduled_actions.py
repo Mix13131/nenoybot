@@ -212,3 +212,69 @@ def test_connector_resolution_failure_fails_closed_before_generation():
     assert generator.calls == 0
     assert interpreter.calls == []
     assert reminders.received is None
+
+
+
+class MemoryRichScene:
+    def analyze(self, event):
+        return SceneAnalysis(direct_mention=True, memory_value=0.95)
+
+
+class Mapper:
+    def __init__(self):
+        self.calls=[]
+
+    def map_event(self, event, **kwargs):
+        self.calls.append((event, kwargs))
+        return SimpleNamespace(written=(), forgotten_ids=(), failed=False)
+
+
+def test_plain_reminder_command_does_not_pollute_long_term_memory():
+    mapper=Mapper()
+    pipeline = GroupPipeline(
+        access_service=Access(),
+        scene_analyzer=MemoryRichScene(),
+        personality_engine=Personality(),
+        context_builder=ContextBuilder(),
+        response_generator=Generator(),
+        intervention_repo=Interventions(),
+        outbox_repo=Outbox(),
+        memory_mapper=mapper,
+        group_reminder_service=Reminders(),
+        scheduled_action_interpreter=Interpreter(),
+        connector_resolver=LegacyGroupConnectorResolver(),
+    )
+
+    pipeline.process(
+        _event(),
+        now=datetime(2026, 9, 19, 18, 0, tzinfo=timezone.utc),
+    )
+
+    assert mapper.calls == []
+
+
+def test_explicit_remember_plus_reminder_may_still_reach_memory_mapper():
+    mapper=Mapper()
+    evt=_event().model_copy(
+        update={"text":"Запомни и напоминай каждые 30 минут удивлять меня"}
+    )
+    pipeline = GroupPipeline(
+        access_service=Access(),
+        scene_analyzer=MemoryRichScene(),
+        personality_engine=Personality(),
+        context_builder=ContextBuilder(),
+        response_generator=Generator(),
+        intervention_repo=Interventions(),
+        outbox_repo=Outbox(),
+        memory_mapper=mapper,
+        group_reminder_service=Reminders(),
+        scheduled_action_interpreter=Interpreter(),
+        connector_resolver=LegacyGroupConnectorResolver(),
+    )
+
+    pipeline.process(
+        evt,
+        now=datetime(2026, 9, 19, 18, 0, tzinfo=timezone.utc),
+    )
+
+    assert len(mapper.calls) == 1
