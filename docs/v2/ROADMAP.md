@@ -1,8 +1,8 @@
 # ROADMAP — НеНой 2.0
 
-## Актуальная контрольная точка — 2026-09-25
+## Актуальная контрольная точка — 2026-09-27
 
-Рабочая линия — `v2`. Текущий production/code checkpoint: `68cd8e003765c80111628f5650f9b5b9ca4dd09e` (squash-merge PR #148).
+Рабочая линия — `v2`. Текущий production/code checkpoint: `53ec2d64e47c8072f2355a8dff85208e942b47d5` (squash-merge PR #151).
 
 После прежнего checkpoint `aae85be...` завершён не только code hardening, но и bounded production acceptance:
 
@@ -17,17 +17,20 @@
 - финальная CI PR #126: **570 passed, 1 warning** на isolated PostgreSQL 16;
 - **TASK 38 / PR #148 — bounded URL Reader** реализован как отдельная узкая capability: одна явная публичная ссылка, direct HTTP extraction, optional Firecrawl fallback, SSRF/DNS-rebinding guards, untrusted-content boundary, bounded context и sanitized telemetry;
 - URL Reader не означает Web Search/browser-agent: ambient Group links не читаются, multi-link crawling/autonomous search/Playwright остаются вне scope;
-- финальная CI PR #148: **627 passed** на isolated PostgreSQL 16; production migration `0006` применена.
+- финальная CI PR #148: **627 passed** на isolated PostgreSQL 16; production migration `0006` применена;
+- **TASK 39 / PR #151 — Group Birthdays** реализован group-scoped: privacy-visible Telegram profile + explicit self-report, user controls, idempotent `birthday_due`, connector capability, five-minute scanner и character-aware greeting;
+- birthday data не распространяется между группами; forget отключает Telegram rediscovery; возраст не используется;
+- финальная CI PR #151 / merge: **651 passed** на isolated PostgreSQL 16; новых SQL migrations нет.
 
-Railway production на `68cd8e0...` подтверждён: web/worker `SUCCESS`, worker применил migration `0006`, webhook healthy (`pending_update_count=0`, last error absent), `/ready` → 200.
+Railway production на `53ec2d6...` подтверждён: web/worker `SUCCESS`, worker стартовал без pending migrations, webhook healthy (`pending_update_count=0`, last error absent), `/ready` → 200.
 
 **TASK 27 / #76 — Friends Test Preflight: PASS.** Исторически 2026-09-14 была выбрана и активирована ровно одна контролируемая тестовая группа с friends-profile и `initiative=3`; ordinary non-mention message дошёл до v2 и был оставлен без unsolicited reply, direct mention получил ответ. Privacy/scope, serious/sensitive, mute/silence, reactions/feedback и analytics boundaries покрыты текущим зелёным test suite. PR #84 подтверждает post-token-rotation webhook recovery path. Это закрывает preflight, но **не закрывает сам 7-дневный Friends Test**.
 
-Следующий продуктовый gate остаётся **Controlled Friends Test — TASK 28 / Phase 9**. Перед продолжением нужен короткий live smoke уже развёрнутого URL Reader и незакрытый regression re-test response depth; ни один из них не является поводом для нового широкого hardening-cycle.
+Следующий продуктовый gate остаётся **Controlled Friends Test — TASK 28 / Phase 9**. Перед продолжением нужны короткие live smokes уже развёрнутых URL Reader и Group Birthdays плюс незакрытый regression re-test response depth; ни один из них не является поводом для нового широкого hardening-cycle.
 
 Полный Friends Test пока не объявлен завершённым. **Кнопку «🛑 Стоп» под напоминаниями не добавляем**: D-046 остаётся в силе.
 
-Источник текущего состояния: [LIVE_TEST_STATUS.md](LIVE_TEST_STATUS.md). Принятые решения: [DECISIONS.md](DECISIONS.md), включая D-046–D-053.
+Источник текущего состояния: [LIVE_TEST_STATUS.md](LIVE_TEST_STATUS.md). Принятые решения: [DECISIONS.md](DECISIONS.md), включая D-046–D-054.
 
 ## Phase 0 — Product Vision
 
@@ -138,7 +141,9 @@ Stage G — Deployment / Real Test
 30 Calendar/timezone reminders                     ✅ merged + live accepted
 31 Semantic scheduled actions / natural verbs       ✅ merged PR #110 + live accepted
 32 Response depth / progressive disclosure           ✅ merged PR #126 + deployed; live re-test pending
-Next gate: Controlled Friends Test                  ⏭️ after one Telegram regression re-test
+38 Bounded URL Reader                               ✅ merged PR #148 + deployed; live smoke pending
+39 Group Birthdays                                  ✅ merged PR #151 + deployed; live smoke pending
+Next gate: Controlled Friends Test                  ⏭️ after bounded live smokes / regression re-test
 ```
 
 Артефакт: `MVP_BUILD_PLAN.md`. Текущие live-оговорки — в `LIVE_TEST_STATUS.md`; отметки реализации и зелёный CI не заменяют production health-check/live acceptance.
@@ -359,6 +364,6 @@ Group: roast, sarcasm, profanity level/frequency, initiative, callbacks, max int
 
 # Critical Path
 
-`Vision ✅ → Personality ✅ → Memory ✅ → Dispatcher ✅ → Architecture ✅ → Build 01–24 ✅ → Railway / Personal Smoke ✅ → TASK 29 trusted memory/receipts ✅ → TASK 30 calendar/timezone ✅ → Semantic Scheduled Actions ✅ → Friends Preflight ✅ → D-052 response-depth tuning ✅ → TASK 38 bounded URL Reader ✅ → bounded Telegram smokes ⏭️ → Controlled Friends Test 🚧 → Product Review v0.2 → Settings UX → Closed Beta → Monetization`
+`Vision ✅ → Personality ✅ → Memory ✅ → Dispatcher ✅ → Architecture ✅ → Build 01–24 ✅ → Railway / Personal Smoke ✅ → TASK 29 trusted memory/receipts ✅ → TASK 30 calendar/timezone ✅ → Semantic Scheduled Actions ✅ → Friends Preflight ✅ → D-052 response-depth tuning ✅ → TASK 38 bounded URL Reader ✅ → TASK 39 Group Birthdays ✅ → bounded Telegram smokes ⏭️ → Controlled Friends Test 🚧 → Product Review v0.2 → Settings UX → Closed Beta → Monetization`
 
-Проверенная production/code точка: `v2@68cd8e003765c80111628f5650f9b5b9ca4dd09e` (PR #148), full CI **627 passed**. Ближайший шаг — bounded Telegram smoke URL Reader + незакрытый response-depth regression re-test; затем продолжаем 7-дневный Controlled Friends Test.
+Проверенная production/code точка: `v2@53ec2d64e47c8072f2355a8dff85208e942b47d5` (PR #151), full CI **651 passed**. Ближайший шаг — bounded Telegram smokes URL Reader + Group Birthdays и незакрытый response-depth regression re-test; затем продолжаем 7-дневный Controlled Friends Test.

@@ -329,3 +329,37 @@ Live-тест НеНой v2 показал конкретный UX-дефект:
 Реализация: TASK 38 / PR #148, squash-merge `68cd8e003765c80111628f5650f9b5b9ca4dd09e`. Full CI — **627 passed** на isolated PostgreSQL 16. Railway web/worker — `SUCCESS`; migration `0006` применена; webhook healthy; `/ready` → 200.
 
 Code/deploy acceptance не заменяет live product acceptance: перед статусом `LIVE PASS` нужен bounded Telegram smoke на реальной публичной статье.
+
+## 2026-09-27
+
+### D-054 — Дни рождения: group-scoped, privacy-aware, one greeting per year
+
+Пользователь одобрил способность НеНоя замечать дни рождения участников группы и поздравлять их как самостоятельный участник чата.
+
+Принятые границы:
+- источник №1 — optional `ChatFullInfo.birthdate` из Telegram Bot API только когда Telegram/privacy реально делает дату видимой боту;
+- источник №2 — явное self-report обращение участника к НеНою, например `НеНой, у меня день рождения 14 мая`;
+- утверждения третьих лиц и ambient self-disclosure не становятся структурированной датой автоматически;
+- дата хранится в `chat_members.participant_profile` конкретной группы и не распространяется между группами;
+- явная дата пользователя имеет приоритет над Telegram refresh;
+- `забудь мой день рождения` удаляет дату и отключает последующее Telegram auto-discovery в этой группе до нового явного self-report;
+- `не поздравляй меня с днем рождения` отдельно отключает proactive поздравления;
+- Telegram-sourced дата перестаёт использоваться, если Telegram позже перестал её раскрывать.
+
+Поздравление:
+- создаётся отдельным `birthday_due` event;
+- один durable event на `group + user + local year`;
+- default send hour — 09:00 timezone группы; catch-up разрешён только до 21:00;
+- обычный cooldown/unsolicited limits не мешают поздравлению, но group mute/silent_until остаётся сильнее;
+- текст генерируется обычным Group Generator с характером группы и grounded group memory;
+- возраст не считается и не называется; synthetic event не содержит year;
+- чувствительные факты из памяти не должны использоваться в поздравлении.
+
+Экономика:
+- отдельного Railway service и 365 reminder rows нет;
+- scanner работает внутри существующего worker раз в 300 секунд;
+- Telegram profile lookup bounded: explicit user date не рефрешится, обычные unavailable/not-shared ответы кэшируются на 30 дней, errors — на 1 день.
+
+Реализация: TASK 39 / PR #151, squash-merge `53ec2d64e47c8072f2355a8dff85208e942b47d5`. Full CI — **651 passed** на isolated PostgreSQL 16. Railway web/worker — `SUCCESS`; новых SQL migrations нет; webhook healthy; `/ready` → 200.
+
+Code/deploy acceptance не является live product acceptance: нужен bounded Telegram smoke с реальным self-report и одним фактическим поздравлением.

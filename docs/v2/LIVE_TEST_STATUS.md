@@ -1,12 +1,12 @@
 # НеНой 2.0 — Live Test Status
 
-Updated: 2026-09-25
+Updated: 2026-09-27
 
 ## Current checkpoint
 
 Рабочая линия — `v2`; `main`, legacy `app/` и legacy `tests/` без отдельного прямого решения не меняются.
 
-Текущая production/code точка: `68cd8e003765c80111628f5650f9b5b9ca4dd09e` — squash-merge PR #148 в `v2`.
+Текущая production/code точка: `53ec2d64e47c8072f2355a8dff85208e942b47d5` — squash-merge PR #151 в `v2`.
 
 ### Что принято и доказано
 
@@ -20,16 +20,17 @@ Updated: 2026-09-25
 | #109 / #110 | Scheduled Action Interpreter v1 | **LIVE PASS** on novel verb `удивляй` |
 | TASK 32 / #126 | response depth / progressive disclosure | **IMPLEMENTED + DEPLOYED**; live Telegram regression re-test pending |
 | TASK 38 / #148 | bounded explicit URL Reader | **IMPLEMENTED + DEPLOYED**; production runtime healthy, live Telegram URL smoke pending |
+| TASK 39 / #151 | group-scoped birthdays + proactive greetings | **IMPLEMENTED + DEPLOYED**; live Telegram birthday smoke pending |
 
-Последняя подтверждённая полная CI-проверка финального PR #148 head — **627 passed** на isolated PostgreSQL 16.
+Последняя подтверждённая полная CI-проверка merge PR #151 — **651 passed** на isolated PostgreSQL 16.
 
-Railway после merge PR #148:
+Railway после merge PR #151:
 - `nenoy-v2-web` — `SUCCESS`;
 - `nenoy-v2-worker` — `SUCCESS`;
-- worker применил migration `0006_intervention_metadata.sql` и затем стартовал штатно;
+- worker стартовал с `No pending migrations` / `database migrations ready applied=none`; TASK 39 использует существующий `chat_members.participant_profile` и не требует новой SQL migration;
 - Telegram webhook configured, `pending_update_count=0`, Telegram last error absent;
 - `/ready` → 200;
-- deploy обоих сервисов выполнен из `v2@68cd8e003765c80111628f5650f9b5b9ca4dd09e`.
+- deploy обоих сервисов выполнен из `v2@53ec2d64e47c8072f2355a8dff85208e942b47d5`.
 
 
 ### TASK 38 / PR #148 — bounded URL Reader
@@ -52,6 +53,30 @@ Railway после merge PR #148:
 **Code/CI/deploy status:** merged + deployed; full CI **627 passed**; migration `0006` применена; web/worker `SUCCESS`; webhook healthy; `/ready` → 200.
 
 **Live product status:** ещё не `LIVE PASS`. Нужен bounded Telegram smoke на реальной публичной статье: Personal read, Group ambient silence и explicit Group read.
+
+### TASK 39 / PR #151 — group birthdays
+
+НеНой умеет хранить и использовать день рождения участника в scope конкретной группы.
+
+Источники:
+- privacy-visible Telegram `ChatFullInfo.birthdate`;
+- явное self-report обращение участника к НеНою.
+
+Границы:
+- third-party claims и ambient disclosure автоматически не записываются;
+- explicit self-report сильнее Telegram refresh;
+- `забудь мой день рождения` удаляет дату и выключает дальнейшее auto-discovery в этой группе до нового явного self-report;
+- пользователь отдельно может отключить/включить proactive поздравления;
+- Telegram-sourced дата удаляется, если позже стала невидимой;
+- `birthday_due` дедуплицируется по group/user/local-year;
+- default local hour — 09:00, scanner — раз в 300 секунд, catch-up только до 21:00;
+- group mute/silent_until подавляет proactive birthday event;
+- возраст не вычисляется и не попадает в generation package;
+- поздравление использует Group personality / participant adaptation / grounded group memory, но prompt запрещает чувствительный материал.
+
+**Code/CI/deploy status:** merged + deployed; full CI **651 passed**; новых migrations нет; web/worker `SUCCESS`; webhook healthy; `/ready` → 200.
+
+**Live product status:** ещё не `LIVE PASS`. Нужен bounded Telegram smoke: self-report → structured group profile → один `birthday_due` → одно реальное поздравление → повторный scan без дубля.
 
 ### Controlled live acceptance уже пройден
 
@@ -160,7 +185,7 @@ Observed real path:
 
 ## Continuation boundary
 
-Следующий gate — **bounded live URL smoke**, затем продолжение **Controlled Friends Test**, а не новый hardening cycle.
+Следующий gate — **bounded live smokes URL Reader + birthdays**, затем продолжение **Controlled Friends Test**, а не новый hardening cycle.
 
 На этом этапе:
 1. Days 1–2: low initiative, observation + direct replies;
