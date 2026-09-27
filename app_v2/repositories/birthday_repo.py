@@ -90,6 +90,10 @@ class BirthdayRepository:
             self.conn.rollback()
             return False
         chat_id, user_id, profile = loaded
+        profile["birthday_discovery"] = {
+            "enabled": True,
+            "updated_at": now.isoformat(),
+        }
         profile["birthday"] = {
             "day": int(day),
             "month": int(month),
@@ -116,6 +120,10 @@ class BirthdayRepository:
         chat_id, user_id, profile = loaded
         existed = "birthday" in profile
         profile.pop("birthday", None)
+        profile["birthday_discovery"] = {
+            "enabled": False,
+            "updated_at": now.isoformat(),
+        }
         profile["birthday_lookup"] = {
             "checked_at": now.isoformat(),
             "status": "cleared_by_user",
@@ -168,6 +176,9 @@ class BirthdayRepository:
         if loaded is None:
             return False
         profile = loaded[2]
+        discovery = profile.get("birthday_discovery")
+        if isinstance(discovery, dict) and discovery.get("enabled") is False:
+            return False
         birthday = profile.get("birthday")
         if isinstance(birthday, dict) and birthday.get("source") == "explicit":
             return False
