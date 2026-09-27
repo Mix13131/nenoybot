@@ -16,6 +16,7 @@ class SilenceWakeupCandidate:
     last_human_excerpt: str
     last_successful_wakeup_message_id: int | None
     last_attempt_message_id: int | None
+    last_attempt_at: datetime | None
 
 
 class GroupSilenceWakeupRepository:
@@ -53,7 +54,16 @@ class GroupSilenceWakeupRepository:
                       AND e.event_type='group_silence_wakeup'
                     ORDER BY e.created_at DESC, e.id DESC
                     LIMIT 1
-                ) AS last_attempt_message_id
+                ) AS last_attempt_message_id,
+                (
+                    SELECT e.created_at
+                    FROM events e
+                    WHERE e.scope_type='group'
+                      AND e.scope_id=c.telegram_chat_id::text
+                      AND e.event_type='group_silence_wakeup'
+                    ORDER BY e.created_at DESC, e.id DESC
+                    LIMIT 1
+                ) AS last_attempt_at
             FROM chats c
             JOIN LATERAL (
                 SELECT m.id, m.created_at, m.text
@@ -84,6 +94,7 @@ class GroupSilenceWakeupRepository:
                 last_attempt_message_id=(
                     int(row[7]) if row[7] is not None else None
                 ),
+                last_attempt_at=row[8],
             )
             for row in rows
         ]
@@ -129,13 +140,15 @@ class GroupSilenceWakeupRepository:
         *,
         now: datetime,
         silence_minutes: int,
+        local_day: str,
     ) -> bool:
-        # One durable attempt per human silence episode. events.event_id is
-        # UNIQUE, so concurrent scanners/processes race on the same key and
-        # PostgreSQL admits exactly one synthetic event.
+        # One durable attempt per human silence episode *per local day*.
+        # This keeps multi-day silence alive without allowing minute-by-minute
+        # retries. events.event_id is UNIQUE, so concurrent scanners/processes
+        # race on the same key and PostgreSQL admits exactly one attempt.
         event_id = (
             f"silence:{candidate.scope_id}:"
-            f"{candidate.last_human_message_id}"
+            f"{candidate.last_human_message_id}:{local_day}"
         )
         payload = {
             "event_id": event_id,
@@ -151,6 +164,7 @@ class GroupSilenceWakeupRepository:
                 "synthetic": True,
                 "silence_wakeup": True,
                 "silence_minutes": int(silence_minutes),
+                "local_day": str(local_day),
                 "last_human_message_id": candidate.last_human_message_id,
                 "last_human_message_at": candidate.last_human_message_at.isoformat(),
                 "last_human_excerpt": candidate.last_human_excerpt,
