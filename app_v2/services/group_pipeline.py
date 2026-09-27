@@ -154,7 +154,8 @@ class GroupPipeline:
                     now=current,
                 )
             except Exception:
-                recover = getattr(self.birthday_service.repo, "rollback", None)
+                birthday_repo = getattr(self.birthday_service, "repo", None)
+                recover = getattr(birthday_repo, "rollback", None)
                 if callable(recover):
                     recover()
                 birthday_action_state = {
