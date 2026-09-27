@@ -107,37 +107,45 @@ def test_eligible_silence_enqueues_one_durable_wakeup():
     assert local_day == "2026-09-20"
 
 
-def test_same_silence_episode_never_gets_second_successful_wakeup():
-    item = candidate(last_successful_wakeup_message_id=77)
+def test_same_silence_episode_is_not_repeated_twice_same_local_day():
+    item = candidate(
+        last_successful_wakeup_message_id=77,
+        last_attempt_message_id=77,
+        last_attempt_at=NOW - timedelta(hours=1),
+    )
     repo = Repo(item)
 
     assert service(repo=repo).run_once(now=NOW) is False
     assert repo.enqueued == []
 
 
-def test_new_human_message_reopens_future_silence_episode():
+def test_same_silence_episode_reopens_on_next_local_day():
     item = candidate(
-        last_human_message_id=78,
-        last_human_message_at=NOW - timedelta(hours=4),
         last_successful_wakeup_message_id=77,
+        last_attempt_message_id=77,
+        last_attempt_at=NOW - timedelta(days=1),
     )
     repo = Repo(item)
 
     assert service(repo=repo).run_once(now=NOW) is True
 
 
-def test_any_prior_attempt_in_same_silence_episode_is_not_repeated():
-    item = candidate(last_attempt_message_id=77)
-    repo = Repo(item)
-
-    assert service(repo=repo).run_once(now=NOW) is False
-
-
-def test_attempt_before_new_human_message_does_not_block_new_episode():
+def test_new_human_message_reopens_silence_even_after_attempt_today():
     item = candidate(
         last_human_message_id=78,
         last_human_message_at=NOW - timedelta(hours=4),
         last_attempt_message_id=77,
+        last_attempt_at=NOW - timedelta(hours=1),
+    )
+    repo = Repo(item)
+
+    assert service(repo=repo).run_once(now=NOW) is True
+
+
+def test_old_attempt_without_timestamp_does_not_block_forever():
+    item = candidate(
+        last_attempt_message_id=77,
+        last_attempt_at=None,
     )
     repo = Repo(item)
 
