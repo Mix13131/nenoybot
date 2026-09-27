@@ -8,7 +8,7 @@ from typing import Any
 @dataclass
 class BirthdayWorker:
     service: Any
-    interval_seconds: int = 60
+    interval_seconds: int = 300
     last_run_at: datetime | None = None
 
     def run_if_due(self, *, now: datetime | None = None) -> bool | None:
