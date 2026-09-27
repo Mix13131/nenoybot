@@ -125,7 +125,7 @@ class AnalyticsRepository:
             f"""SELECT COUNT(*) FROM interventions i
                 WHERE i.scope_type='group' AND i.primary_action='reply'
                   AND i.created_at >= %s AND i.created_at < %s
-                  AND NOT (i.reason_codes ?| ARRAY['direct_mention','reply_to_bot','question_to_bot'])
+                  AND NOT (i.reason_codes ?| ARRAY['direct_mention','reply_to_bot','question_to_bot','birthday'])
                 {intervention_scope}""",
             [start, end, *intervention_params],
         )
@@ -143,6 +143,17 @@ class AnalyticsRepository:
                 WHERE i.scope_type='group'
                   AND i.primary_action='reply'
                   AND e.event_type='group_silence_wakeup'
+                  AND i.created_at >= %s AND i.created_at < %s
+                {intervention_scope}""",
+            [start, end, *intervention_params],
+        )
+        birthday_greetings = self._scalar(
+            f"""SELECT COUNT(*)
+                FROM interventions i
+                JOIN events e ON e.event_id=i.event_id
+                WHERE i.scope_type='group'
+                  AND i.primary_action='reply'
+                  AND e.event_type='birthday_due'
                   AND i.created_at >= %s AND i.created_at < %s
                 {intervention_scope}""",
             [start, end, *intervention_params],
@@ -292,6 +303,7 @@ class AnalyticsRepository:
             "direct_mentions": direct_mentions,
             "unsolicited_interventions": unsolicited,
             "silence_wakeups": silence_wakeups,
+            "birthday_greetings": birthday_greetings,
             "replies": replies,
             "reactions": reactions,
             "reaction_rate": reactions / replies if replies else 0.0,
