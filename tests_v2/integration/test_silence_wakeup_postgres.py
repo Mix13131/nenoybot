@@ -69,16 +69,19 @@ def test_postgres_silence_wakeup_candidate_and_event_are_durable():
         assert item.last_human_excerpt == "последняя реплика"
         assert item.last_successful_wakeup_message_id is None
         assert item.last_attempt_message_id is None
+        assert item.last_attempt_at is None
 
         assert repo.enqueue(
             item,
             now=now,
             silence_minutes=240,
+            local_day="2026-09-20",
         ) is True
         assert repo.enqueue(
             item,
             now=now,
             silence_minutes=240,
+            local_day="2026-09-20",
         ) is False
 
         row = conn.execute(
@@ -94,8 +97,24 @@ def test_postgres_silence_wakeup_candidate_and_event_are_durable():
         assert row[2] == str(chat_id)
         assert row[3]["metadata"]["silence_wakeup"] is True
         assert row[3]["metadata"]["silence_minutes"] == 240
+        assert row[3]["metadata"]["local_day"] == "2026-09-20"
         assert row[3]["metadata"]["last_human_message_id"] == item.last_human_message_id
         assert repo.is_current_episode(str(chat_id), item.last_human_message_id) is True
+
+        # The same silence episode may get one new durable attempt on a later
+        # local day, but never another event for the same day.
+        refreshed = next(
+            row for row in repo.list_candidates()
+            if row.scope_id == str(chat_id)
+        )
+        assert refreshed.last_attempt_message_id == item.last_human_message_id
+        assert refreshed.last_attempt_at is not None
+        assert repo.enqueue(
+            refreshed,
+            now=now + timedelta(days=1),
+            silence_minutes=24 * 60 + 240,
+            local_day="2026-09-21",
+        ) is True
 
         conn.execute(
             """
