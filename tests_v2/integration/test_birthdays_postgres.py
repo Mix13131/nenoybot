@@ -62,6 +62,28 @@ def test_birthday_repository_persists_group_scoped_profile_and_dedupes_due_event
         conn.commit()
 
         repo=BirthdayRepository(conn)
+
+        # Telegram-sourced data follows current visibility.
+        assert repo.record_telegram_lookup(
+            scope_id=str(chat_id),
+            telegram_user_id=str(user_id),
+            status="available",
+            now=now,
+            birthdate=TelegramBirthdate(day=8, month=6, year=None),
+        ) is True
+        telegram_profile=repo.get_participant_profile(str(chat_id), str(user_id))
+        assert telegram_profile["birthday"]["source"] == "telegram_profile"
+        assert telegram_profile["birthday"]["day"] == 8
+
+        assert repo.record_telegram_lookup(
+            scope_id=str(chat_id),
+            telegram_user_id=str(user_id),
+            status="not_shared",
+            now=now,
+        ) is True
+        hidden_profile=repo.get_participant_profile(str(chat_id), str(user_id))
+        assert "birthday" not in hidden_profile
+
         assert repo.save_explicit_birthday(
             scope_id=str(chat_id),
             telegram_user_id=str(user_id),
@@ -89,6 +111,24 @@ def test_birthday_repository_persists_group_scoped_profile_and_dedupes_due_event
         profile=repo.get_participant_profile(str(chat_id), str(user_id))
         assert profile["birthday"]["day"] == 27
         assert profile["birthday"]["month"] == 9
+
+        assert repo.set_congratulations_enabled(
+            scope_id=str(chat_id),
+            telegram_user_id=str(user_id),
+            enabled=False,
+            now=now,
+        ) is True
+        assert not any(
+            item.scope_id == str(chat_id)
+            and item.telegram_user_id == str(user_id)
+            for item in repo.list_candidates()
+        )
+        assert repo.set_congratulations_enabled(
+            scope_id=str(chat_id),
+            telegram_user_id=str(user_id),
+            enabled=True,
+            now=now,
+        ) is True
 
         candidates=repo.list_candidates()
         candidate=next(
