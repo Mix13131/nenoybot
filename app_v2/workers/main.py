@@ -23,6 +23,7 @@ from app_v2.services.connector_resolver import migrated_legacy_connector
 from app_v2.services.group_initiative import GroupInitiativeService
 from app_v2.services.group_silence_wakeup import GroupSilenceWakeupService
 from app_v2.services.maintenance import MaintenanceService
+from app_v2.workers.birthdays import BirthdayWorker
 from app_v2.workers.event_worker import EventWorker
 from app_v2.workers.maintenance import (
     MaintenanceWorker,
@@ -390,6 +391,7 @@ class WorkerLoop:
     outbox_worker: Any
     maintenance_worker: Any
     silence_wakeup_worker: Any | None = None
+    birthday_worker: Any | None = None
 
     def run_once(self) -> bool:
         """Run one fair cycle; return True when any durable work was handled."""
@@ -410,6 +412,15 @@ class WorkerLoop:
                 # Re-engagement is optional product behavior. Any failure must
                 # degrade to silence and never block normal Telegram handling.
                 logger.exception("v2 silence wakeup cycle failed")
+
+        if self.birthday_worker is not None:
+            try:
+                birthday = self.birthday_worker.run_if_due()
+                handled = handled or bool(birthday)
+            except Exception:
+                # Birthday greetings are optional proactive behavior. Failure
+                # must never block normal messages/reminders/outbox delivery.
+                logger.exception("v2 birthday cycle failed")
 
         handled = self.event_worker.run_once() or handled
         handled = self.reminder_scheduler.run_once() or handled
@@ -466,12 +477,20 @@ def build_worker_loop(conn, config=None) -> WorkerLoop:
             _int_env("NENOY_V2_SILENCE_WAKEUP_SCAN_SECONDS", 60),
         ),
     )
+    birthday_worker = BirthdayWorker(
+        runtime.birthday_service,
+        interval_seconds=max(
+            60,
+            _int_env("NENOY_V2_BIRTHDAY_SCAN_SECONDS", 60),
+        ),
+    )
     return WorkerLoop(
         event_worker=event_worker,
         reminder_scheduler=reminder_scheduler,
         outbox_worker=outbox_worker,
         maintenance_worker=maintenance_worker,
         silence_wakeup_worker=silence_wakeup_worker,
+        birthday_worker=birthday_worker,
     )
 
 
