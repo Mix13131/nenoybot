@@ -5,8 +5,10 @@ from typing import Any
 
 from app_v2.adapters.openai_adapter import OpenAIAdapter
 from app_v2.adapters.telegram_sender import TelegramSender
+from app_v2.adapters.telegram_profile import TelegramProfileClient
 from app_v2.config import AppConfig
 from app_v2.domain.enums import EventType, ScopeType
+from app_v2.repositories.birthday_repo import BirthdayRepository
 from app_v2.repositories.connector_repo import ConnectorRepository
 from app_v2.repositories.event_repo import EventRepository
 from app_v2.repositories.feedback_repo import FeedbackRepository
@@ -22,6 +24,7 @@ from app_v2.repositories.reminder_repo import ReminderRepository
 from app_v2.repositories.task_repo import TaskRepository
 from app_v2.repositories.usage_repo import UsageRepository
 from app_v2.services.action_engine import ActionEngine
+from app_v2.services.birthdays import BirthdayService
 from app_v2.services.connector_resolver import (
     LegacyGroupConnectorResolver,
     PersistedGroupConnectorResolver,
@@ -58,6 +61,8 @@ class RuntimeComponents:
     telegram_sender: TelegramSender
     maintenance_repo: MaintenanceRepository
     silence_wakeup_repo: GroupSilenceWakeupRepository
+    birthday_repo: BirthdayRepository
+    birthday_service: BirthdayService
     connector_repo: ConnectorRepository
     connector_resolver: PersistedGroupConnectorResolver
 
@@ -106,6 +111,7 @@ def build_runtime(conn: Any, config: AppConfig) -> RuntimeComponents:
     group_context_repo = GroupContextRepository(conn)
     group_initiative_repo = GroupInitiativeRepository(conn)
     silence_wakeup_repo = GroupSilenceWakeupRepository(conn)
+    birthday_repo = BirthdayRepository(conn)
     connector_repo = ConnectorRepository(conn)
     maintenance_repo = MaintenanceRepository(conn)
 
@@ -126,6 +132,15 @@ def build_runtime(conn: Any, config: AppConfig) -> RuntimeComponents:
     connector_resolver = PersistedGroupConnectorResolver(
         connector_repo,
         fallback=LegacyGroupConnectorResolver(),
+    )
+    telegram_profile_client = TelegramProfileClient(
+        token=config.telegram_bot_token,
+    )
+    birthday_service = BirthdayService(
+        repo=birthday_repo,
+        telegram_profile_client=telegram_profile_client,
+        group_context_repo=group_context_repo,
+        connector_resolver=connector_resolver,
     )
     url_reader = UrlReader(
         enabled=config.url_reader_enabled,
@@ -171,6 +186,7 @@ def build_runtime(conn: Any, config: AppConfig) -> RuntimeComponents:
         silence_wakeup_guard=silence_wakeup_repo,
         connector_resolver=connector_resolver,
         url_reader=url_reader,
+        birthday_service=birthday_service,
     )
 
     action_engine = ActionEngine(task_repo=task_repo, reminder_repo=reminder_repo)
@@ -189,6 +205,8 @@ def build_runtime(conn: Any, config: AppConfig) -> RuntimeComponents:
         telegram_sender=telegram_sender,
         maintenance_repo=maintenance_repo,
         silence_wakeup_repo=silence_wakeup_repo,
+        birthday_repo=birthday_repo,
+        birthday_service=birthday_service,
         connector_repo=connector_repo,
         connector_resolver=connector_resolver,
     )
