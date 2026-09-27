@@ -173,6 +173,9 @@ def _calendar_bridge_is_alternative(bridge: str) -> bool:
 def _clock_is_competing(text: str, schedule_end: int, match: re.Match[str]) -> bool:
     if match.start() < schedule_end:
         return True
+    attempt = match.group(0).strip().lower()
+    if attempt.startswith(("или", "либо")):
+        return True
     bridge = text[schedule_end:match.start()]
     return _calendar_bridge_is_alternative(bridge)
 
