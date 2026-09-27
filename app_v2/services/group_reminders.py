@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass
-from datetime import datetime, timedelta
+from datetime import date, datetime, timedelta
 from zoneinfo import ZoneInfo
 from typing import Any
 
@@ -93,6 +93,22 @@ _TZ_ALIASES = {
     "по москве": "Europe/Moscow",
 }
 _MSK_RE = re.compile(r"(?<!\w)мск(?!\w)", flags=re.IGNORECASE)
+
+_RU_MONTHS = {
+    "января": 1, "февраля": 2, "марта": 3, "апреля": 4,
+    "мая": 5, "июня": 6, "июля": 7, "августа": 8,
+    "сентября": 9, "октября": 10, "ноября": 11, "декабря": 12,
+}
+_ABSOLUTE_DATE_RE = re.compile(
+    r"\b(?P<day>[0-3]?\d)(?:\s*[-‑–—]?\s*(?:го|е|ое))?\s+"
+    r"(?P<month>января|февраля|марта|апреля|мая|июня|июля|августа|"
+    r"сентября|октября|ноября|декабря)"
+    r"(?:\s+(?P<year>\d{4}))?"
+    r"\s+в\s+(?P<hour>[01]?\d|2[0-3])"
+    r"(?::(?P<minute>[0-5]\d)|(?!:))",
+    flags=re.IGNORECASE,
+)
+
 _MOSCOW_CLARIFICATION_RE = re.compile(
     r"^(?:мск|по\s+мск|москва|по\s+москве|московское\s+время|по\s+московскому(?:\s+времени)?)$",
     flags=re.IGNORECASE,
@@ -152,6 +168,13 @@ def _calendar_bridge_is_alternative(bridge: str) -> bool:
         return False
     return all(word in _CALENDAR_ALT_BRIDGE_WORDS for word in words)
 
+
+
+def _clock_is_competing(text: str, schedule_end: int, match: re.Match[str]) -> bool:
+    if match.start() < schedule_end:
+        return True
+    bridge = text[schedule_end:match.start()]
+    return _calendar_bridge_is_alternative(bridge)
 
 @dataclass(frozen=True)
 class GroupReminderAction:
@@ -452,7 +475,35 @@ class GroupReminderService:
                           pending_id: int | None = None) -> GroupReminderAction:
         timezone_name = validate_timezone(timezone_name)
         one_shot_day = spec.get("one_shot_day")
-        if one_shot_day is not None:
+        absolute_day = spec.get("absolute_day")
+        if absolute_day is not None:
+            reference_at = datetime.fromisoformat(str(spec.get("reference_at") or now.isoformat()))
+            if reference_at.tzinfo is None or reference_at.utcoffset() is None:
+                return GroupReminderAction(status="not_scheduled", reason="invalid_calendar_reference")
+            local_today = reference_at.astimezone(ZoneInfo(timezone_name)).date()
+            month = int(spec["absolute_month"])
+            explicit_year = spec.get("absolute_year")
+            year = int(explicit_year) if explicit_year is not None else local_today.year
+            try:
+                local_date = date(year, month, int(absolute_day))
+            except ValueError:
+                return GroupReminderAction(status="not_scheduled", reason="invalid_calendar_date")
+            if explicit_year is None and local_date < local_today:
+                try:
+                    local_date = date(year + 1, month, int(absolute_day))
+                except ValueError:
+                    return GroupReminderAction(status="not_scheduled", reason="invalid_calendar_date")
+            due_at = resolve_local(
+                local_date,
+                int(spec["hour"]),
+                int(spec["minute"]),
+                timezone_name,
+            )
+            if due_at <= now:
+                return GroupReminderAction(status="not_scheduled", reason="calendar_time_in_past")
+            rule = None
+            recurring = False
+        elif one_shot_day is not None:
             reference_at = datetime.fromisoformat(str(spec.get("reference_at") or now.isoformat()))
             if reference_at.tzinfo is None or reference_at.utcoffset() is None:
                 return GroupReminderAction(status="not_scheduled", reason="invalid_calendar_reference")
@@ -551,8 +602,40 @@ class GroupReminderService:
     @staticmethod
     def _calendar_spec(text: str, now: datetime) -> dict[str, Any] | None:
         clock_attempts = list(_CLOCK_ATTEMPT_RE.finditer(text))
-        if len(clock_attempts) != 1:
+        if not clock_attempts:
             return None
+
+        absolute = _ABSOLUTE_DATE_RE.search(text)
+        if absolute is not None:
+            schedule_end = absolute.end()
+            schedule_clock = next(
+                (item for item in clock_attempts if item.start() >= absolute.start() and item.end() <= schedule_end),
+                None,
+            )
+            if schedule_clock is None:
+                return None
+            for item in clock_attempts:
+                if item is schedule_clock:
+                    continue
+                if _clock_is_competing(text, schedule_end, item):
+                    return None
+            day = int(absolute.group("day"))
+            month = _RU_MONTHS[absolute.group("month").lower()]
+            year_raw = absolute.group("year")
+            year = int(year_raw) if year_raw else None
+            try:
+                date(year or 2000, month, day)
+            except ValueError:
+                return None
+            return {
+                "hour": int(absolute.group("hour")),
+                "minute": int(absolute.group("minute") or 0),
+                "absolute_day": day,
+                "absolute_month": month,
+                "absolute_year": year,
+                "subject": text,
+            }
+
         clock_match = clock_attempts[0]
         kinds_before_clock = [
             kind_match
@@ -599,6 +682,21 @@ class GroupReminderService:
         if not schedule_match:
             return None
         schedule_end = selected_start + schedule_match.end()
+        schedule_clock = next(
+            (
+                item
+                for item in clock_attempts
+                if item.start() >= selected_start and item.end() <= schedule_end
+            ),
+            None,
+        )
+        if schedule_clock is None:
+            return None
+        for item in clock_attempts:
+            if item is schedule_clock:
+                continue
+            if _clock_is_competing(text, schedule_end, item):
+                return None
         kind_matches = list(_CALENDAR_KIND_RE.finditer(text))
         selected_index = next(
             index
