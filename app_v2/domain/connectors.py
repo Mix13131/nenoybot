@@ -47,6 +47,7 @@ class ConnectorBehaviorProfile:
     silence_wakeup_start_hour: int = 10
     silence_wakeup_end_hour: int = 22
     silence_wakeup_daily_limit: int = 1
+    birthday_hour: int = 9
 
 
 @dataclass(frozen=True)
@@ -81,6 +82,7 @@ class ConnectorCapabilityProfile:
     scheduled_actions: bool = True
     statement_watch: bool = True
     silence_wakeup: bool = False
+    birthdays: bool = True
 
     def enabled_names(self) -> tuple[str, ...]:
         result = []
@@ -89,6 +91,7 @@ class ConnectorCapabilityProfile:
             "scheduled_actions",
             "statement_watch",
             "silence_wakeup",
+            "birthdays",
         ):
             if bool(getattr(self, name)):
                 result.append(name)

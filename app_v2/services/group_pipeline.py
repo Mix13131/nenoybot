@@ -70,6 +70,7 @@ class GroupPipeline:
         silence_wakeup_guard: Any | None = None,
         connector_resolver: Any | None = None,
         url_reader: Any | None = None,
+        birthday_service: Any | None = None,
         unsolicited_enabled: bool = False,
     ) -> None:
         self.access_service = access_service
@@ -87,6 +88,7 @@ class GroupPipeline:
         self.silence_wakeup_guard = silence_wakeup_guard
         self.connector_resolver = connector_resolver
         self.url_reader = url_reader
+        self.birthday_service = birthday_service
         self.unsolicited_enabled = unsolicited_enabled
 
     def _mapper_context(self, event: EventEnvelope) -> tuple[dict[str, Any], ...]:
@@ -140,6 +142,26 @@ class GroupPipeline:
                     access_reason="connector_unavailable",
                     primary_action=PrimaryAction.IGNORE,
                 )
+
+        group_context = access.context
+        birthday_action_state: dict[str, Any] | None = None
+        if self.birthday_service is not None and event.event_type is not EventType.BIRTHDAY_DUE:
+            try:
+                birthday_action_state = self.birthday_service.observe_group_event(
+                    event,
+                    group_context=group_context,
+                    connector_config=connector_config,
+                    now=current,
+                )
+            except Exception:
+                birthday_repo = getattr(self.birthday_service, "repo", None)
+                recover = getattr(birthday_repo, "rollback", None)
+                if callable(recover):
+                    recover()
+                birthday_action_state = {
+                    "status": "failed",
+                    "operation": "observe",
+                }
 
         if event.event_type is EventType.GROUP_SILENCE_WAKEUP:
             try:
@@ -232,8 +254,9 @@ class GroupPipeline:
                     "reason": type(exc).__name__,
                 }
 
-        group_context = access.context
-        if event.event_type is EventType.GROUP_SILENCE_WAKEUP:
+        if event.event_type is EventType.BIRTHDAY_DUE:
+            scene = SceneAnalysis()
+        elif event.event_type is EventType.GROUP_SILENCE_WAKEUP:
             last_human_excerpt = str(
                 event.metadata.get("last_human_excerpt") or ""
             ).strip()
@@ -283,9 +306,29 @@ class GroupPipeline:
         behavior_memory_ids: tuple[str, ...] = ()
         statement_watch_state: dict[str, Any] | None = None
 
+        # A configured birthday event should use participant memory/personality,
+        # but it must not burn LLM/initiative logic trying to classify a
+        # synthetic empty message.
+        if event.event_type is EventType.BIRTHDAY_DUE:
+            muted = bool(group_context.silent_until and group_context.silent_until > current)
+            state = DispatcherPolicyState(
+                group_muted=muted,
+                cooldown_active=False,
+                initiative_level=10,
+                allow_roast=True,
+                allow_callbacks=True,
+                metadata={
+                    "group_profile": profile.get("profile", "friends"),
+                    "connector": (
+                        connector_config.public_state()
+                        if connector_config is not None
+                        else None
+                    ),
+                },
+            )
         # Retrieve old memory before mapping the current message so a callback
         # can never be manufactured from the line it is reacting to.
-        if self.group_behavior_engine is not None:
+        elif self.group_behavior_engine is not None:
             plan_kwargs = {
                 "event": event,
                 "group_context": group_context,
@@ -335,8 +378,11 @@ class GroupPipeline:
         mapper_result: Any | None = None
         memory_attempted = False
         should_map_memory = (
-            event.event_type is EventType.EDITED_MESSAGE
-            or _should_map_group_memory(event, scene)
+            birthday_action_state is None
+            and (
+                event.event_type is EventType.EDITED_MESSAGE
+                or _should_map_group_memory(event, scene)
+            )
         )
         if self.memory_mapper is not None and should_map_memory:
             memory_attempted = True
@@ -374,6 +420,7 @@ class GroupPipeline:
                     ),
                     "statement_watch": statement_watch_state,
                     "operation_receipts": operation_receipts,
+                    "birthday_profile": birthday_action_state,
                 },
             )
             return GroupPipelineResult(
@@ -424,6 +471,10 @@ class GroupPipeline:
             "mapped_memory_ids": list(mapped_memory_ids),
             "operation_receipts": operation_receipts,
         }
+        if birthday_action_state is not None:
+            action_state["birthday_profile"] = birthday_action_state
+        if event.event_type is EventType.BIRTHDAY_DUE:
+            action_state["birthday_due"] = dict(event.metadata)
         if url_read_state is not None:
             action_state["url_read"] = url_read_state
         if reminder_action_state is not None:
@@ -479,6 +530,7 @@ class GroupPipeline:
                     ),
                     "statement_watch": statement_watch_state,
                     "operation_receipts": operation_receipts,
+                    "birthday_profile": birthday_action_state,
                     "url_read": url_read_telemetry,
                 },
             )
@@ -507,6 +559,7 @@ class GroupPipeline:
                 "reminder_action": reminder_action_state,
                 "statement_watch": statement_watch_state,
                 "operation_receipts": operation_receipts,
+                "birthday_profile": birthday_action_state,
                 "url_read": url_read_telemetry,
             },
         )

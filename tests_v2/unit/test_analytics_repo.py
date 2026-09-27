@@ -53,15 +53,17 @@ def test_personal_queries_are_scope_filtered() -> None:
 
 def test_group_ratios_are_zero_safe() -> None:
     # participant, organic, direct, unsolicited, replies, silence_wakeups,
-    # reactions, roast_total, roast_positive, ignored, negative, mute, cost
+    # birthday_greetings, reactions, roast_total, roast_positive, ignored,
+    # negative, mute, cost
     conn=FakeConn([
-        8,3,6,2,0,1,5,0,3,1,2,1,.45,
+        8,3,6,2,0,1,1,5,0,3,1,2,1,.45,
         (2,1,1,0,0,4500),
         (3000,.02),
     ])
     metrics=AnalyticsRepository(conn).group_counts(START,END,"-1001")
     assert metrics["participant_count"] == 8
     assert metrics["silence_wakeups"] == 1
+    assert metrics["birthday_greetings"] == 1
     assert metrics["reaction_rate"] == 0.0
     assert metrics["roast_hit_rate"] == 0.0
     assert metrics["negative_feedback"] == 2
@@ -73,6 +75,7 @@ def test_group_ratios_are_zero_safe() -> None:
     assert metrics["url_read_content_chars"] == 4500
     assert metrics["url_read_generator_input_tokens"] == 3000
     assert metrics["url_read_generator_cost_usd"] == .02
+    assert "birthday" in conn.calls[3][0]
 
 
 def test_group_cost_by_day_serializes_float_cost() -> None:
