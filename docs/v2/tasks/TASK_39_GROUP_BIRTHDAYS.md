@@ -28,10 +28,12 @@ Structured fields:
 - `birthday.source = explicit | telegram_profile`
 - `birthday.confirmed`
 - `birthday_lookup.checked_at/status`
+- `birthday_discovery.enabled`
 - `birthday_congratulations.enabled`
 
 Rules:
 - an explicit self-report wins over later Telegram profile refreshes;
+- `забудь мой день рождения` deletes the structured date and disables future Telegram auto-discovery for that participant in that group until they explicitly provide the date again;
 - if a Telegram-sourced birthday stops being visible, stop using that Telegram-sourced birthday;
 - no cross-group propagation;
 - birthday year is not copied into the synthetic birthday event;
