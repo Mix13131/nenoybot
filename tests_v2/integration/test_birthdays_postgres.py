@@ -27,6 +27,8 @@ def test_birthday_repository_persists_group_scoped_profile_and_dedupes_due_event
     now=datetime(2026,9,27,6,15,tzinfo=timezone.utc)
 
     with psycopg.connect(url) as conn:
+        conn.execute("DELETE FROM interventions WHERE scope_id=%s", (str(chat_id),))
+        conn.execute("DELETE FROM interventions WHERE scope_id=%s", (str(chat_id),))
         conn.execute("DELETE FROM events WHERE scope_id=%s", (str(chat_id),))
         conn.execute("DELETE FROM chats WHERE telegram_chat_id=%s", (chat_id,))
         conn.execute("DELETE FROM users WHERE telegram_user_id=%s", (user_id,))
@@ -137,6 +139,32 @@ def test_birthday_repository_persists_group_scoped_profile_and_dedupes_due_event
             and item.telegram_user_id == str(user_id)
         )
         assert candidate.display_name == "Birthday Test"
+
+        conn.execute(
+            """
+            INSERT INTO interventions(
+                event_id, scope_type, scope_id, primary_action, mode,
+                intervention_score, reason_codes, policy_version,
+                selected_memory_ids, generated_text, created_at
+            )
+            VALUES (
+                NULL, 'group', %s, 'reply', 'group_direct_reply',
+                100, '[]'::jsonb, 'test',
+                '[]'::jsonb, %s, %s
+            )
+            """,
+            (
+                str(chat_id),
+                "Справедливо. Birthday Test, с днём рождения! Праздничная амнистия.",
+                now,
+            ),
+        )
+        conn.commit()
+
+        assert repo.already_congratulated_today(
+            candidate,
+            since=now.replace(hour=0, minute=0, second=0, microsecond=0),
+        ) is True
 
         assert repo.enqueue_due(candidate, local_year=2026, now=now) is True
         assert repo.enqueue_due(candidate, local_year=2026, now=now) is False
