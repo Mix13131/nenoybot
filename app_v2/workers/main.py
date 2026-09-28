@@ -89,12 +89,11 @@ def _activate_group(repo: GroupContextRepository, match, *, reason: str) -> dict
 
 
 def _bootstrap_group_from_env(conn, *, now: datetime | None = None) -> dict[str, str] | None:
-    """Optionally activate exactly one previously ingested group.
+    """Historical administrative helper, no longer called by worker startup.
 
-    Preferred mode is an exact title match. For controlled onboarding after a
-    fresh Telegram update, ops can instead request the single recent active,
-    non-whitelisted group. Both modes fail closed on zero or multiple matches.
-    Bootstrap env vars are temporary and should be cleared after use.
+    Do not restore this as an automatic startup hook: retained environment
+    values can override later operator denials. TASK 43 deploy preparation is
+    the supported one-time migration path and consumes a durable marker.
     """
 
     title = (os.getenv("NENOY_V2_BOOTSTRAP_GROUP_TITLE") or "").strip()
@@ -364,9 +363,8 @@ def _commit_startup_hook_boundary(conn) -> None:
     """Persist earlier startup-hook work before optional preset onboarding.
 
     Preset onboarding owns its own rollback semantics. Committing here ensures
-    a later onboarding failure cannot undo an earlier successful bootstrap,
-    profile patch or connector migration that shared the same psycopg
-    connection.
+    a later onboarding failure cannot undo an earlier successful profile patch
+    or connector migration that shared the same psycopg connection.
     """
     commit = getattr(conn, "commit", None)
     if callable(commit):
@@ -374,7 +372,8 @@ def _commit_startup_hook_boundary(conn) -> None:
 
 
 def _run_startup_hooks(conn) -> None:
-    _bootstrap_group_from_env(conn)
+    # Retired: _bootstrap_group_from_env. Its retained env values must never
+    # override a later operator block. TASK 43 uses deploy_prepare instead.
     _enable_silence_wakeup_group_from_env(conn)
     _migrate_connector_group_from_env(conn)
 

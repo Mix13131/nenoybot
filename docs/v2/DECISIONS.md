@@ -363,3 +363,19 @@ Code/deploy acceptance не заменяет live product acceptance: перед
 Реализация: TASK 39 / PR #151, squash-merge `53ec2d64e47c8072f2355a8dff85208e942b47d5`. Full CI — **651 passed** на isolated PostgreSQL 16. Railway web/worker — `SUCCESS`; новых SQL migrations нет; webhook healthy; `/ready` → 200.
 
 Code/deploy acceptance не является live product acceptance: нужен bounded Telegram smoke с реальным self-report и одним фактическим поздравлением.
+
+
+## 2026-09-28
+
+### D-055 — Новые Telegram-группы подключаются без ручного whitelist
+
+После live UX-сигнала ручной onboarding через `chat_id`/DB whitelist отменяется как пользовательский путь.
+
+- новая Telegram group/supergroup, впервые увиденная v2 ingest, автоматически создаётся активной и разрешённой для Group pipeline;
+- пользовательский сценарий: добавить `@NeNoiBro_bot` в группу с доступом к сообщениям и начать общение; ручной `chat_id`, env/config и админские права боту не требуются;
+- существующая группа, явно деактивированная или снятая с whitelist, не должна автоматически включаться обратно последующим traffic;
+- Personal chats не получают Group whitelist;
+- memory/context остаются изолированы по Telegram `chat_id`; существующие Group safety, silence, feedback и initiative policies сохраняются;
+- административный deactivate/whitelist остаётся kill-switch, но не onboarding-механикой.
+
+Это осознанно заменяет ограничение D-051 «новые группы не whitelist-ятся автоматически» и соответствующее исключение public self-service group onboarding из исходного MVP. Изменение остаётся bounded: оно не добавляет UI, multi-tenant admin system или публичный каталог/маркетплейс бота.

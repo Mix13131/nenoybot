@@ -1382,3 +1382,19 @@ ACCEPTANCE CRITERIA
 Сначала доказываем главное:
 
 > **Личный НеНой полезен благодаря памяти и инициативе, а Group НеНой ощущается живым участником, которого люди сами начинают звать в разговор.**
+
+
+---
+
+## Post-MVP live-driven amendment — Zero-config Group onboarding (D-055, 2026-09-28)
+
+Исходное ограничение раздела «Что сознательно НЕ входит в этот MVP» про публичный self-service onboarding групп заменено решением D-055 после реального UX-сигнала.
+
+Bounded scope изменения:
+- новая Telegram group/supergroup автоматически получает разрешение при первом ingest;
+- существующий explicit deactivate / whitelist-off остаётся сильнее и не перезаписывается последующим ingest;
+- private chats не активируются как Group;
+- Group memory/context isolation и остальные safety policies не меняются;
+- никаких новых UI, multi-tenant admin system или инфраструктурных компонентов.
+
+Acceptance: добавить НеНоя в новую группу с доступом к сообщениям и начать общение без ручного `chat_id`, DB/env/config шага или admin-role для бота.

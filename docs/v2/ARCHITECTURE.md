@@ -816,19 +816,21 @@ Feedback Collector связывает сигнал с `intervention_id`, есл�
 
 ---
 
-## 21. Group whitelist
+## 21. Group access and zero-config onboarding
 
-До Closed Beta Group Mode работает только для явно разрешённых чатов.
+Начиная с D-055 новая Telegram group/supergroup, впервые увиденная v2 ingest, автоматически создаётся как разрешённый Group scope (`chats.is_whitelisted = true`). Это заменяет прежнее ограничение «только явно разрешённые чаты до Closed Beta».
 
-`chats.is_whitelisted = true`.
+Пользовательский onboarding не требует ручного `chat_id`, DB/env/config шага или admin-role для бота: достаточно добавить НеНоя в группу с доступом к сообщениям и начать общение.
 
-Если бот добавлен в неизвестную группу:
+Safety boundary сохраняется:
 
-- не обрабатываем разговор через AI;
-- можно отправить одно служебное сообщение или молчать согласно onboarding policy;
-- raw conversation не складируется как обычный Group dataset.
+- существующий `is_whitelisted = false` не перезаписывается обычным последующим ingest;
+- `is_active = false` остаётся kill-switch;
+- private chats не становятся Group scope;
+- Group memory/context остаются изолированы по Telegram `chat_id`;
+- silence, initiative, feedback и остальные Group policies продолжают применяться после допуска.
 
-Первый разрешённый scope — тестовый чат друзей.
+Admin CLI остаётся операционным инструментом отключения/настройки, но не обязательным onboarding-механизмом.
 
 ---
 

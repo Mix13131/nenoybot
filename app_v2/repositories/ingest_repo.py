@@ -6,6 +6,7 @@ from typing import Any
 
 from app_v2.adapters.telegram_webhook import NormalizedTelegramUpdate
 from app_v2.domain.enums import EventType, ScopeType
+from app_v2.domain.group_defaults import new_group_profile
 
 
 _GROUP_INCOMPLETE_DEBOUNCE_SECONDS = 3.0
@@ -42,20 +43,29 @@ class TelegramIngestRepository:
 
     def upsert_chat(self, chat: dict[str, Any]) -> int:
         chat_type = "private" if chat.get("type") == "private" else "group"
+        is_telegram_group = chat.get("type") in {"group", "supergroup"}
         title = chat.get("title")
         if not title and chat_type == "private":
             title = chat.get("username") or chat.get("first_name")
+        # Approval/defaults apply ONLY to INSERT. An existing denial from any
+        # administrative path is never undone by ordinary traffic.
         row = self.conn.execute(
             """
-            INSERT INTO chats(telegram_chat_id, chat_type, title, updated_at)
-            VALUES (%s, %s, %s, CURRENT_TIMESTAMP)
+            INSERT INTO chats(
+                telegram_chat_id, chat_type, title, is_whitelisted,
+                group_profile, updated_at
+            )
+            VALUES (%s, %s, %s, %s, %s::jsonb, CURRENT_TIMESTAMP)
             ON CONFLICT (telegram_chat_id) DO UPDATE
             SET chat_type = EXCLUDED.chat_type,
                 title = EXCLUDED.title,
                 updated_at = CURRENT_TIMESTAMP
             RETURNING id
             """,
-            (int(chat["id"]), chat_type, title),
+            (
+                int(chat["id"]), chat_type, title, is_telegram_group,
+                json.dumps(new_group_profile() if is_telegram_group else {}, ensure_ascii=False),
+            ),
         ).fetchone()
         return int(row[0])
 
