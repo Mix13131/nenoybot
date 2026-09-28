@@ -912,7 +912,7 @@ def test_startup_hooks_commit_legacy_work_before_preset_onboarding(monkeypatch):
     def onboarding(conn):
         # Regression for P2 4062162908: preset onboarding starts only after
         # earlier startup-hook work has been durably committed.
-        assert calls == ["bootstrap", "silence", "migrate", "commit"]
+        assert calls == ["silence", "migrate", "commit"]
         calls.append("onboarding")
 
     monkeypatch.setattr(
@@ -924,7 +924,6 @@ def test_startup_hooks_commit_legacy_work_before_preset_onboarding(monkeypatch):
     _run_startup_hooks(FakeConn())
 
     assert calls == [
-        "bootstrap",
         "silence",
         "migrate",
         "commit",
@@ -963,3 +962,19 @@ def test_startup_boundary_commit_failure_stops_before_preset_onboarding(monkeypa
         _run_startup_hooks(BrokenConn())
 
     assert onboarding_calls == []
+
+
+def test_retained_bootstrap_environment_never_runs_at_startup(monkeypatch):
+    import app_v2.workers.main as worker_main
+
+    monkeypatch.setenv("NENOY_V2_BOOTSTRAP_GROUP_TITLE", "fixture-old-title")
+    monkeypatch.setenv("NENOY_V2_BOOTSTRAP_RECENT_UNWHITELISTED", "true")
+
+    def forbidden(conn):
+        raise AssertionError("retired bootstrap must not execute")
+
+    monkeypatch.setattr(worker_main, "_bootstrap_group_from_env", forbidden)
+    monkeypatch.setattr(worker_main, "_enable_silence_wakeup_group_from_env", lambda conn: None)
+    monkeypatch.setattr(worker_main, "_migrate_connector_group_from_env", lambda conn: None)
+    monkeypatch.setattr(worker_main, "_apply_connector_preset_from_env", lambda conn: None)
+    _run_startup_hooks(SimpleNamespace(commit=lambda: None))
