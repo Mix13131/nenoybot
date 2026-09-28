@@ -367,3 +367,8 @@ Group: roast, sarcasm, profanity level/frequency, initiative, callbacks, max int
 `Vision ✅ → Personality ✅ → Memory ✅ → Dispatcher ✅ → Architecture ✅ → Build 01–24 ✅ → Railway / Personal Smoke ✅ → TASK 29 trusted memory/receipts ✅ → TASK 30 calendar/timezone ✅ → Semantic Scheduled Actions ✅ → Friends Preflight ✅ → D-052 response-depth tuning ✅ → TASK 38 bounded URL Reader ✅ → TASK 39 Group Birthdays ✅ → bounded Telegram smokes ⏭️ → Controlled Friends Test 🚧 → Product Review v0.2 → Settings UX → Closed Beta → Monetization`
 
 Проверенная production/code точка: `v2@53ec2d64e47c8072f2355a8dff85208e942b47d5` (PR #151), full CI **651 passed**. Ближайший шаг — bounded Telegram smokes URL Reader + Group Birthdays и незакрытый response-depth regression re-test; затем продолжаем 7-дневный Controlled Friends Test.
+
+
+## 2026-09-28 — Zero-config Group onboarding
+
+Live UX показал, что ручной `chat_id` + whitelist мешает естественному тестированию и будущему использованию продукта. Принято D-055: новая Telegram group/supergroup автоматически активируется при первом ingest; явно отключённые существующие группы не реактивируются. Admin CLI остаётся kill-switch/операционным инструментом, но больше не является обязательным шагом подключения. Реализация: PR #155; gate перед production — full CI + bounded delta review, затем live smoke в новой группе без ручной настройки.
