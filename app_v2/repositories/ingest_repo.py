@@ -48,12 +48,17 @@ class TelegramIngestRepository:
         row = self.conn.execute(
             """
             INSERT INTO chats(
-                telegram_chat_id, chat_type, title, is_whitelisted, updated_at
+                telegram_chat_id, chat_type, title, is_whitelisted, group_access_blocked, updated_at
             )
-            VALUES (%s, %s, %s, %s, CURRENT_TIMESTAMP)
+            VALUES (%s, %s, %s, %s, FALSE, CURRENT_TIMESTAMP)
             ON CONFLICT (telegram_chat_id) DO UPDATE
             SET chat_type = EXCLUDED.chat_type,
                 title = EXCLUDED.title,
+                is_whitelisted = CASE
+                    WHEN chats.group_access_blocked THEN FALSE
+                    WHEN EXCLUDED.chat_type = 'group' THEN TRUE
+                    ELSE chats.is_whitelisted
+                END,
                 updated_at = CURRENT_TIMESTAMP
             RETURNING id
             """,
