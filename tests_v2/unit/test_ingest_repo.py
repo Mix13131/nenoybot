@@ -82,7 +82,9 @@ def test_new_group_chat_is_auto_whitelisted_on_first_ingest() -> None:
     query, params = conn.calls[-1]
     assert "is_whitelisted" in query
     assert params == (-10055, "group", "Друзья", True)
-    assert "is_whitelisted = EXCLUDED.is_whitelisted" not in query
+    assert "group_access_blocked" in query
+    assert "WHEN chats.group_access_blocked THEN FALSE" in query
+    assert "WHEN EXCLUDED.chat_type = 'group' THEN TRUE" in query
 
 
 def test_private_chat_is_not_auto_whitelisted() -> None:
@@ -94,3 +96,15 @@ def test_private_chat_is_not_auto_whitelisted() -> None:
     query, params = conn.calls[-1]
     assert "is_whitelisted" in query
     assert params == (12345, "private", "Антон", False)
+
+
+def test_existing_legacy_group_is_auto_enabled_unless_explicitly_blocked() -> None:
+    normalized = normalize_update(_group_update("Снова привет", 1005))
+    assert normalized is not None
+
+    conn = _Conn()
+    TelegramIngestRepository(conn).upsert_chat(normalized.telegram_chat)
+
+    query, _ = conn.calls[-1]
+    assert "WHEN chats.group_access_blocked THEN FALSE" in query
+    assert "WHEN EXCLUDED.chat_type = 'group' THEN TRUE" in query
