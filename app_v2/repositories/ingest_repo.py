@@ -47,15 +47,17 @@ class TelegramIngestRepository:
             title = chat.get("username") or chat.get("first_name")
         row = self.conn.execute(
             """
-            INSERT INTO chats(telegram_chat_id, chat_type, title, updated_at)
-            VALUES (%s, %s, %s, CURRENT_TIMESTAMP)
+            INSERT INTO chats(
+                telegram_chat_id, chat_type, title, is_whitelisted, updated_at
+            )
+            VALUES (%s, %s, %s, %s, CURRENT_TIMESTAMP)
             ON CONFLICT (telegram_chat_id) DO UPDATE
             SET chat_type = EXCLUDED.chat_type,
                 title = EXCLUDED.title,
                 updated_at = CURRENT_TIMESTAMP
             RETURNING id
             """,
-            (int(chat["id"]), chat_type, title),
+            (int(chat["id"]), chat_type, title, chat_type == "group"),
         ).fetchone()
         return int(row[0])
 
