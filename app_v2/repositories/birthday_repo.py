@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import re
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 from typing import Any
@@ -287,6 +288,74 @@ class BirthdayRepository:
                 )
             )
         return result
+
+    def already_congratulated_today(
+        self,
+        candidate: BirthdayCandidate,
+        *,
+        since: datetime,
+        limit: int = 100,
+    ) -> bool:
+        """Best-effort duplicate guard against an earlier manual birthday reply.
+
+        The primary birthday path is durable birthday_due idempotency. This
+        secondary guard exists for the case where another participant prompts
+        НеНой to congratulate the birthday person before the scheduled scan.
+        """
+        if not candidate.display_name:
+            return False
+        name_tokens = [
+            token.casefold()
+            for token in re.findall(r"[A-Za-zА-Яа-яЁё]+", candidate.display_name)
+            if len(token) >= 2
+        ]
+        if not name_tokens:
+            return False
+
+        rows = self.conn.execute(
+            """
+            SELECT generated_text
+            FROM interventions
+            WHERE scope_type='group'
+              AND scope_id=%s
+              AND primary_action='reply'
+              AND created_at >= %s
+              AND generated_text IS NOT NULL
+            ORDER BY created_at DESC, id DESC
+            LIMIT %s
+            """,
+            (
+                candidate.scope_id,
+                since,
+                max(1, min(int(limit), 500)),
+            ),
+        ).fetchall()
+
+        birthday_phrases = (
+            "с днём рождения",
+            "с днем рождения",
+            "happy birthday",
+        )
+        for row in rows:
+            text = str(row[0] or "")
+            lowered = text.casefold()
+            phrase_positions = [
+                lowered.find(phrase)
+                for phrase in birthday_phrases
+                if phrase in lowered
+            ]
+            if not phrase_positions:
+                continue
+            phrase_pos = min(position for position in phrase_positions if position >= 0)
+            # Require the birthday person's name close to the birthday phrase.
+            # This avoids suppressing because НеНой mentioned someone elsewhere
+            # in the same long message.
+            window_start = max(0, phrase_pos - 100)
+            window_end = min(len(lowered), phrase_pos + 160)
+            window = lowered[window_start:window_end]
+            if any(token in window for token in name_tokens):
+                return True
+        return False
 
     def enqueue_due(
         self,
