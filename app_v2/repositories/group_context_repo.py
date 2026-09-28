@@ -161,11 +161,13 @@ class GroupContextRepository:
         row = self.conn.execute(
             """
             UPDATE chats
-            SET is_whitelisted = %s, updated_at = CURRENT_TIMESTAMP
+            SET is_whitelisted = %s,
+                group_access_blocked = NOT %s,
+                updated_at = CURRENT_TIMESTAMP
             WHERE telegram_chat_id = %s AND chat_type = 'group'
             RETURNING id
             """,
-            (enabled, int(telegram_chat_id)),
+            (enabled, enabled, int(telegram_chat_id)),
         ).fetchone()
         self.conn.commit()
         return row is not None
@@ -200,6 +202,7 @@ class GroupContextRepository:
             UPDATE chats
             SET group_profile = %s::jsonb,
                 is_whitelisted = %s,
+                group_access_blocked = FALSE,
                 is_active = TRUE,
                 silent_until = NULL,
                 updated_at = CURRENT_TIMESTAMP
