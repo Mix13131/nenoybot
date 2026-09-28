@@ -300,6 +300,20 @@ class BirthdayService:
             if local_now.hour < birthday_hour or local_now.hour >= 21:
                 continue
 
+            local_day_start = local_now.replace(
+                hour=0, minute=0, second=0, microsecond=0
+            ).astimezone(timezone.utc)
+            already_congratulated = getattr(
+                self.repo,
+                "already_congratulated_today",
+                None,
+            )
+            if callable(already_congratulated) and already_congratulated(
+                candidate,
+                since=local_day_start,
+            ):
+                continue
+
             if self.repo.enqueue_due(
                 candidate,
                 local_year=local_now.year,
