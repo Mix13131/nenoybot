@@ -64,6 +64,8 @@ class Repo:
         self.refresh_due=False
         self.candidates=[]
         self.enqueued=[]
+        self.already_congratulated=False
+        self.congratulation_checks=[]
 
     def rollback(self):
         pass
@@ -89,6 +91,10 @@ class Repo:
 
     def list_candidates(self, limit=1000):
         return list(self.candidates)
+
+    def already_congratulated_today(self, candidate, *, since):
+        self.congratulation_checks.append((candidate, since))
+        return self.already_congratulated
 
     def enqueue_due(self, candidate, *, local_year, now):
         self.enqueued.append((candidate, local_year, now))
@@ -277,3 +283,27 @@ def test_scanner_skips_before_hour_muted_or_disabled() -> None:
     svc3, repo3, _=service(repo=repo3, cfg=connector(birthdays=False))
     assert svc3.run_once(now=NOW) is False
     assert repo3.enqueued == []
+
+
+
+def test_scanner_skips_scheduled_greeting_if_bot_already_congratulated_today() -> None:
+    repo=Repo()
+    repo.already_congratulated=True
+    repo.candidates=[
+        BirthdayCandidate(
+            scope_id="-1001",
+            telegram_user_id="42",
+            display_name="Антон Треповский",
+            day=27,
+            month=9,
+            source="explicit",
+            participant_profile={},
+        )
+    ]
+    svc, repo, _=service(repo=repo)
+
+    assert svc.run_once(now=NOW) is False
+    assert len(repo.congratulation_checks) == 1
+    assert repo.enqueued == []
+    _, since = repo.congratulation_checks[0]
+    assert since == datetime(2026, 9, 26, 21, 0, tzinfo=timezone.utc)
