@@ -70,3 +70,27 @@ def test_unfinished_reply_to_bot_is_also_debounced() -> None:
 
     _, params = conn.calls[-1]
     assert params[-1] == 3.0
+
+
+def test_new_group_chat_is_auto_whitelisted_on_first_ingest() -> None:
+    normalized = normalize_update(_group_update("Привет всем", 1004))
+    assert normalized is not None
+
+    conn = _Conn()
+    TelegramIngestRepository(conn).upsert_chat(normalized.telegram_chat)
+
+    query, params = conn.calls[-1]
+    assert "is_whitelisted" in query
+    assert params == (-10055, "group", "Друзья", True)
+    assert "is_whitelisted = EXCLUDED.is_whitelisted" not in query
+
+
+def test_private_chat_is_not_auto_whitelisted() -> None:
+    conn = _Conn()
+    TelegramIngestRepository(conn).upsert_chat(
+        {"id": 12345, "type": "private", "first_name": "Антон"}
+    )
+
+    query, params = conn.calls[-1]
+    assert "is_whitelisted" in query
+    assert params == (12345, "private", "Антон", False)
