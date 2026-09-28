@@ -1,6 +1,12 @@
 from __future__ import annotations
 
+import json
+
+import pytest
+
 from app_v2.adapters.telegram_webhook import normalize_update
+from app_v2.domain.group_defaults import new_group_profile
+from app_v2.group_admin import FRIENDS_DAY1_PROFILE
 from app_v2.repositories.ingest_repo import TelegramIngestRepository
 
 
@@ -40,10 +46,8 @@ def _group_update(text: str, update_id: int, *, reply_to_bot: bool = False) -> d
 def test_incomplete_direct_address_is_scheduled_with_short_delay() -> None:
     normalized = normalize_update(_group_update("НеНой, а ты можешь", 1001))
     assert normalized is not None
-
     conn = _Conn()
     inserted = TelegramIngestRepository(conn).insert_event(normalized)
-
     assert inserted is True
     query, params = conn.calls[-1]
     assert "INTERVAL '1 second'" in query
@@ -53,10 +57,8 @@ def test_incomplete_direct_address_is_scheduled_with_short_delay() -> None:
 def test_complete_direct_address_is_immediately_available() -> None:
     normalized = normalize_update(_group_update("НеНой, можешь помочь с выбором", 1002))
     assert normalized is not None
-
     conn = _Conn()
     TelegramIngestRepository(conn).insert_event(normalized)
-
     _, params = conn.calls[-1]
     assert params[-1] == 0.0
 
@@ -64,47 +66,36 @@ def test_complete_direct_address_is_immediately_available() -> None:
 def test_unfinished_reply_to_bot_is_also_debounced() -> None:
     normalized = normalize_update(_group_update("а ты можешь", 1003, reply_to_bot=True))
     assert normalized is not None
-
     conn = _Conn()
     TelegramIngestRepository(conn).insert_event(normalized)
-
     _, params = conn.calls[-1]
     assert params[-1] == 3.0
 
 
-def test_new_group_chat_is_auto_whitelisted_on_first_ingest() -> None:
-    normalized = normalize_update(_group_update("Привет всем", 1004))
-    assert normalized is not None
-
+@pytest.mark.parametrize("telegram_type", ["group", "supergroup"])
+def test_new_group_chat_is_auto_whitelisted_on_first_ingest(telegram_type) -> None:
     conn = _Conn()
-    TelegramIngestRepository(conn).upsert_chat(normalized.telegram_chat)
-
+    TelegramIngestRepository(conn).upsert_chat({"id": -10055, "type": telegram_type, "title": "Друзья"})
     query, params = conn.calls[-1]
-    assert "is_whitelisted" in query
-    assert params == (-10055, "group", "Друзья", True)
-    assert "group_access_blocked" in query
-    assert "WHEN chats.group_access_blocked THEN FALSE" in query
-    assert "WHEN EXCLUDED.chat_type = 'group' THEN TRUE" in query
+    assert params[:4] == (-10055, "group", "Друзья", True)
+    assert json.loads(params[4]) == FRIENDS_DAY1_PROFILE
+    conflict_clause = query.split("ON CONFLICT", 1)[1]
+    assert "is_whitelisted" not in conflict_clause
+    assert "group_profile" not in conflict_clause
+    assert "is_active" not in conflict_clause
+    assert "silent_until" not in conflict_clause
 
 
-def test_private_chat_is_not_auto_whitelisted() -> None:
+@pytest.mark.parametrize("telegram_type", ["private", "channel"])
+def test_non_group_chat_is_not_auto_whitelisted(telegram_type) -> None:
     conn = _Conn()
-    TelegramIngestRepository(conn).upsert_chat(
-        {"id": 12345, "type": "private", "first_name": "Антон"}
-    )
-
-    query, params = conn.calls[-1]
-    assert "is_whitelisted" in query
-    assert params == (12345, "private", "Антон", False)
+    TelegramIngestRepository(conn).upsert_chat({"id": 12345, "type": telegram_type, "first_name": "Fixture"})
+    _, params = conn.calls[-1]
+    assert params[3] is False
+    assert json.loads(params[4]) == {}
 
 
-def test_existing_legacy_group_is_auto_enabled_unless_explicitly_blocked() -> None:
-    normalized = normalize_update(_group_update("Снова привет", 1005))
-    assert normalized is not None
-
-    conn = _Conn()
-    TelegramIngestRepository(conn).upsert_chat(normalized.telegram_chat)
-
-    query, _ = conn.calls[-1]
-    assert "WHEN chats.group_access_blocked THEN FALSE" in query
-    assert "WHEN EXCLUDED.chat_type = 'group' THEN TRUE" in query
+def test_new_profile_has_no_shared_mutable_state() -> None:
+    first = new_group_profile()
+    first["initiative"] = 10
+    assert new_group_profile() == FRIENDS_DAY1_PROFILE

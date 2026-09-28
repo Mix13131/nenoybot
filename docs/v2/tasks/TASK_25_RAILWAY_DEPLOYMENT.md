@@ -16,8 +16,13 @@ Web:
 Worker:
 `python -m app_v2.workers.main`
 
-Pre-deploy migration:
-`python -m app_v2.db.migrations`
+Pre-deploy (TASK 43 and later), on BOTH web and worker:
+`python -m app_v2.deploy_prepare`
+
+Web must subsequently run:
+`python -m app_v2.telegram_webhook_setup`
+
+The preparation command applies migrations and verifies the required schema before a new revision can receive traffic. Simultaneous web/worker migration runs are serialized. Do not rely on worker startup order. A preparation failure must stop deployment. Optional one-time legacy reconciliation is configured only on the worker; see [TASK_43_ZERO_CONFIG_GROUP_ONBOARDING.md](TASK_43_ZERO_CONFIG_GROUP_ONBOARDING.md).
 
 ## Production requirements
 - `NENOY_V2_ENV=production`

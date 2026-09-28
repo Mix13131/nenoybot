@@ -35,10 +35,8 @@ def _checksum(content: bytes) -> str:
 def discover_migrations(directory: Path | str | None = None) -> list[Migration]:
     root = Path(directory) if directory is not None else DEFAULT_MIGRATIONS_DIR
     migrations: list[Migration] = []
-
     if not root.exists():
         return migrations
-
     for path in root.iterdir():
         if not path.is_file():
             continue
@@ -46,16 +44,10 @@ def discover_migrations(directory: Path | str | None = None) -> list[Migration]:
         if not match:
             continue
         content = path.read_bytes()
-        migrations.append(
-            Migration(
-                version=int(match.group("version")),
-                filename=path.name,
-                path=path,
-                checksum=_checksum(content),
-                sql=content.decode("utf-8"),
-            )
-        )
-
+        migrations.append(Migration(
+            version=int(match.group("version")), filename=path.name, path=path,
+            checksum=_checksum(content), sql=content.decode("utf-8"),
+        ))
     migrations.sort(key=lambda item: item.version)
     versions = [item.version for item in migrations]
     if len(versions) != len(set(versions)):
@@ -84,16 +76,18 @@ def run_migrations(
     url = get_database_url(database_url)
     migrations = discover_migrations(migrations_dir)
     applied_now: list[int] = []
-
     with connect(url) as conn:
+        # Web pre-deploy and worker may start simultaneously. A session lock
+        # survives the commits below and is released when this connection closes,
+        # including on errors. No caller can observe a half-applied migration.
+        conn.execute("SET lock_timeout = '60s'")
+        conn.execute("SELECT pg_advisory_lock(1313162026)")
         ensure_migration_table(conn)
-
         for migration in migrations:
             row = conn.execute(
                 "SELECT filename, checksum FROM schema_migrations WHERE version = %s",
                 (migration.version,),
             ).fetchone()
-
             if row is not None:
                 filename, checksum = row
                 if filename != migration.filename or checksum != migration.checksum:
@@ -101,7 +95,6 @@ def run_migrations(
                         f"Migration {migration.version:04d} уже применена, но файл или checksum изменился"
                     )
                 continue
-
             try:
                 with conn.transaction():
                     conn.execute(migration.sql, prepare=False)
@@ -116,9 +109,7 @@ def run_migrations(
                 raise MigrationError(
                     f"Не удалось применить migration {migration.filename}: {exc}"
                 ) from exc
-
             applied_now.append(migration.version)
-
     return applied_now
 
 

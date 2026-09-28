@@ -37,11 +37,10 @@ class GroupAdminRecord:
 
 
 class GroupContextRepository:
-    """Read/write boundary for Group activation and membership context.
+    """Group context and explicit administrative access changes.
 
-    Telegram ingest owns normal user/chat/member upserts. This repository only
-    reads the normalized state and exposes explicit administrative mutations for
-    the controlled Friends Test setup.
+    Ingest initializes new groups. Existing settings and denials are preserved;
+    the one-time legacy transition is owned by deploy_prepare.
     """
 
     def __init__(self, conn) -> None:
@@ -117,20 +116,14 @@ class GroupContextRepository:
         ).fetchall()
         return [
             GroupAdminRecord(
-                telegram_chat_id=str(row[0]),
-                title=row[1],
-                is_whitelisted=bool(row[2]),
-                is_active=bool(row[3]),
-                profile=dict(row[4] or {}),
-                updated_at=row[5],
+                telegram_chat_id=str(row[0]), title=row[1],
+                is_whitelisted=bool(row[2]), is_active=bool(row[3]),
+                profile=dict(row[4] or {}), updated_at=row[5],
             )
             for row in rows
         ]
 
-    def find_groups_by_exact_title(
-        self,
-        title: str,
-    ) -> list[GroupAdminRecord]:
+    def find_groups_by_exact_title(self, title: str) -> list[GroupAdminRecord]:
         normalized = str(title or "").strip()
         if not normalized:
             return []
@@ -147,12 +140,9 @@ class GroupContextRepository:
         ).fetchall()
         return [
             GroupAdminRecord(
-                telegram_chat_id=str(row[0]),
-                title=row[1],
-                is_whitelisted=bool(row[2]),
-                is_active=bool(row[3]),
-                profile=dict(row[4] or {}),
-                updated_at=row[5],
+                telegram_chat_id=str(row[0]), title=row[1],
+                is_whitelisted=bool(row[2]), is_active=bool(row[3]),
+                profile=dict(row[4] or {}), updated_at=row[5],
             )
             for row in rows
         ]
@@ -163,6 +153,7 @@ class GroupContextRepository:
             UPDATE chats
             SET is_whitelisted = %s,
                 group_access_blocked = NOT %s,
+                group_legacy_reconcile_pending = FALSE,
                 updated_at = CURRENT_TIMESTAMP
             WHERE telegram_chat_id = %s AND chat_type = 'group'
             RETURNING id
@@ -188,13 +179,9 @@ class GroupContextRepository:
         return row is not None
 
     def configure_friends_test(
-        self,
-        telegram_chat_id: str,
-        *,
-        profile: dict[str, Any],
-        enabled: bool = True,
+        self, telegram_chat_id: str, *, profile: dict[str, Any], enabled: bool = True,
     ) -> bool:
-        """Atomically set the controlled Friends profile and whitelist state."""
+        """Atomically set the controlled Friends profile and access state."""
         if not isinstance(profile, dict):
             raise TypeError("profile must be a dict")
         row = self.conn.execute(
@@ -202,18 +189,15 @@ class GroupContextRepository:
             UPDATE chats
             SET group_profile = %s::jsonb,
                 is_whitelisted = %s,
-                group_access_blocked = FALSE,
+                group_access_blocked = NOT %s,
+                group_legacy_reconcile_pending = FALSE,
                 is_active = TRUE,
                 silent_until = NULL,
                 updated_at = CURRENT_TIMESTAMP
             WHERE telegram_chat_id = %s AND chat_type = 'group'
             RETURNING id
             """,
-            (
-                json.dumps(profile, ensure_ascii=False),
-                enabled,
-                int(telegram_chat_id),
-            ),
+            (json.dumps(profile, ensure_ascii=False), enabled, enabled, int(telegram_chat_id)),
         ).fetchone()
         self.conn.commit()
         return row is not None
