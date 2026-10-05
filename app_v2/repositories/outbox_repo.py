@@ -100,6 +100,35 @@ class OutboxRepository:
             lease_until=row[6],
         )
 
+    def suppress_if_cancelled_reminder(self, item: ClaimedOutbox) -> bool:
+        """Fail closed immediately before Telegram I/O for cancelled reminder chains."""
+        metadata = item.payload.get("metadata")
+        event_id = metadata.get("event_id") if isinstance(metadata, dict) else None
+        if not isinstance(event_id, str) or not event_id.startswith("reminder:"):
+            return False
+        parts = event_id.split(":", 2)
+        if len(parts) < 2 or not parts[1].isdigit():
+            return False
+
+        row = self.conn.execute(
+            "SELECT status FROM reminders WHERE id=%s",
+            (int(parts[1]),),
+        ).fetchone()
+        if row is None or str(row[0]) != "cancelled":
+            self.conn.commit()
+            return False
+
+        self.conn.execute(
+            """
+            UPDATE outbox
+            SET status='failed', last_error='reminder cancelled before delivery'
+            WHERE id=%s AND status='processing'
+            """,
+            (item.id,),
+        )
+        self.conn.commit()
+        return True
+
     def mark_sent(self, outbox_id: int, *, telegram_message_id: int | None = None) -> bool:
         row = self.conn.execute(
             """

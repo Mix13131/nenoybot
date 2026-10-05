@@ -30,6 +30,9 @@ class OutboxWorker:
         if item is None:
             return False
 
+        if self.repo.suppress_if_cancelled_reminder(item):
+            return True
+
         if item.channel != "telegram":
             self.repo.retry(
                 item.id,

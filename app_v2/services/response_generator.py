@@ -204,12 +204,68 @@ class ResponseGenerator:
             raise ResponseGenerationError("generator returned empty text")
 
         text = self._enforce_operation_receipts(text, context.action_state)
+        text = self._enforce_group_humanity(text, context)
         usage = result.usage
         return GeneratedResponse(
             text=text,
             model=usage.model,
             usage_id=usage.usage_id,
         )
+
+    @classmethod
+    def _enforce_group_humanity(cls, text: str, context: GenerationContext) -> str:
+        if context.scope_type is not ScopeType.GROUP:
+            return text
+
+        humanity = context.action_state.get("group_humanity")
+        state = dict(humanity) if isinstance(humanity, dict) else {}
+        intent = str(state.get("response_intent") or "NORMAL").upper()
+
+        guarded = cls._enforce_capability_honesty(text, context.action_state)
+        if intent == "MICRO":
+            return cls._limit_words(guarded, 8)
+        if intent == "SHORT":
+            return cls._limit_words(guarded, 20)
+        return guarded
+
+    @staticmethod
+    def _limit_words(text: str, limit: int) -> str:
+        words = text.split()
+        if len(words) <= limit:
+            return text
+        clipped = " ".join(words[:limit]).rstrip(" ,;:-")
+        return clipped + "…"
+
+    @staticmethod
+    def _enforce_capability_honesty(text: str, action_state: dict[str, Any]) -> str:
+        lowered = " ".join(text.casefold().replace("ё", "е").split())
+        url_state = action_state.get("url_read")
+        url_ok = bool(isinstance(url_state, dict) and url_state.get("status") == "succeeded")
+
+        page_claim = any(
+            marker in lowered
+            for marker in (
+                "прочитал страницу", "прочитал ссылку", "изучил страницу",
+                "посмотрел страницу", "открыл страницу",
+            )
+        )
+        research_claim = any(
+            marker in lowered
+            for marker in (
+                "проверил отзывы", "изучил отзывы", "посмотрел свежие отзывы",
+                "проверил интернет", "проверил в интернете", "изучил рынок",
+                "проверил актуальные", "проверил свежие данные",
+            )
+        )
+
+        if research_claim:
+            return (
+                "Свежие внешние данные я сейчас не проверял. "
+                "Дай ссылку или конкретных кандидатов — разберу только то, что реально доступно."
+            )
+        if page_claim and not url_ok:
+            return "Страницу я сейчас не читал. Пришли ссылку ещё раз — попробую разобрать её по факту."
+        return text
 
     def _load_prompt(self, scope_type: ScopeType) -> str:
         path = self.personal_prompt_path if scope_type is ScopeType.PERSONAL else self.group_prompt_path

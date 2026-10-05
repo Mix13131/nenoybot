@@ -333,6 +333,16 @@ class GroupBehaviorEngine:
             statement_watch=statement_watch_state,
         )
 
+    def retire_callback_memories(self, scope_id: str, memory_ids: tuple[str, ...]) -> None:
+        repo = getattr(self.retrieval_engine, "repo", None)
+        if repo is None:
+            return
+        for memory_id in memory_ids:
+            try:
+                repo.retire_callback(ScopeType.GROUP, scope_id, memory_id)
+            except Exception:
+                continue
+
     def mark_callback_memories_used(self, scope_id: str, memory_ids: tuple[str, ...]) -> None:
         repo = getattr(self.retrieval_engine, "repo", None)
         if repo is None:

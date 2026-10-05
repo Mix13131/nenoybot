@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import datetime, timezone
 from typing import Any
 
@@ -9,6 +9,7 @@ from app_v2.domain.events import EventEnvelope, SceneAnalysis
 from app_v2.domain.outbound import OutboundMessage
 from app_v2.services.dispatcher import DispatcherPolicyState, decide
 from app_v2.services.group_silence_wakeup import silence_wakeup_window_open
+from app_v2.services.group_humanity import classify_group_humanity
 from app_v2.services.operation_receipts import group_operation_receipts
 
 
@@ -282,6 +283,18 @@ class GroupPipeline:
         else:
             scene = self.scene_analyzer.analyze(event)
 
+        humanity = classify_group_humanity(event.text)
+
+        if humanity.social_repair:
+            scene = scene.model_copy(
+                update={
+                    "roast_opportunity": 0.0,
+                    "callback_opportunity": 0.0,
+                    "contradiction_score": min(scene.contradiction_score, 0.2),
+                    "conflict_score": min(scene.conflict_score, 0.3),
+                }
+            )
+
         # Reminder stop commands are operational controls, not a request to mute
         # НеНой. Phrases like "горшочек, не вари" or "достаточно напоминать"
         # can look like a generic mute intent to the scene classifier. If the
@@ -374,6 +387,24 @@ class GroupPipeline:
                 },
             )
 
+        if humanity.social_repair:
+            state = replace(
+                state,
+                allow_roast=False,
+                allow_callbacks=False,
+                priority_statement=False,
+                running_joke_fit=False,
+                broken_commitment_relevant=False,
+            )
+            behavior_memory_ids = ()
+
+        if humanity.retire_topic and self.group_behavior_engine is not None and behavior_memory_ids:
+            self.group_behavior_engine.retire_callback_memories(
+                event.scope_id,
+                behavior_memory_ids,
+            )
+            behavior_memory_ids = ()
+
         mapped_memory_ids: tuple[str, ...] = ()
         mapper_result: Any | None = None
         memory_attempted = False
@@ -406,6 +437,18 @@ class GroupPipeline:
             reminder_action_state=reminder_action_state,
         )
         decision = decide(event, scene, state)
+        if (
+            humanity.response_intent == "SILENCE"
+            and event.event_type not in {EventType.REMINDER_DUE, EventType.BIRTHDAY_DUE}
+            and decision.primary_action is PrimaryAction.REPLY
+        ):
+            decision = decision.model_copy(
+                update={
+                    "primary_action": PrimaryAction.IGNORE,
+                    "mode": None,
+                    "intervention_score": 0,
+                }
+            )
 
         if decision.primary_action is not PrimaryAction.REPLY:
             self.intervention_repo.record(
@@ -468,6 +511,7 @@ class GroupPipeline:
         subject_keys = [f"user:{event.actor_user_id}"] if event.actor_user_id else []
         action_state: dict[str, Any] = {
             "group_title": group_context.title,
+            "group_humanity": humanity.as_action_state(),
             "participant_role": group_context.participant.role,
             "connector": (
                 connector_config.public_state()

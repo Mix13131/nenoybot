@@ -57,7 +57,7 @@ class ReminderRepository:
                 SET status='completed', processed_at=CURRENT_TIMESTAMP,
                     last_error='reminder cancelled before delivery'
                 WHERE event_id LIKE %s
-                  AND status IN ('pending','retry')
+                  AND status IN ('pending','retry','processing')
                 """,
                 (f"reminder:{reminder_id}:%",),
             )
@@ -66,7 +66,7 @@ class ReminderRepository:
                 UPDATE outbox
                 SET status='failed', last_error='reminder cancelled before delivery'
                 WHERE dedupe_key LIKE %s
-                  AND status IN ('pending','retry')
+                  AND status IN ('pending','retry','processing')
                 """,
                 (f"reply:reminder:{reminder_id}:%",),
             )
