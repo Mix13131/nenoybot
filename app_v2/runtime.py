@@ -13,6 +13,7 @@ from app_v2.repositories.connector_repo import ConnectorRepository
 from app_v2.repositories.event_repo import EventRepository
 from app_v2.repositories.feedback_repo import FeedbackRepository
 from app_v2.repositories.group_context_repo import GroupContextRepository
+from app_v2.repositories.participant_directory_repo import ParticipantDirectoryRepository
 from app_v2.repositories.group_initiative_repo import GroupInitiativeRepository
 from app_v2.repositories.group_silence_wakeup_repo import GroupSilenceWakeupRepository
 from app_v2.repositories.intervention_repo import InterventionRepository
@@ -109,6 +110,7 @@ def build_runtime(conn: Any, config: AppConfig) -> RuntimeComponents:
     feedback_repo = FeedbackRepository(conn)
     usage_repo = UsageRepository(conn)
     group_context_repo = GroupContextRepository(conn)
+    participant_directory_repo = ParticipantDirectoryRepository(conn)
     group_initiative_repo = GroupInitiativeRepository(conn)
     silence_wakeup_repo = GroupSilenceWakeupRepository(conn)
     birthday_repo = BirthdayRepository(conn)
@@ -126,6 +128,7 @@ def build_runtime(conn: Any, config: AppConfig) -> RuntimeComponents:
     context_builder = ContextBuilder(
         message_repo=message_repo,
         retrieval_engine=retrieval_engine,
+        participant_directory_repo=participant_directory_repo,
     )
     response_generator = ResponseGenerator(adapter=adapter)
     feedback_collector = FeedbackCollector(feedback_repo)
