@@ -248,3 +248,14 @@ Forbidden:
 Use only an isolated test PostgreSQL database, never production credentials/data. If unavailable, report the exact limitation and skip counts. No docs-only green CI or skipped DB suite is a full implementation PASS.
 
 Return PASS/FAIL, full remote HEAD SHA if actually published, changed files, design invariants, exact tests/results, limitations/findings and packet readiness. Follow AGENTS.md completion sections. For 46A, distinguish READY FOR DIRECTORY REVIEW from whole-TASK completion. Until all required gates pass: NOT READY FOR MERGE.
+
+
+## Packet 46A remote checkpoint
+
+Participant Directory implementation is published in PR #160. Before 46B starts, the exact remote head must pass the full v2 CI with PostgreSQL-backed tests executing. Packet 46A acceptance includes:
+- directory data reaches the actual Group generator payload;
+- additive migration expectations remain compatible with prior onboarding tests;
+- directory ordering is deterministic for equal observation timestamps;
+- existing ingest test doubles match the observed-identity contract.
+
+46B–46D remain intentionally unstarted until this checkpoint is green and reviewed.
