@@ -259,3 +259,5 @@ Participant Directory implementation is published in PR #160. Before 46B starts,
 - existing ingest test doubles match the observed-identity contract.
 
 46B–46D remain intentionally unstarted until this checkpoint is green and reviewed.
+
+Final 46A CI retry includes deterministic ordering for equally recent participants; `first_seen_at` is not used as a recency tie-breaker.
