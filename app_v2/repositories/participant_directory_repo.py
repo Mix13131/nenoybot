@@ -67,7 +67,10 @@ class ParticipantDirectoryRepository:
             FROM chat_members cm
             JOIN chats c ON c.id = cm.chat_id
             WHERE c.telegram_chat_id = %s AND c.chat_type = 'group'
-            ORDER BY cm.last_seen_at DESC NULLS LAST, cm.first_seen_at DESC
+            ORDER BY cm.last_seen_at DESC NULLS LAST,
+                     cm.first_seen_at DESC,
+                     lower(COALESCE(cm.current_display_name, cm.current_username, '')) ASC,
+                     cm.user_id ASC
             LIMIT %s
             """,
             (int(telegram_chat_id), max(1, min(int(limit), 50))),
