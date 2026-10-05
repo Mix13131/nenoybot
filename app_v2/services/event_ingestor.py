@@ -54,6 +54,7 @@ def ingest_telegram_update(
             user_id = repo.upsert_user(
                 normalized.telegram_user,
                 observed_at=normalized.envelope.occurred_at,
+                observed_update_id=normalized.telegram_update_id,
                 username_observed=True,
             )
             chat_id = repo.upsert_chat(normalized.telegram_chat)
@@ -63,6 +64,7 @@ def ingest_telegram_update(
                     user_id,
                     user=normalized.telegram_user,
                     observed_at=normalized.envelope.occurred_at,
+                    observed_update_id=normalized.telegram_update_id,
                     username_observed=True,
                 )
             repo.store_message(normalized, chat_id, user_id)
