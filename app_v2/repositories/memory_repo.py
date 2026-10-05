@@ -234,6 +234,26 @@ class MemoryRepository:
         self.conn.commit()
         return row is not None
 
+    def retire_callback(self, scope_type: ScopeType, scope_id: str, memory_id: str) -> bool:
+        """Disable callback usage while preserving the card for factual/assist retrieval."""
+        row = self.conn.execute(
+            """
+            UPDATE memory_cards
+            SET usage_policy = jsonb_set(
+                    COALESCE(usage_policy, '{}'::jsonb),
+                    '{callback}',
+                    'false'::jsonb,
+                    true
+                ),
+                updated_at=CURRENT_TIMESTAMP
+            WHERE id=%s AND scope_type=%s AND scope_id=%s
+            RETURNING id
+            """,
+            (memory_id, scope_type.value, scope_id),
+        ).fetchone()
+        self.conn.commit()
+        return row is not None
+
     def link(self, relation: MemoryRelation) -> bool:
         row = self.conn.execute(
             """
