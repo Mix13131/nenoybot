@@ -197,13 +197,13 @@ def test_ingestor_duplicate_is_idempotent(monkeypatch) -> None:
         def event_exists(self, update_id: int) -> bool:
             return update_id in known_updates
 
-        def upsert_user(self, user):
+        def upsert_user(self, user, **kwargs):
             return 1
 
         def upsert_chat(self, chat):
             return 1
 
-        def upsert_member(self, chat_id, user_id):
+        def upsert_member(self, chat_id, user_id, **kwargs):
             return None
 
         def store_message(self, normalized, chat_id, user_id):
