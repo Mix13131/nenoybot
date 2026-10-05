@@ -28,6 +28,7 @@ class TelegramIngestRepository:
         user: dict[str, Any] | None,
         *,
         observed_at: datetime | None = None,
+        observed_update_id: int | None = None,
         username_observed: bool = True,
     ) -> int | None:
         if not user or user.get("id") is None:
@@ -38,18 +39,73 @@ class TelegramIngestRepository:
         username = user.get("username") if username_observed else None
         row = self.conn.execute(
             """
-            INSERT INTO users(telegram_user_id, display_name, username, identity_observed_at, updated_at)
-            VALUES (%s, %s, %s, %s, CURRENT_TIMESTAMP)
+            INSERT INTO users(
+                telegram_user_id, display_name, username,
+                identity_observed_at, identity_observed_update_id, updated_at
+            )
+            VALUES (%s, %s, %s, %s, %s, CURRENT_TIMESTAMP)
             ON CONFLICT (telegram_user_id) DO UPDATE
-            SET display_name = CASE WHEN users.identity_observed_at IS NULL OR EXCLUDED.identity_observed_at >= users.identity_observed_at
-                    THEN COALESCE(EXCLUDED.display_name, users.display_name) ELSE users.display_name END,
-                username = CASE WHEN %s AND (users.identity_observed_at IS NULL OR EXCLUDED.identity_observed_at >= users.identity_observed_at)
-                    THEN EXCLUDED.username ELSE users.username END,
-                identity_observed_at = GREATEST(COALESCE(users.identity_observed_at, EXCLUDED.identity_observed_at), EXCLUDED.identity_observed_at),
+            SET display_name = CASE
+                    WHEN users.identity_observed_at IS NULL
+                      OR EXCLUDED.identity_observed_at > users.identity_observed_at
+                      OR (
+                          EXCLUDED.identity_observed_at = users.identity_observed_at
+                          AND users.identity_observed_update_id IS NOT NULL
+                          AND EXCLUDED.identity_observed_update_id IS NOT NULL
+                          AND EXCLUDED.identity_observed_update_id > users.identity_observed_update_id
+                      )
+                    THEN COALESCE(EXCLUDED.display_name, users.display_name)
+                    ELSE users.display_name
+                END,
+                username = CASE
+                    WHEN %s AND (
+                        users.identity_observed_at IS NULL
+                        OR EXCLUDED.identity_observed_at > users.identity_observed_at
+                        OR (
+                            EXCLUDED.identity_observed_at = users.identity_observed_at
+                            AND users.identity_observed_update_id IS NOT NULL
+                            AND EXCLUDED.identity_observed_update_id IS NOT NULL
+                            AND EXCLUDED.identity_observed_update_id > users.identity_observed_update_id
+                        )
+                    )
+                    THEN EXCLUDED.username
+                    ELSE users.username
+                END,
+                identity_observed_at = CASE
+                    WHEN users.identity_observed_at IS NULL
+                      OR EXCLUDED.identity_observed_at > users.identity_observed_at
+                      OR (
+                          EXCLUDED.identity_observed_at = users.identity_observed_at
+                          AND users.identity_observed_update_id IS NOT NULL
+                          AND EXCLUDED.identity_observed_update_id IS NOT NULL
+                          AND EXCLUDED.identity_observed_update_id > users.identity_observed_update_id
+                      )
+                    THEN EXCLUDED.identity_observed_at
+                    ELSE users.identity_observed_at
+                END,
+                identity_observed_update_id = CASE
+                    WHEN users.identity_observed_at IS NULL
+                      OR EXCLUDED.identity_observed_at > users.identity_observed_at
+                      OR (
+                          EXCLUDED.identity_observed_at = users.identity_observed_at
+                          AND users.identity_observed_update_id IS NOT NULL
+                          AND EXCLUDED.identity_observed_update_id IS NOT NULL
+                          AND EXCLUDED.identity_observed_update_id > users.identity_observed_update_id
+                      )
+                    THEN EXCLUDED.identity_observed_update_id
+                    ELSE users.identity_observed_update_id
+                END,
                 updated_at = CURRENT_TIMESTAMP
             RETURNING id
             """,
-            (int(user["id"]), display_name, username, observed, username_observed),
+            (
+                int(user["id"]),
+                display_name,
+                username,
+                observed,
+                observed_update_id,
+                username_observed,
+            ),
         ).fetchone()
         return int(row[0])
 
@@ -88,6 +144,7 @@ class TelegramIngestRepository:
         *,
         user: dict[str, Any] | None = None,
         observed_at: datetime | None = None,
+        observed_update_id: int | None = None,
         username_observed: bool = True,
         alias_limit: int = 12,
     ) -> None:
@@ -102,22 +159,48 @@ class TelegramIngestRepository:
         username = user.get("username") if username_observed else None
         self.conn.execute(
             """
-            INSERT INTO chat_members(chat_id, user_id, current_username, current_display_name, first_seen_at, last_seen_at, identity_observed_at)
-            VALUES (%s, %s, %s, %s, %s, %s, %s)
+            INSERT INTO chat_members(
+                chat_id, user_id, current_username, current_display_name,
+                first_seen_at, last_seen_at, identity_observed_at,
+                identity_observed_update_id
+            )
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
             ON CONFLICT (chat_id, user_id) DO UPDATE
             SET first_seen_at = LEAST(chat_members.first_seen_at, EXCLUDED.first_seen_at),
                 last_seen_at = GREATEST(chat_members.last_seen_at, EXCLUDED.last_seen_at)
             """,
-            (chat_id, user_id, username, display_name, observed, observed, observed),
+            (
+                chat_id,
+                user_id,
+                username,
+                display_name,
+                observed,
+                observed,
+                observed,
+                observed_update_id,
+            ),
         )
         row = self.conn.execute(
-            """SELECT current_username, current_display_name, aliases, identity_observed_at
-               FROM chat_members WHERE chat_id = %s AND user_id = %s FOR UPDATE""",
+            """SELECT current_username, current_display_name, aliases,
+                      identity_observed_at, identity_observed_update_id
+               FROM chat_members
+               WHERE chat_id = %s AND user_id = %s
+               FOR UPDATE""",
             (chat_id, user_id),
         ).fetchone()
-        if row is None or (row[3] is not None and observed < row[3]):
+        if row is None:
             return
-        old_username, old_display, raw_aliases, _ = row
+
+        old_username, old_display, raw_aliases, current_observed_at, current_update_id = row
+        if current_observed_at is not None:
+            if observed < current_observed_at:
+                return
+            if observed == current_observed_at:
+                if current_update_id is None:
+                    return
+                if observed_update_id is None or observed_update_id <= int(current_update_id):
+                    return
+
         aliases = [dict(item) for item in (raw_aliases or []) if isinstance(item, dict)]
         changes = (
             ("username", old_username, username if username_observed else old_username),
@@ -133,13 +216,35 @@ class TelegramIngestRepository:
                         and str(item.get("value", "")).casefold() == str(old).casefold()
                     )
                 ]
-                aliases.append({"kind": kind, "value": str(old), "last_used_at": observed.isoformat()})
+                aliases.append(
+                    {
+                        "kind": kind,
+                        "value": str(old),
+                        "last_used_at": observed.isoformat(),
+                    }
+                )
         aliases = aliases[-max(1, min(alias_limit, 50)):]
         self.conn.execute(
-            """UPDATE chat_members SET current_username = CASE WHEN %s THEN %s ELSE current_username END,
-                current_display_name = COALESCE(%s, current_display_name), aliases = %s::jsonb, identity_observed_at = %s
-                WHERE chat_id = %s AND user_id = %s""",
-            (username_observed, username, display_name, json.dumps(aliases, ensure_ascii=False), observed, chat_id, user_id),
+            """UPDATE chat_members
+               SET current_username = CASE
+                       WHEN %s THEN %s
+                       ELSE current_username
+                   END,
+                   current_display_name = COALESCE(%s, current_display_name),
+                   aliases = %s::jsonb,
+                   identity_observed_at = %s,
+                   identity_observed_update_id = %s
+               WHERE chat_id = %s AND user_id = %s""",
+            (
+                username_observed,
+                username,
+                display_name,
+                json.dumps(aliases, ensure_ascii=False),
+                observed,
+                observed_update_id,
+                chat_id,
+                user_id,
+            ),
         )
 
     def store_message(
