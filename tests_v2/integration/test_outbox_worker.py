@@ -98,6 +98,9 @@ class FakeRepo:
         self.recover_calls += 1
         return 0
 
+    def suppress_if_cancelled_reminder(self, item: ClaimedOutbox) -> bool:
+        return False
+
     def claim_next(self, **kwargs):
         item, self.item = self.item, None
         return item
@@ -169,3 +172,18 @@ def test_outbox_retry_backoff_is_capped() -> None:
     assert retry_delay_seconds(1, base_delay_seconds=5, max_delay_seconds=300) == 5
     assert retry_delay_seconds(2, base_delay_seconds=5, max_delay_seconds=300) == 10
     assert retry_delay_seconds(20, base_delay_seconds=5, max_delay_seconds=300) == 300
+
+
+def test_outbox_worker_does_not_send_cancelled_reminder_claim() -> None:
+    class CancelledRepo(FakeRepo):
+        def suppress_if_cancelled_reminder(self, item: ClaimedOutbox) -> bool:
+            return True
+
+    repo = CancelledRepo(_claimed())
+    sender = FakeSender()
+    worker = OutboxWorker(repo, sender)
+
+    assert worker.run_once() is True
+    assert sender.calls == []
+    assert repo.sent == []
+    assert repo.retried == []
