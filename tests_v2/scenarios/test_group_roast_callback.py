@@ -129,7 +129,7 @@ def test_already_going_running_joke_flows_to_grounded_group_callback() -> None:
     assert result.primary_action is PrimaryAction.REPLY
     assert result.mode is ResponseMode.GROUP_CALLBACK
     assert result.outbox_created is True
-    assert p.context_builder.calls[0]["memory_usage"] == "callback"
+    assert p.context_builder.calls[0]["memory_usage"] == "proactive"
     assert p.context_builder.calls[0]["callback_fatigue_minutes"] == 180
     assert p.response_generator.calls[0].memories[0].id == "joke-already-going"
     assert retrieval.calls[0][0] is ScopeType.GROUP
