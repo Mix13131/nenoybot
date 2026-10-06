@@ -3,6 +3,7 @@ from __future__ import annotations
 from app_v2.domain.enums import EventType, PrimaryAction
 from app_v2.domain.events import SceneAnalysis
 from app_v2.domain.outbound import OutboundReaction
+from app_v2.services.reaction_policy import choose_reaction
 from tests_v2.scenarios.test_group_pipeline import FakeGenerator, FakeOutbox, event, pipeline
 
 
@@ -72,3 +73,34 @@ def test_scheduled_events_and_missing_target_never_become_reaction_only() -> Non
     assert result.primary_action is PrimaryAction.REPLY
     assert result.reaction_emoji is None
 
+
+
+def test_reaction_only_does_not_create_new_unsolicited_channel() -> None:
+    choice = choose_reaction(
+        event(EventType.GROUP_MESSAGE, text="ахаха"),
+        SceneAnalysis(),
+        proposed_action=PrimaryAction.REPLY,
+        social_repair=False,
+        has_operational_action=False,
+    )
+    assert choice is None
+
+
+def test_all_synthetic_scheduled_group_events_are_reaction_ineligible() -> None:
+    scheduled_types = (
+        EventType.REMINDER_DUE,
+        EventType.COMMITMENT_DUE,
+        EventType.FOLLOWUP_DUE,
+        EventType.SCHEDULED_SUPPORT_MESSAGE,
+        EventType.BIRTHDAY_DUE,
+        EventType.GROUP_SILENCE_WAKEUP,
+    )
+    for event_type in scheduled_types:
+        choice = choose_reaction(
+            event(event_type, event_id=f"scheduled-{event_type.value}", text="супер"),
+            SceneAnalysis(),
+            proposed_action=PrimaryAction.REPLY,
+            social_repair=False,
+            has_operational_action=False,
+        )
+        assert choice is None
