@@ -11,6 +11,7 @@ class ScopeType(str, Enum):
 class PrimaryAction(str, Enum):
     IGNORE = "ignore"
     REPLY = "reply"
+    REACTION_ONLY = "reaction_only"
     ACT = "act"
     SCHEDULE = "schedule"
 
