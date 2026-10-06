@@ -56,11 +56,14 @@ class FakeAccess:
 
 
 class FakeSceneAnalyzer:
-    def __init__(self, scene=None):
+    def __init__(self, scene=None, *, contextual_scene=None):
         self.scene = scene or SceneAnalysis()
+        self.contextual_scene = contextual_scene
         self.calls = []
-    def analyze(self, event):
+    def analyze(self, event, *, recent_context=None):
         self.calls.append(event)
+        if recent_context and self.contextual_scene is not None:
+            return self.contextual_scene
         return self.scene
 
 
@@ -163,10 +166,11 @@ def pipeline(
     outbox=None,
     mapper=None,
     reaction_capabilities=None,
+    contextual_scene=None,
 ):
     return GroupPipeline(
         access_service=access or FakeAccess(),
-        scene_analyzer=FakeSceneAnalyzer(scene),
+        scene_analyzer=FakeSceneAnalyzer(scene, contextual_scene=contextual_scene),
         personality_engine=PersonalityEngine(),
         context_builder=context or FakeContextBuilder(),
         response_generator=generator or FakeGenerator(),
