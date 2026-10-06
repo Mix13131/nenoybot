@@ -117,3 +117,27 @@ def test_empty_scope_is_rejected() -> None:
         assert "scope_id" in str(exc)
     else:
         raise AssertionError("empty scope must be rejected")
+
+
+def test_callback_proactive_requirement_preserves_fatigue_and_reaches_relations() -> None:
+    repo = FakeRepo()
+    engine = RetrievalEngine(repo)
+
+    engine.retrieve(
+        ScopeType.GROUP,
+        "g1",
+        usage="callback",
+        require_proactive=True,
+        callback_fatigue_minutes=180,
+        limit=8,
+    )
+
+    direct = repo.calls[0]
+    assert direct[0] == "direct"
+    assert direct[3]["require_proactive"] is True
+    assert direct[3]["callback_fatigue_minutes"] == 180
+
+    related = repo.calls[1]
+    assert related[0] == "related"
+    assert related[3]["require_proactive"] is True
+    assert related[3]["callback_fatigue_minutes"] == 180
