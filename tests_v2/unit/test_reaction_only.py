@@ -175,12 +175,33 @@ def test_capability_flip_on_event_retry_cannot_send_reaction_and_text() -> None:
     assert len(outbox.calls) == 2
 
 
+def test_reply_to_unrelated_bot_never_selects_reaction_only() -> None:
+    generator = FakeGenerator()
+    replied = event(EventType.REPLY_TO_BOT, text="спасибо").model_copy(
+        update={
+            "metadata": {
+                "reply_to_bot": True,
+                "reply_to_configured_bot": False,
+                "reply_to_text": "Готово, всё получилось.",
+                "address_body": "спасибо",
+            }
+        }
+    )
+
+    result = pipeline(generator=generator).process(replied)
+
+    assert result.primary_action is PrimaryAction.REPLY
+    assert result.reaction_emoji is None
+    assert len(generator.calls) == 1
+
+
 def test_reply_to_serious_bot_context_stays_text() -> None:
     generator = FakeGenerator()
     replied = event(EventType.REPLY_TO_BOT, text="спасибо").model_copy(
         update={
             "metadata": {
                 "reply_to_bot": True,
+                "reply_to_configured_bot": True,
                 "reply_to_text": "Мне сейчас очень тяжело, это серьёзная ситуация.",
                 "address_body": "спасибо",
             }
@@ -208,6 +229,7 @@ def test_reply_without_replied_text_fails_closed_to_text() -> None:
         update={
             "metadata": {
                 "reply_to_bot": True,
+                "reply_to_configured_bot": True,
                 "address_body": "спасибо",
             }
         }
@@ -226,6 +248,7 @@ def test_reply_to_safe_bot_context_can_use_reaction() -> None:
         update={
             "metadata": {
                 "reply_to_bot": True,
+                "reply_to_configured_bot": True,
                 "reply_to_text": "Готово, всё получилось.",
                 "address_body": "спасибо",
             }
