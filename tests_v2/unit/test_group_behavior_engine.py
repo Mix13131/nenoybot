@@ -121,7 +121,7 @@ def test_running_joke_strengthens_grounded_callback_and_selects_callback_mode() 
     decision=decide(event(), plan.scene, plan.state)
 
     assert plan.callback_memory_ids == ("j1",)
-    assert plan.memory_usage == "callback"
+    assert plan.memory_usage == "proactive"
     assert plan.state.running_joke_fit is True
     assert plan.scene.callback_opportunity >= .82
     assert decision.primary_action is PrimaryAction.REPLY
@@ -481,7 +481,9 @@ def test_non_proactive_memory_cannot_open_unsolicited_opportunity() -> None:
         now=datetime.now(timezone.utc),
     )
 
-    assert plan.scene.callback_opportunity >= 0.82
+    assert plan.scene.callback_opportunity < 0.75
+    assert plan.callback_memory_ids == ()
+    assert plan.memory_usage == "assist"
     assert plan.state.initiative_opportunity_eligible is False
 
 
@@ -507,7 +509,8 @@ def test_silence_wakeup_rejects_unrelated_old_group_callback() -> None:
         now=datetime.now(timezone.utc),
     )
 
-    assert plan.scene.callback_opportunity >= 0.82
+    assert plan.scene.callback_opportunity < 0.75
+    assert plan.callback_memory_ids == ()
     assert plan.state.initiative_opportunity_eligible is False
     assert plan.state.metadata["initiative_opportunity"]["stale_context"] is True
 
@@ -583,3 +586,94 @@ def test_statement_watcher_cannot_open_proactive_hook_from_non_proactive_memory(
     assert plan.state.initiative_opportunity_eligible is False
     assert opportunity["eligible"] is False
     assert decision.primary_action is PrimaryAction.IGNORE
+
+
+def test_negative_callback_style_suppresses_grounded_silence_wakeup() -> None:
+    wakeup = event("", event_type=EventType.GROUP_SILENCE_WAKEUP).model_copy(
+        update={
+            "actor_user_id": None,
+            "message_id": None,
+            "metadata": {
+                "last_human_message_id": 77,
+                "last_human_telegram_message_id": 7077,
+                "last_human_excerpt": "ну всё, опять эта история",
+            },
+        }
+    )
+    retrieval = FakeRetrieval(
+        [memory("j1", "running_joke", evidence_message_id="7077", proactive=True)]
+    )
+    plan = GroupBehaviorEngine(retrieval).plan(
+        event=wakeup,
+        group_context=context(),
+        scene=SceneAnalysis(),
+        now=datetime.now(timezone.utc),
+        style_deltas={"callback": -2},
+    )
+
+    decision = decide(wakeup, plan.scene, plan.state)
+    assert plan.scene.callback_opportunity < 0.82
+    assert plan.state.initiative_opportunity_eligible is False
+    assert decision.primary_action is PrimaryAction.IGNORE
+
+
+def test_legacy_wakeup_without_telegram_boundary_fails_closed() -> None:
+    wakeup = event("", event_type=EventType.GROUP_SILENCE_WAKEUP).model_copy(
+        update={
+            "actor_user_id": None,
+            "message_id": None,
+            "metadata": {
+                "last_human_message_id": 77,
+                "last_human_excerpt": "старое событие без telegram provenance",
+            },
+        }
+    )
+    retrieval = FakeRetrieval(
+        [memory("j1", "running_joke", evidence_message_id="77", proactive=True)]
+    )
+    plan = GroupBehaviorEngine(retrieval).plan(
+        event=wakeup,
+        group_context=context(),
+        scene=SceneAnalysis(),
+        now=datetime.now(timezone.utc),
+    )
+
+    decision = decide(wakeup, plan.scene, plan.state)
+    assert plan.callback_memory_ids == ()
+    assert plan.state.initiative_opportunity_eligible is False
+    assert decision.primary_action is PrimaryAction.IGNORE
+
+
+def test_non_proactive_statement_memory_is_withheld_when_neighbor_opens_hook() -> None:
+    class WatcherMustNotReceiveForbiddenMemory:
+        def evaluate(self, **kwargs):
+            raise AssertionError("non-proactive statement must not reach watcher")
+
+    retrieval = FakeRetrieval(
+        [
+            memory("j1", "running_joke", proactive=True),
+            memory(
+                "x1",
+                "contradiction",
+                evidence_message_id="17",
+                proactive=False,
+            ),
+        ]
+    )
+    plan = GroupBehaviorEngine(
+        retrieval,
+        statement_watcher=WatcherMustNotReceiveForbiddenMemory(),
+    ).plan(
+        event=event("опять эта история"),
+        group_context=context(),
+        scene=SceneAnalysis(),
+        now=datetime.now(timezone.utc),
+    )
+
+    decision = decide(event("опять эта история"), plan.scene, plan.state)
+    assert plan.callback_memory_ids == ("j1",)
+    assert plan.memory_usage == "proactive"
+    assert plan.statement_watch is None
+    assert plan.state.metadata["statement_watch"] is None
+    assert plan.state.initiative_opportunity_eligible is True
+    assert decision.primary_action is PrimaryAction.REPLY
