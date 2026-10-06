@@ -18,7 +18,21 @@ _LAUGHTER = frozenset({"ахаха", "ахах", "хаха", "ха-ха", "ло�
 _APPROVAL = frozenset({"спасибо", "спс", "круто", "супер", "согласен", "точно"})
 _FIRE = frozenset({"огонь", "жара"})
 _SCHEDULED_TYPES = frozenset(
-    {EventType.REMINDER_DUE, EventType.BIRTHDAY_DUE, EventType.GROUP_SILENCE_WAKEUP}
+    {
+        EventType.REMINDER_DUE,
+        EventType.COMMITMENT_DUE,
+        EventType.FOLLOWUP_DUE,
+        EventType.SCHEDULED_SUPPORT_MESSAGE,
+        EventType.BIRTHDAY_DUE,
+        EventType.GROUP_SILENCE_WAKEUP,
+    }
+)
+_EXPLICIT_REACTION_EVENTS = frozenset(
+    {
+        EventType.DIRECT_MENTION,
+        EventType.REPLY_TO_BOT,
+        EventType.REPLY_TO_BOT_MESSAGE,
+    }
 )
 
 
@@ -32,6 +46,12 @@ def choose_reaction(
 ) -> ReactionChoice | None:
     """Select a bounded acknowledgement without invoking the response generator."""
     if proposed_action is not PrimaryAction.REPLY or event.event_type in _SCHEDULED_TYPES:
+        return None
+    # Packet 46B is intentionally conservative: reactions are a compact
+    # language for turns explicitly addressed to НеНой, not a new autonomous
+    # intervention channel. This also keeps existing unsolicited cooldown/share
+    # accounting authoritative without adding conversation-ownership inference.
+    if event.event_type not in _EXPLICIT_REACTION_EVENTS:
         return None
     if event.event_type in {EventType.COMMAND, EventType.REACTION_ADDED, EventType.REACTION_REMOVED}:
         return None
