@@ -72,7 +72,10 @@ def choose_reaction(
     )):
         return None
 
-    normalized = _SPACE_RE.sub(" ", (event.text or "").strip().lower()).strip(".!…")
+    conversational_text = event.metadata.get("address_body")
+    if not isinstance(conversational_text, str):
+        conversational_text = event.text or ""
+    normalized = _SPACE_RE.sub(" ", conversational_text.strip().lower()).strip(".!…")
     if normalized in _LAUGHTER:
         return ReactionChoice("😂", "short_laughter_acknowledgement")
     if normalized in _APPROVAL:
