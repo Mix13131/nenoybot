@@ -20,6 +20,7 @@ class RetrievalEngine:
         min_confidence: float = 0.5,
         min_freshness: float = 0.1,
         callback_fatigue_minutes: int = 60,
+        require_proactive: bool = False,
         limit: int = 8,
         expand_relations: bool = True,
     ) -> list[RankedMemory]:
@@ -29,29 +30,39 @@ class RetrievalEngine:
             return []
 
         fatigue = callback_fatigue_minutes if usage == "callback" else None
+        direct_kwargs = {
+            "usage": usage,
+            "subject_keys": subject_keys,
+            "min_confidence": min_confidence,
+            "min_freshness": min_freshness,
+            "callback_fatigue_minutes": fatigue,
+            "limit": max(limit * 3, limit),
+        }
+        if require_proactive:
+            direct_kwargs["require_proactive"] = True
         direct = self.repo.retrieve_candidates(
             scope_type,
             scope_id,
-            usage=usage,
-            subject_keys=subject_keys,
-            min_confidence=min_confidence,
-            min_freshness=min_freshness,
-            callback_fatigue_minutes=fatigue,
-            limit=max(limit * 3, limit),
+            **direct_kwargs,
         )
 
         by_id: dict[str, RankedMemory] = {item.card.id: item for item in direct}
 
         if expand_relations and direct and len(by_id) < max(limit * 3, limit):
+            related_kwargs = {
+                "usage": usage,
+                "min_confidence": min_confidence,
+                "min_freshness": min_freshness,
+                "callback_fatigue_minutes": fatigue,
+                "limit": max(limit * 2, limit),
+            }
+            if require_proactive:
+                related_kwargs["require_proactive"] = True
             related = self.repo.related_cards(
                 scope_type,
                 scope_id,
                 [item.card.id for item in direct[: min(5, len(direct))]],
-                usage=usage,
-                min_confidence=min_confidence,
-                min_freshness=min_freshness,
-                callback_fatigue_minutes=fatigue,
-                limit=max(limit * 2, limit),
+                **related_kwargs,
             )
             for item in related:
                 existing = by_id.get(item.card.id)
