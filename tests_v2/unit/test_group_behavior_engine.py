@@ -10,6 +10,7 @@ from app_v2.repositories.memory_repo import RankedMemory
 from app_v2.services.dispatcher import decide
 from app_v2.services.group_behavior_engine import GroupBehaviorEngine
 from app_v2.services.personality_engine import PersonalityEngine
+from app_v2.services.statement_watcher import StatementWatchResult
 
 
 def event(text="уже еду", *, event_type=EventType.GROUP_MESSAGE) -> EventEnvelope:
@@ -491,6 +492,7 @@ def test_silence_wakeup_rejects_unrelated_old_group_callback() -> None:
             "message_id": None,
             "metadata": {
                 "last_human_message_id": 77,
+                "last_human_telegram_message_id": 7077,
                 "last_human_excerpt": "ну всё, разошлись",
             },
         }
@@ -517,12 +519,13 @@ def test_silence_wakeup_allows_callback_grounded_in_last_human_message() -> None
             "message_id": None,
             "metadata": {
                 "last_human_message_id": 77,
+                "last_human_telegram_message_id": 7077,
                 "last_human_excerpt": "ну всё, опять эта история",
             },
         }
     )
     retrieval = FakeRetrieval(
-        [memory("j1", "running_joke", evidence_message_id="77", proactive=True)]
+        [memory("j1", "running_joke", evidence_message_id="7077", proactive=True)]
     )
     plan = GroupBehaviorEngine(retrieval).plan(
         event=wakeup,
@@ -538,3 +541,45 @@ def test_silence_wakeup_allows_callback_grounded_in_last_human_message() -> None
     assert opportunity["stale_context"] is True
     assert decision.primary_action is PrimaryAction.REPLY
     assert decision.mode is ResponseMode.GROUP_CALLBACK
+
+
+def test_statement_watcher_cannot_open_proactive_hook_from_non_proactive_memory() -> None:
+    class SelectedWatcher:
+        def evaluate(self, **kwargs):
+            return StatementWatchResult(
+                relation="contradiction",
+                confidence=0.96,
+                roast_fit=0.90,
+                memory_id="x1",
+                memory_summary="synthetic contradiction",
+                evidence_excerpt="synthetic evidence",
+                evidence_message_id="17",
+            )
+
+    retrieval = FakeRetrieval(
+        [
+            memory(
+                "x1",
+                "contradiction",
+                evidence_message_id="17",
+                proactive=False,
+            )
+        ]
+    )
+    plan = GroupBehaviorEngine(
+        retrieval,
+        statement_watcher=SelectedWatcher(),
+    ).plan(
+        event=event("а теперь говорю наоборот"),
+        group_context=context(),
+        scene=SceneAnalysis(),
+        now=datetime.now(timezone.utc),
+    )
+
+    opportunity = plan.state.metadata["initiative_opportunity"]
+    decision = decide(event("а теперь говорю наоборот"), plan.scene, plan.state)
+
+    assert plan.state.priority_statement is False
+    assert plan.state.initiative_opportunity_eligible is False
+    assert opportunity["eligible"] is False
+    assert decision.primary_action is PrimaryAction.IGNORE

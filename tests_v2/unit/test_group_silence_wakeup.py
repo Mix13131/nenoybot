@@ -28,6 +28,7 @@ def candidate(**overrides):
         },
         "silent_until": None,
         "last_human_message_id": 77,
+        "last_human_telegram_message_id": 7077,
         "last_human_message_at": NOW - timedelta(hours=4),
         "last_human_excerpt": "ну всё, разбежались по делам",
         "last_successful_wakeup_message_id": None,

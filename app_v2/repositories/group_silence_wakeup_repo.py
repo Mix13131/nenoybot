@@ -12,6 +12,7 @@ class SilenceWakeupCandidate:
     profile: dict[str, Any]
     silent_until: datetime | None
     last_human_message_id: int
+    last_human_telegram_message_id: int
     last_human_message_at: datetime
     last_human_excerpt: str
     last_successful_wakeup_message_id: int | None
@@ -33,6 +34,7 @@ class GroupSilenceWakeupRepository:
                 c.group_profile,
                 c.silent_until,
                 last_human.id,
+                last_human.telegram_message_id,
                 last_human.created_at,
                 LEFT(COALESCE(last_human.text, ''), 700),
                 (
@@ -66,7 +68,7 @@ class GroupSilenceWakeupRepository:
                 ) AS last_attempt_at
             FROM chats c
             JOIN LATERAL (
-                SELECT m.id, m.created_at, m.text
+                SELECT m.id, m.telegram_message_id, m.created_at, m.text
                 FROM messages m
                 WHERE m.chat_id=c.id
                 ORDER BY m.created_at DESC, m.id DESC
@@ -86,15 +88,16 @@ class GroupSilenceWakeupRepository:
                 profile=dict(row[1] or {}),
                 silent_until=row[2],
                 last_human_message_id=int(row[3]),
-                last_human_message_at=row[4],
-                last_human_excerpt=str(row[5] or ""),
+                last_human_telegram_message_id=int(row[4]),
+                last_human_message_at=row[5],
+                last_human_excerpt=str(row[6] or ""),
                 last_successful_wakeup_message_id=(
-                    int(row[6]) if row[6] is not None else None
-                ),
-                last_attempt_message_id=(
                     int(row[7]) if row[7] is not None else None
                 ),
-                last_attempt_at=row[8],
+                last_attempt_message_id=(
+                    int(row[8]) if row[8] is not None else None
+                ),
+                last_attempt_at=row[9],
             )
             for row in rows
         ]
@@ -166,6 +169,7 @@ class GroupSilenceWakeupRepository:
                 "silence_minutes": int(silence_minutes),
                 "local_day": str(local_day),
                 "last_human_message_id": candidate.last_human_message_id,
+                "last_human_telegram_message_id": candidate.last_human_telegram_message_id,
                 "last_human_message_at": candidate.last_human_message_at.isoformat(),
                 "last_human_excerpt": candidate.last_human_excerpt,
             },

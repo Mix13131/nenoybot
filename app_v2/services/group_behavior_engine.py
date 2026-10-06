@@ -222,8 +222,10 @@ class GroupBehaviorEngine:
             for item in callback_cards
         )
 
+        raw_callback_opportunity = effective_scene.callback_opportunity
         statement_watch_result = None
         statement_watch_state: dict[str, Any] | None = None
+        statement_watch_proactive = False
         statement_cards = [item.card for item in callback_cards if item.card.memory_type in _STATEMENT_TYPES]
         if (
             self.statement_watcher is not None
@@ -241,6 +243,12 @@ class GroupBehaviorEngine:
             )
             if statement_watch_result.relation != "none":
                 statement_watch_state = statement_watch_result.as_action_state()
+            if statement_watch_result.memory_id:
+                statement_watch_proactive = any(
+                    card.id == statement_watch_result.memory_id
+                    and bool(card.usage_policy.proactive)
+                    for card in statement_cards
+                )
 
         allow_callbacks = (
             not policy_degraded
@@ -275,7 +283,11 @@ class GroupBehaviorEngine:
                 if allow_roast:
                     changes["roast_opportunity"] = max(effective_scene.roast_opportunity, 0.80)
 
-            if statement_watch_result is not None and statement_watch_result.should_intervene:
+            if (
+                statement_watch_result is not None
+                and statement_watch_result.should_intervene
+                and statement_watch_proactive
+            ):
                 relation = statement_watch_result.relation
                 changes["callback_opportunity"] = max(effective_scene.callback_opportunity, 0.94)
                 if relation == "contradiction":
@@ -346,6 +358,7 @@ class GroupBehaviorEngine:
         priority_statement = bool(
             statement_watch_result
             and statement_watch_result.strong_mismatch
+            and statement_watch_proactive
             and unsolicited_enabled
             and not muted
             and safe_scene
@@ -360,19 +373,26 @@ class GroupBehaviorEngine:
             if bool(item.card.usage_policy.proactive)
         ]
         if event.event_type is EventType.GROUP_SILENCE_WAKEUP:
-            last_human_message_id = str(
-                event.metadata.get("last_human_message_id") or ""
+            last_human_telegram_message_id = str(
+                event.metadata.get("last_human_telegram_message_id")
+                or event.metadata.get("last_human_message_id")
+                or ""
             ).strip()
             proactive_callback_cards = [
                 item
                 for item in proactive_callback_cards
-                if last_human_message_id
+                if last_human_telegram_message_id
                 and any(
-                    str(evidence.message_id or "") == last_human_message_id
+                    str(evidence.message_id or "")
+                    == last_human_telegram_message_id
                     for evidence in item.card.evidence
                 )
             ]
 
+        proactive_running_joke_fit = any(
+            item.card.memory_type == "running_joke"
+            for item in proactive_callback_cards
+        )
         opportunity_grounded_contradiction = any(
             item.card.memory_type == "contradiction"
             for item in proactive_callback_cards
@@ -384,9 +404,27 @@ class GroupBehaviorEngine:
             for item in proactive_callback_cards
         )
 
+        opportunity_callback = raw_callback_opportunity
+        if proactive_running_joke_fit:
+            opportunity_callback = max(opportunity_callback, 0.82)
+        if (
+            opportunity_grounded_contradiction
+            and effective_scene.contradiction_score >= 0.75
+        ):
+            opportunity_callback = max(opportunity_callback, 0.84)
+        if (
+            statement_watch_result is not None
+            and statement_watch_result.should_intervene
+            and statement_watch_proactive
+        ):
+            opportunity_callback = max(opportunity_callback, 0.94)
+        opportunity_scene = effective_scene.model_copy(
+            update={"callback_opportunity": opportunity_callback}
+        )
+
         opportunity = evaluate_initiative_opportunity(
             event,
-            effective_scene,
+            opportunity_scene,
             has_grounded_callback=bool(proactive_callback_cards),
             grounded_contradiction=opportunity_grounded_contradiction,
             broken_commitment=opportunity_broken_commitment,
