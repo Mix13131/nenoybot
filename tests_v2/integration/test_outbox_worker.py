@@ -71,6 +71,32 @@ def test_sender_passes_text_and_reply_target() -> None:
     assert payload["reply_parameters"] == {"message_id": 77}
 
 
+def test_sender_constructs_ordinary_reaction_request_without_fake_text() -> None:
+    client = FakeClient(FakeResponse(200, {"ok": True, "result": True}))
+    sender = TelegramSender(token="123:test", client=client, base_url="https://example.test")
+
+    result = sender.send(
+        "-100123",
+        {"kind": "reaction", "target_message_id": "77", "emoji": "👍"},
+    )
+
+    assert result == {"reaction_set": True}
+    url, payload = client.calls[0]
+    assert url.endswith("/bot123:test/setMessageReaction")
+    assert payload == {
+        "chat_id": "-100123",
+        "message_id": 77,
+        "reaction": [{"type": "emoji", "emoji": "👍"}],
+        "is_big": False,
+    }
+
+
+def test_sender_rejects_paid_or_non_allowlisted_reactions() -> None:
+    sender = TelegramSender(token="123:test", client=FakeClient(FakeResponse(200, {})))
+    with pytest.raises(TelegramSendError, match="not allowlisted"):
+        sender.send("-100123", {"kind": "reaction", "target_message_id": "77", "emoji": "⭐"})
+
+
 def test_sender_raises_on_telegram_api_error() -> None:
     client = FakeClient(FakeResponse(200, {"ok": False, "description": "Bad Request"}))
     sender = TelegramSender(token="123:test", client=client)
@@ -157,6 +183,24 @@ def test_outbox_worker_retries_real_timeout_without_marking_sent() -> None:
     assert len(repo.retried) == 1
     assert repo.retried[0][0] == 1
     assert "timed out" in repo.retried[0][1]
+
+
+def test_outbox_worker_retries_reaction_api_error_without_marking_sent() -> None:
+    item = _claimed()
+    item = ClaimedOutbox(
+        **{
+            **item.__dict__,
+            "dedupe_key": "reaction:event-1",
+            "payload": {"kind": "reaction", "target_message_id": "77", "emoji": "😂"},
+        }
+    )
+    client = FakeClient(FakeResponse(200, {"ok": False, "description": "reaction forbidden"}))
+    repo = FakeRepo(item)
+    worker = OutboxWorker(repo, TelegramSender(token="123:test", client=client))
+
+    assert worker.run_once() is True
+    assert repo.sent == []
+    assert repo.retried == [(1, "Telegram API error: reaction forbidden")]
 
 
 def test_outbox_worker_retries_unsupported_channel() -> None:
