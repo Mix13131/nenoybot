@@ -89,3 +89,89 @@ def test_invalid_birthdate_payload_is_rejected() -> None:
                 },
             )
         ).get_birthdate(42)
+
+
+def test_group_reaction_capabilities_honor_allowlist_and_permission() -> None:
+    result = client(
+        lambda request: httpx.Response(
+            200,
+            json={
+                "ok": True,
+                "result": {
+                    "id": -10055,
+                    "type": "supergroup",
+                    "available_reactions": [
+                        {"type": "emoji", "emoji": "👍"},
+                        {"type": "emoji", "emoji": "😂"},
+                        {"type": "custom_emoji", "custom_emoji_id": "custom-1"},
+                    ],
+                    "permissions": {
+                        "can_send_messages": True,
+                        "can_react_to_messages": True,
+                    },
+                },
+            },
+        )
+    ).get_reaction_capabilities("-10055")
+
+    assert result.status == "available"
+    assert result.supports("👍") is True
+    assert result.supports("😂") is True
+    assert result.supports("🔥") is False
+
+
+def test_group_reaction_capabilities_omitted_allowlist_means_ordinary_emoji_allowed() -> None:
+    result = client(
+        lambda request: httpx.Response(
+            200,
+            json={
+                "ok": True,
+                "result": {
+                    "id": -10055,
+                    "type": "group",
+                    "permissions": {"can_send_messages": True},
+                },
+            },
+        )
+    ).get_reaction_capabilities("-10055")
+
+    assert result.status == "available"
+    assert result.allowed_emojis is None
+    assert result.supports("👍") is True
+
+
+@pytest.mark.parametrize(
+    "permissions",
+    [
+        {"can_react_to_messages": False, "can_send_messages": True},
+        {"can_send_messages": False},
+    ],
+)
+def test_group_reaction_capabilities_fail_closed_on_explicit_permission_block(permissions) -> None:
+    result = client(
+        lambda request: httpx.Response(
+            200,
+            json={
+                "ok": True,
+                "result": {
+                    "id": -10055,
+                    "type": "supergroup",
+                    "permissions": permissions,
+                },
+            },
+        )
+    ).get_reaction_capabilities("-10055")
+
+    assert result.supports("👍") is False
+
+
+def test_group_reaction_capabilities_chat_lookup_unavailable_is_not_supported() -> None:
+    result = client(
+        lambda request: httpx.Response(
+            400,
+            json={"ok": False, "description": "Bad Request: chat not found"},
+        )
+    ).get_reaction_capabilities("-10055")
+
+    assert result.status == "unavailable"
+    assert result.supports("👍") is False
