@@ -212,21 +212,55 @@ class GroupBehaviorEngine:
                 policy_degraded = True
 
         callback_cards = [item for item in probe if _is_grounded_callback_card(item)]
-        running_joke_fit = any(item.card.memory_type == "running_joke" for item in callback_cards)
+        unsolicited_memory_only = event.event_type in {
+            EventType.GROUP_MESSAGE,
+            EventType.GROUP_SILENCE_WAKEUP,
+        }
+        behavior_callback_cards = (
+            [
+                item
+                for item in callback_cards
+                if bool(item.card.usage_policy.proactive)
+            ]
+            if unsolicited_memory_only
+            else list(callback_cards)
+        )
+        if event.event_type is EventType.GROUP_SILENCE_WAKEUP:
+            last_human_telegram_message_id = str(
+                event.metadata.get("last_human_telegram_message_id") or ""
+            ).strip()
+            behavior_callback_cards = [
+                item
+                for item in behavior_callback_cards
+                if last_human_telegram_message_id
+                and any(
+                    str(evidence.message_id or "")
+                    == last_human_telegram_message_id
+                    for evidence in item.card.evidence
+                )
+            ]
+
+        running_joke_fit = any(
+            item.card.memory_type == "running_joke"
+            for item in behavior_callback_cards
+        )
         grounded_contradiction_fit = any(
-            item.card.memory_type == "contradiction" for item in callback_cards
+            item.card.memory_type == "contradiction"
+            for item in behavior_callback_cards
         )
         broken_commitment = any(
             item.card.memory_type == "commitment"
             and str(item.card.payload.get("status", "")).lower() in {"broken", "overdue", "missed"}
-            for item in callback_cards
+            for item in behavior_callback_cards
         )
-
-        raw_callback_opportunity = effective_scene.callback_opportunity
         statement_watch_result = None
         statement_watch_state: dict[str, Any] | None = None
         statement_watch_proactive = False
-        statement_cards = [item.card for item in callback_cards if item.card.memory_type in _STATEMENT_TYPES]
+        statement_cards = [
+            item.card
+            for item in behavior_callback_cards
+            if item.card.memory_type in _STATEMENT_TYPES
+        ]
         if (
             self.statement_watcher is not None
             and statement_cards
@@ -241,14 +275,17 @@ class GroupBehaviorEngine:
                 scene=effective_scene,
                 candidates=statement_cards,
             )
-            if statement_watch_result.relation != "none":
-                statement_watch_state = statement_watch_result.as_action_state()
             if statement_watch_result.memory_id:
                 statement_watch_proactive = any(
                     card.id == statement_watch_result.memory_id
                     and bool(card.usage_policy.proactive)
                     for card in statement_cards
                 )
+            if (
+                statement_watch_result.relation != "none"
+                and statement_watch_proactive
+            ):
+                statement_watch_state = statement_watch_result.as_action_state()
 
         allow_callbacks = (
             not policy_degraded
@@ -256,7 +293,7 @@ class GroupBehaviorEngine:
             and callback_level > 0
             and callback_delta > -3
             and roast_tolerance >= 3
-            and bool(callback_cards)
+            and bool(behavior_callback_cards)
         )
         allow_roast = (
             not policy_degraded
@@ -368,64 +405,21 @@ class GroupBehaviorEngine:
         if policy_degraded:
             cooldown_active = True
 
-        proactive_callback_cards = [
-            item for item in callback_cards
-            if bool(item.card.usage_policy.proactive)
-        ]
-        if event.event_type is EventType.GROUP_SILENCE_WAKEUP:
-            last_human_telegram_message_id = str(
-                event.metadata.get("last_human_telegram_message_id")
-                or event.metadata.get("last_human_message_id")
-                or ""
-            ).strip()
-            proactive_callback_cards = [
-                item
-                for item in proactive_callback_cards
-                if last_human_telegram_message_id
-                and any(
-                    str(evidence.message_id or "")
-                    == last_human_telegram_message_id
-                    for evidence in item.card.evidence
-                )
-            ]
-
-        proactive_running_joke_fit = any(
-            item.card.memory_type == "running_joke"
-            for item in proactive_callback_cards
-        )
         opportunity_grounded_contradiction = any(
             item.card.memory_type == "contradiction"
-            for item in proactive_callback_cards
+            for item in behavior_callback_cards
         )
         opportunity_broken_commitment = any(
             item.card.memory_type == "commitment"
             and str(item.card.payload.get("status", "")).lower()
             in {"broken", "overdue", "missed"}
-            for item in proactive_callback_cards
-        )
-
-        opportunity_callback = raw_callback_opportunity
-        if proactive_running_joke_fit:
-            opportunity_callback = max(opportunity_callback, 0.82)
-        if (
-            opportunity_grounded_contradiction
-            and effective_scene.contradiction_score >= 0.75
-        ):
-            opportunity_callback = max(opportunity_callback, 0.84)
-        if (
-            statement_watch_result is not None
-            and statement_watch_result.should_intervene
-            and statement_watch_proactive
-        ):
-            opportunity_callback = max(opportunity_callback, 0.94)
-        opportunity_scene = effective_scene.model_copy(
-            update={"callback_opportunity": opportunity_callback}
+            for item in behavior_callback_cards
         )
 
         opportunity = evaluate_initiative_opportunity(
             event,
-            opportunity_scene,
-            has_grounded_callback=bool(proactive_callback_cards),
+            effective_scene,
+            has_grounded_callback=bool(behavior_callback_cards),
             grounded_contradiction=opportunity_grounded_contradiction,
             broken_commitment=opportunity_broken_commitment,
             priority_statement=priority_statement,
@@ -438,8 +432,20 @@ class GroupBehaviorEngine:
             policy_degraded=policy_degraded,
         )
 
-        callback_ids = tuple(item.card.id for item in callback_cards)
-        if statement_watch_result and statement_watch_result.memory_id:
+        generation_memory_usage = (
+            "proactive"
+            if unsolicited_memory_only and opportunity.eligible
+            else "callback"
+            if allow_callbacks
+            else "assist"
+        )
+
+        callback_ids = tuple(item.card.id for item in behavior_callback_cards)
+        if (
+            statement_watch_result
+            and statement_watch_result.memory_id
+            and statement_watch_proactive
+        ):
             callback_ids = (
                 statement_watch_result.memory_id,
                 *tuple(item for item in callback_ids if item != statement_watch_result.memory_id),
@@ -484,7 +490,7 @@ class GroupBehaviorEngine:
         return GroupBehaviorPlan(
             scene=effective_scene,
             state=state,
-            memory_usage="callback" if allow_callbacks else "assist",
+            memory_usage=generation_memory_usage,
             callback_fatigue_minutes=fatigue,
             callback_memory_ids=callback_ids if not policy_degraded else (),
             context_profile=profile,
