@@ -77,6 +77,7 @@ class GroupBehaviorPlan:
     scene: SceneAnalysis
     state: DispatcherPolicyState
     memory_usage: str
+    memory_require_proactive: bool
     callback_fatigue_minutes: int
     callback_memory_ids: tuple[str, ...]
     context_profile: dict[str, Any]
@@ -193,18 +194,41 @@ class GroupBehaviorEngine:
             and effective_scene.sensitivity_score < 0.75
         )
         subject_keys = [f"user:{event.actor_user_id}"] if event.actor_user_id else []
+        explicit_group_turn = (
+            event.event_type
+            in {
+                EventType.DIRECT_MENTION,
+                EventType.REPLY_TO_BOT,
+                EventType.REPLY_TO_BOT_MESSAGE,
+            }
+            or effective_scene.direct_mention
+            or effective_scene.reply_to_bot
+            or effective_scene.question_to_bot
+        )
+        unsolicited_memory_only = (
+            event.event_type is EventType.GROUP_SILENCE_WAKEUP
+            or (
+                event.event_type is EventType.GROUP_MESSAGE
+                and not explicit_group_turn
+            )
+        )
 
         probe = []
         memory_unavailable = False
         if not silence_requested and callback_level > 0 and roast_tolerance >= 3:
             try:
+                retrieval_kwargs = {
+                    "usage": "callback",
+                    "subject_keys": subject_keys,
+                    "callback_fatigue_minutes": fatigue,
+                    "limit": 6,
+                }
+                if unsolicited_memory_only:
+                    retrieval_kwargs["require_proactive"] = True
                 probe = self.retrieval_engine.retrieve(
                     ScopeType.GROUP,
                     event.scope_id,
-                    usage="callback",
-                    subject_keys=subject_keys,
-                    callback_fatigue_minutes=fatigue,
-                    limit=6,
+                    **retrieval_kwargs,
                 )
             except Exception:
                 probe = []
@@ -212,10 +236,6 @@ class GroupBehaviorEngine:
                 policy_degraded = True
 
         callback_cards = [item for item in probe if _is_grounded_callback_card(item)]
-        unsolicited_memory_only = event.event_type in {
-            EventType.GROUP_MESSAGE,
-            EventType.GROUP_SILENCE_WAKEUP,
-        }
         behavior_callback_cards = (
             [
                 item
@@ -432,12 +452,9 @@ class GroupBehaviorEngine:
             policy_degraded=policy_degraded,
         )
 
-        generation_memory_usage = (
-            "proactive"
-            if unsolicited_memory_only and opportunity.eligible
-            else "callback"
-            if allow_callbacks
-            else "assist"
+        generation_memory_usage = "callback" if allow_callbacks else "assist"
+        memory_require_proactive = (
+            unsolicited_memory_only and opportunity.eligible
         )
 
         callback_ids = tuple(item.card.id for item in behavior_callback_cards)
@@ -491,6 +508,7 @@ class GroupBehaviorEngine:
             scene=effective_scene,
             state=state,
             memory_usage=generation_memory_usage,
+            memory_require_proactive=memory_require_proactive,
             callback_fatigue_minutes=fatigue,
             callback_memory_ids=callback_ids if not policy_degraded else (),
             context_profile=profile,
