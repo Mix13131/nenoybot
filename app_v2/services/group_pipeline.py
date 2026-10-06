@@ -34,6 +34,11 @@ class GroupPipelineResult:
     reaction_emoji: str | None = None
 
 
+def _group_output_dedupe_key(event_id: str) -> str:
+    """One durable output identity per Group event, regardless of text vs reaction."""
+    return f"reply:{event_id}"
+
+
 def _should_map_group_memory(event: EventEnvelope, scene: SceneAnalysis) -> bool:
     text = (event.text or "").strip()
     if not text:
@@ -467,6 +472,35 @@ class GroupPipeline:
                 )
             ),
         )
+
+        if (
+            reaction is not None
+            and event.event_type in {EventType.REPLY_TO_BOT, EventType.REPLY_TO_BOT_MESSAGE}
+        ):
+            reply_context = str(event.metadata.get("reply_to_text") or "").strip()
+            if not reply_context:
+                # A reply to media/unknown content has insufficient safety
+                # context for a playful acknowledgement.
+                reaction = None
+            else:
+                contextual_scene = self.scene_analyzer.analyze(
+                    event,
+                    recent_context=reply_context,
+                )
+                reaction = choose_reaction(
+                    event,
+                    contextual_scene,
+                    proposed_action=decision.primary_action,
+                    social_repair=humanity.social_repair,
+                    has_operational_action=any(
+                        (
+                            reminder_action_state is not None,
+                            scheduled_action_interpretation is not None,
+                            birthday_action_state is not None,
+                        )
+                    ),
+                )
+
         if reaction is not None:
             capability_ok = False
             if self.reaction_capability_client is not None:
@@ -509,7 +543,7 @@ class GroupPipeline:
                 scope_id=event.scope_id,
                 target_message_id=event.message_id,
                 emoji=reaction.emoji,
-                dedupe_key=f"reaction:{event.event_id}",
+                dedupe_key=_group_output_dedupe_key(event.event_id),
                 metadata={
                     "event_id": event.event_id,
                     "intervention_id": str(intervention.id),
@@ -701,7 +735,7 @@ class GroupPipeline:
             scope_id=event.scope_id,
             text=generated.text,
             reply_to_message_id=event.message_id,
-            dedupe_key=f"reply:{event.event_id}",
+            dedupe_key=_group_output_dedupe_key(event.event_id),
             metadata={
                 "event_id": event.event_id,
                 "intervention_id": str(intervention.id),
