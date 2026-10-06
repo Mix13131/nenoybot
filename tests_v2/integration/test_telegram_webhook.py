@@ -222,3 +222,42 @@ def test_ingestor_duplicate_is_idempotent(monkeypatch) -> None:
     assert first.status == "accepted"
     assert second.status == "duplicate"
     assert first.event_id == second.event_id == "tg:400"
+
+
+def test_direct_mention_preserves_conversational_body_without_username_address() -> None:
+    update = {
+        "update_id": 108,
+        "message": {
+            "message_id": 11,
+            "date": 1720000004,
+            "from": {"id": 22, "first_name": "Серёга", "is_bot": False},
+            "chat": {"id": -10055, "type": "supergroup", "title": "Друзья"},
+            "text": "@NeNoiBro_bot спасибо!",
+            "entities": [{"type": "mention", "offset": 0, "length": 13}],
+        },
+    }
+
+    normalized = normalize_update(update, bot_username="NeNoiBro_bot")
+
+    assert normalized is not None
+    assert normalized.envelope.event_type is EventType.DIRECT_MENTION
+    assert normalized.envelope.metadata["address_body"] == "спасибо!"
+
+
+def test_name_address_preserves_conversational_body_without_product_name() -> None:
+    update = {
+        "update_id": 109,
+        "message": {
+            "message_id": 12,
+            "date": 1720000005,
+            "from": {"id": 22, "first_name": "Серёга", "is_bot": False},
+            "chat": {"id": -10055, "type": "supergroup", "title": "Друзья"},
+            "text": "НеНой, спасибо!",
+        },
+    }
+
+    normalized = normalize_update(update)
+
+    assert normalized is not None
+    assert normalized.envelope.event_type is EventType.DIRECT_MENTION
+    assert normalized.envelope.metadata["address_body"] == "спасибо!"
