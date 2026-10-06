@@ -4,7 +4,13 @@ from app_v2.domain.enums import EventType, PrimaryAction
 from app_v2.domain.events import SceneAnalysis
 from app_v2.domain.outbound import OutboundReaction
 from app_v2.services.reaction_policy import choose_reaction
-from tests_v2.scenarios.test_group_pipeline import FakeGenerator, FakeOutbox, event, pipeline
+from tests_v2.scenarios.test_group_pipeline import (
+    FakeGenerator,
+    FakeOutbox,
+    FakeReactionCapabilityClient,
+    event,
+    pipeline,
+)
 
 
 def test_safe_short_acknowledgement_reacts_without_generator_call() -> None:
@@ -104,3 +110,41 @@ def test_all_synthetic_scheduled_group_events_are_reaction_ineligible() -> None:
             has_operational_action=False,
         )
         assert choice is None
+
+
+def test_unsupported_chat_reaction_preserves_normal_text_reply() -> None:
+    generator = FakeGenerator()
+    capabilities = FakeReactionCapabilityClient(supported=False)
+    subject = pipeline(generator=generator, reaction_capabilities=capabilities)
+
+    result = subject.process(event(EventType.DIRECT_MENTION, text="спасибо!"))
+
+    assert capabilities.calls == ["-100777"]
+    assert result.primary_action is PrimaryAction.REPLY
+    assert result.reaction_emoji is None
+    assert len(generator.calls) == 1
+
+
+def test_reaction_capability_lookup_error_preserves_normal_text_reply() -> None:
+    generator = FakeGenerator()
+    capabilities = FakeReactionCapabilityClient(error=RuntimeError("telegram unavailable"))
+    subject = pipeline(generator=generator, reaction_capabilities=capabilities)
+
+    result = subject.process(event(EventType.DIRECT_MENTION, text="огонь"))
+
+    assert result.primary_action is PrimaryAction.REPLY
+    assert result.reaction_emoji is None
+    assert len(generator.calls) == 1
+
+
+def test_stripped_direct_address_body_can_select_reaction() -> None:
+    generator = FakeGenerator()
+    addressed = event(EventType.DIRECT_MENTION, text="@NeNoiBro_bot спасибо!").model_copy(
+        update={"metadata": {"address_body": "спасибо!", "direct_mention": True}}
+    )
+
+    result = pipeline(generator=generator).process(addressed)
+
+    assert result.primary_action is PrimaryAction.REACTION_ONLY
+    assert result.reaction_emoji == "👍"
+    assert generator.calls == []
