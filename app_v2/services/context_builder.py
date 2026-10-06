@@ -146,6 +146,7 @@ class ContextBuilder:
         subject_keys: Iterable[str] = (),
         memory_usage: str = "assist",
         callback_fatigue_minutes: int = 60,
+        memory_require_proactive: bool = False,
         action_state: dict[str, Any] | None = None,
         external_context: Iterable[dict[str, Any]] = (),
     ) -> GenerationContext:
@@ -167,13 +168,18 @@ class ContextBuilder:
             degraded["hot_messages_unavailable"] = True
 
         try:
+            retrieval_kwargs = {
+                "usage": memory_usage,
+                "subject_keys": subject_keys,
+                "callback_fatigue_minutes": callback_fatigue_minutes,
+                "limit": self.memory_max_cards,
+            }
+            if memory_require_proactive:
+                retrieval_kwargs["require_proactive"] = True
             ranked = self.retrieval_engine.retrieve(
                 event.scope_type,
                 event.scope_id,
-                usage=memory_usage,
-                subject_keys=subject_keys,
-                callback_fatigue_minutes=callback_fatigue_minutes,
-                limit=self.memory_max_cards,
+                **retrieval_kwargs,
             )
             memories, memory_tokens = self._fit_memories(ranked)
         except Exception:
