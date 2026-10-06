@@ -226,3 +226,20 @@ def test_sparse_legacy_profile_adapts_implicit_group_defaults() -> None:
     assert state.effective_profile["humor"] == 8
     assert state.effective_profile["playfulness"] == 8
     assert state.as_metadata(sparse)["base"]["roast"] == 9
+
+
+def test_positive_learning_cannot_enable_explicitly_disabled_style_dimension() -> None:
+    base = dict(BASE)
+    base["roast"] = 0
+    rows = [
+        ev("banter_roast", "positive", "user:1"),
+        ev("banter_roast", "positive", "user:2"),
+        ev("banter_roast", "positive", "user:3"),
+        ev("banter_roast", "positive", "user:4"),
+    ]
+    state = GroupStyleService(FakeRepo({"g": rows})).evaluate(
+        "g", base_profile=base, now=NOW
+    )
+
+    assert state.deltas["roast"] == 2
+    assert state.effective_profile["roast"] == 0

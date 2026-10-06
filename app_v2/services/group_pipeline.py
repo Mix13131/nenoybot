@@ -527,6 +527,7 @@ class GroupPipeline:
                     ),
                 )
 
+        reaction_fallback_family: str | None = None
         if reaction is not None:
             capability_ok = False
             if self.reaction_capability_client is not None:
@@ -541,6 +542,9 @@ class GroupPipeline:
                     # user-addressed message into a terminal failed reaction.
                     capability_ok = False
             if not capability_ok:
+                # Unlike setMessageReaction, the fallback is a bot-authored
+                # message and can receive attributable reaction/reply feedback.
+                reaction_fallback_family = "social_ack"
                 reaction = None
 
         if reaction is not None:
@@ -728,6 +732,7 @@ class GroupPipeline:
                     "birthday_profile": birthday_action_state,
                     "url_read": url_read_telemetry,
                     "social_style": social_style_metadata,
+                    "feedback_family": reaction_fallback_family,
                 },
             )
             return GroupPipelineResult(
@@ -758,6 +763,7 @@ class GroupPipeline:
                 "birthday_profile": birthday_action_state,
                 "url_read": url_read_telemetry,
                 "social_style": social_style_metadata,
+                "feedback_family": reaction_fallback_family,
             },
         )
         outbound = OutboundMessage(

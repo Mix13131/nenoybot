@@ -95,10 +95,17 @@ def apply_style_deltas(
     for dimension, delta in deltas.items():
         if dimension not in _STYLE_DIMENSIONS:
             continue
+        rounded_delta = int(round(delta))
+        explicit = _level(base_profile.get(dimension))
+        # An explicit zero is a configured hard-off. Group learning may cool
+        # enabled traits, but it must never grant permission to a disabled one.
+        if rounded_delta > 0 and explicit == 0:
+            result[dimension] = 0
+            continue
         current = _profile_level(result, dimension)
         if current is None:
             continue
-        result[dimension] = max(0, min(10, current + int(round(delta))))
+        result[dimension] = max(0, min(10, current + rounded_delta))
     return result
 
 

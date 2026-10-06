@@ -288,3 +288,78 @@ def test_style_initiative_delta_uses_existing_policy_without_new_opportunity_log
 
     assert plan.context_profile["initiative"] == 3
     assert plan.state.initiative_level == 3
+
+
+def test_negative_roast_style_reduces_high_default_intervention_appetite() -> None:
+    scene = SceneAnalysis(
+        roast_opportunity=0.82,
+        contradiction_score=0.80,
+        help_opportunity=0.80,
+    )
+    baseline = GroupBehaviorEngine(FakeRetrieval([])).plan(
+        event=event("подкол"),
+        group_context=context(),
+        scene=scene,
+        now=datetime.now(timezone.utc),
+    )
+    cooled = GroupBehaviorEngine(FakeRetrieval([])).plan(
+        event=event("подкол"),
+        group_context=context(),
+        scene=scene,
+        now=datetime.now(timezone.utc),
+        style_deltas={"roast": -2},
+    )
+
+    assert baseline.scene.roast_opportunity == 0.82
+    assert cooled.scene.roast_opportunity < 0.80
+    assert decide(event("подкол"), baseline.scene, baseline.state).primary_action is PrimaryAction.REPLY
+    assert decide(event("подкол"), cooled.scene, cooled.state).primary_action is PrimaryAction.IGNORE
+
+
+def test_negative_callback_style_reduces_grounded_callback_appetite() -> None:
+    retrieval = FakeRetrieval([memory("j1", "running_joke")])
+    scene = SceneAnalysis(contradiction_score=0.80)
+    baseline = GroupBehaviorEngine(retrieval).plan(
+        event=event("ну да"),
+        group_context=context(),
+        scene=scene,
+        now=datetime.now(timezone.utc),
+    )
+    cooled = GroupBehaviorEngine(retrieval).plan(
+        event=event("ну да"),
+        group_context=context(),
+        scene=scene,
+        now=datetime.now(timezone.utc),
+        style_deltas={"callback": -2},
+    )
+
+    baseline_decision = decide(event("ну да"), baseline.scene, baseline.state)
+    cooled_decision = decide(event("ну да"), cooled.scene, cooled.state)
+    assert baseline.scene.callback_opportunity >= 0.82
+    assert baseline_decision.mode is ResponseMode.GROUP_CALLBACK
+    assert cooled.scene.callback_opportunity < 0.75
+    assert cooled_decision.mode is not ResponseMode.GROUP_CALLBACK
+
+    hard_cooled = GroupBehaviorEngine(retrieval).plan(
+        event=event("ну да"),
+        group_context=context(),
+        scene=scene,
+        now=datetime.now(timezone.utc),
+        style_deltas={"callback": -3},
+    )
+    assert hard_cooled.state.allow_callbacks is False
+
+
+def test_positive_learning_cannot_enable_explicit_initiative_zero() -> None:
+    profile = dict(context().profile)
+    profile["initiative"] = 0
+    plan = GroupBehaviorEngine(FakeRetrieval([])).plan(
+        event=event(),
+        group_context=context(profile=profile),
+        scene=SceneAnalysis(),
+        now=datetime.now(timezone.utc),
+        style_deltas={"initiative": 2},
+    )
+
+    assert plan.context_profile["initiative"] == 0
+    assert plan.state.initiative_level == 0

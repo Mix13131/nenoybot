@@ -54,6 +54,7 @@ def test_intervention_persists_only_sanitized_capability_telemetry() -> None:
                 "cache_hit": False,
                 "content_chars": 1234,
             },
+            "feedback_family": "social_ack",
         },
     )
 
@@ -69,7 +70,8 @@ def test_intervention_persists_only_sanitized_capability_telemetry() -> None:
             "source": "direct",
             "cache_hit": False,
             "content_chars": 1234,
-        }
+        },
+        "feedback_family": "social_ack",
     }
     serialized = json.dumps(persisted, ensure_ascii=False)
     assert "must-not-persist" not in serialized

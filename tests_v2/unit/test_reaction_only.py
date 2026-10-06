@@ -123,6 +123,10 @@ def test_unsupported_chat_reaction_preserves_normal_text_reply() -> None:
     assert result.primary_action is PrimaryAction.REPLY
     assert result.reaction_emoji is None
     assert len(generator.calls) == 1
+    assert (
+        subject.intervention_repo.rows[0]["extra_metadata"]["feedback_family"]
+        == "social_ack"
+    )
 
 
 def test_reaction_capability_lookup_error_preserves_normal_text_reply() -> None:

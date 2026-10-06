@@ -50,6 +50,9 @@ class InterventionRepository:
         social_style = metadata.get("social_style")
         if isinstance(social_style, dict):
             persisted_metadata["social_style"] = dict(social_style)
+        feedback_family = metadata.get("feedback_family")
+        if feedback_family == "social_ack":
+            persisted_metadata["feedback_family"] = feedback_family
         row = self.conn.execute(
             """
             INSERT INTO interventions(

@@ -177,3 +177,119 @@ def test_group_style_latest_reaction_delivery_isolation_and_decay_postgres() -> 
             (scope_a, scope_b),
         )
         conn.commit()
+
+
+def test_group_style_delivered_mode_and_attributable_social_ack_postgres() -> None:
+    url = _database_url()
+    import psycopg
+
+    run_migrations(url)
+    suffix = uuid.uuid4().hex[:10]
+    scope_id = f"-9100465{suffix[:5]}"
+
+    with psycopg.connect(url) as conn:
+        def add_intervention(
+            *,
+            mode: str,
+            reasons: list[str],
+            metadata: dict,
+            label: str,
+        ) -> int:
+            row = conn.execute(
+                """
+                INSERT INTO interventions(
+                    event_id, scope_type, scope_id, primary_action, mode,
+                    intervention_score, reason_codes, policy_version,
+                    selected_memory_ids, generated_text, metadata, created_at
+                )
+                VALUES (NULL, 'group', %s, 'reply', %s, 85,
+                        %s::jsonb, 'test', '[]'::jsonb, %s, %s::jsonb, %s)
+                RETURNING id
+                """,
+                (
+                    scope_id,
+                    mode,
+                    json.dumps(reasons),
+                    label,
+                    json.dumps(metadata),
+                    NOW - timedelta(hours=2),
+                ),
+            ).fetchone()
+            intervention_id = int(row[0])
+            conn.execute(
+                """
+                INSERT INTO outbox(
+                    dedupe_key, channel, destination_id, payload,
+                    status, created_at, sent_at
+                )
+                VALUES (%s, 'telegram', %s, %s::jsonb, 'sent', %s, %s)
+                """,
+                (
+                    f"it:46c:family:{suffix}:{intervention_id}",
+                    scope_id,
+                    json.dumps({"metadata": {"intervention_id": str(intervention_id)}}),
+                    NOW - timedelta(hours=2),
+                    NOW - timedelta(hours=2),
+                ),
+            )
+            return intervention_id
+
+        def positive(intervention_id: int, actor: str, update_id: int) -> None:
+            conn.execute(
+                """
+                INSERT INTO feedback_events(
+                    feedback_id, intervention_id, scope_id, user_id,
+                    feedback_type, value, payload, created_at
+                )
+                VALUES (%s, %s, %s, NULL, 'reaction_positive', 1.0, %s::jsonb, %s)
+                """,
+                (
+                    f"it:46c:family:{suffix}:{intervention_id}:{actor}",
+                    intervention_id,
+                    scope_id,
+                    json.dumps(
+                        {
+                            "source_event_id": f"tg:{update_id}",
+                            "reactor_key": f"actor_chat:{actor}",
+                            "reaction_families": ["approval_support"],
+                        }
+                    ),
+                    NOW - timedelta(minutes=20),
+                ),
+            )
+
+        callback = add_intervention(
+            mode="group_callback",
+            reasons=["callback_opportunity", "roast_opportunity"],
+            metadata={},
+            label="callback",
+        )
+        social_ack = add_intervention(
+            mode="group_direct_reply",
+            reasons=["direct_mention"],
+            metadata={"feedback_family": "social_ack"},
+            label="ack fallback",
+        )
+        positive(callback, "callback-a", 210)
+        positive(callback, "callback-b", 211)
+        positive(social_ack, "ack-a", 220)
+        positive(social_ack, "ack-b", 221)
+        conn.commit()
+
+        state = GroupStyleService(GroupStyleRepository(conn)).evaluate(
+            scope_id,
+            base_profile=BASE,
+            now=NOW,
+        )
+
+        assert state.deltas["callback"] == 1
+        assert "roast" not in state.deltas
+        assert state.deltas["brevity"] == 1
+        assert state.deltas["warmth"] == 1
+        assert state.evidence["callback"]["positive_actors"] == 2
+        assert state.evidence["social_ack"]["positive_actors"] == 2
+
+        conn.execute("DELETE FROM feedback_events WHERE scope_id=%s", (scope_id,))
+        conn.execute("DELETE FROM outbox WHERE destination_id=%s", (scope_id,))
+        conn.execute("DELETE FROM interventions WHERE scope_id=%s", (scope_id,))
+        conn.commit()

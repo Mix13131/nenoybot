@@ -45,15 +45,28 @@ def classify_intervention_family(
     reasons = _reason_set(reason_codes)
     normalized_mode = str(mode or "").strip().lower()
     action = str(primary_action or "").strip().lower()
+    safe_metadata = metadata if isinstance(metadata, dict) else {}
 
-    if action == "reaction_only":
+    # setMessageReaction has no bot-authored message to receive attributable
+    # feedback. Learn social acknowledgements only from the text fallback that
+    # explicitly records this sanitized family on a normal sent bot message.
+    if action == "reply" and safe_metadata.get("feedback_family") == "social_ack":
         return "social_ack"
+    if action == "reaction_only":
+        return "direct"
     if reasons & _OPERATIONAL_REASONS:
         return "direct"
-    if normalized_mode in {"group_roast", "group_banter"} or "roast_opportunity" in reasons:
-        return "banter_roast"
-    if normalized_mode == "group_callback" or "callback_opportunity" in reasons:
+
+    # The delivered mode is stronger evidence than secondary opportunity
+    # reasons accumulated while scoring the same intervention.
+    if normalized_mode == "group_callback":
         return "callback"
+    if normalized_mode in {"group_roast", "group_banter"}:
+        return "banter_roast"
+    if "callback_opportunity" in reasons:
+        return "callback"
+    if "roast_opportunity" in reasons:
+        return "banter_roast"
     if action == "reply" and not (reasons & _DIRECT_REASONS):
         return "proactive"
     return "direct"

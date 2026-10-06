@@ -39,6 +39,29 @@ def _bool(value: Any, default: bool = False) -> bool:
     return bool(value)
 
 
+def _style_delta(values: Mapping[str, int | float], key: str) -> int:
+    try:
+        parsed = int(round(float(values.get(key, 0))))
+    except (TypeError, ValueError):
+        return 0
+    return max(-3, min(2, parsed))
+
+
+def _style_opportunity(value: float, delta: int) -> float:
+    """Modulate an existing opportunity without inventing a new one."""
+
+    if value <= 0 or delta == 0:
+        return value
+    factor = {
+        -3: 0.70,
+        -2: 0.85,
+        -1: 0.93,
+        1: 1.05,
+        2: 1.10,
+    }.get(delta, 1.0)
+    return max(0.0, min(1.0, value * factor))
+
+
 def _is_grounded_callback_card(item: Any) -> bool:
     card = item.card
     if card.memory_type not in _CALLBACK_TYPES:
@@ -112,14 +135,19 @@ class GroupBehaviorEngine:
             connector_state = None
 
         bounded_style_deltas = dict(style_deltas or {})
+        if "initiative" in bounded_style_deltas and "initiative" not in profile:
+            profile = dict(profile)
+            profile["initiative"] = initiative
         profile = apply_style_deltas(profile, bounded_style_deltas)
-        try:
-            initiative_delta = int(round(float(bounded_style_deltas.get("initiative", 0))))
-        except (TypeError, ValueError):
+        initiative_delta = _style_delta(bounded_style_deltas, "initiative")
+        # Explicit initiative=0 is a policy hard-off and cannot be granted by
+        # learned positive feedback.
+        if initiative == 0 and initiative_delta > 0:
             initiative_delta = 0
-        initiative_delta = max(-3, min(2, initiative_delta))
         initiative = _int(initiative + initiative_delta, initiative)
 
+        roast_delta = _style_delta(bounded_style_deltas, "roast")
+        callback_delta = _style_delta(bounded_style_deltas, "callback")
         roast_level = _int(profile.get("roast"), 9)
         callback_level = _int(profile.get("callback"), 10)
         roast_tolerance = _int(participant.get("roast_tolerance"), 7)
@@ -216,6 +244,7 @@ class GroupBehaviorEngine:
             not policy_degraded
             and not silence_requested
             and callback_level > 0
+            and callback_delta > -3
             and roast_tolerance >= 3
             and bool(callback_cards)
         )
@@ -223,6 +252,7 @@ class GroupBehaviorEngine:
             not policy_degraded
             and not silence_requested
             and roast_level > 0
+            and roast_delta > -3
             and roast_tolerance >= 5
             and safe_scene
         )
@@ -259,6 +289,20 @@ class GroupBehaviorEngine:
 
             if changes:
                 effective_scene = effective_scene.model_copy(update=changes)
+
+        appetite_changes: dict[str, float] = {}
+        if callback_delta:
+            appetite_changes["callback_opportunity"] = _style_opportunity(
+                effective_scene.callback_opportunity,
+                callback_delta,
+            )
+        if roast_delta:
+            appetite_changes["roast_opportunity"] = _style_opportunity(
+                effective_scene.roast_opportunity,
+                roast_delta,
+            )
+        if appetite_changes:
+            effective_scene = effective_scene.model_copy(update=appetite_changes)
 
         if dynamic is not None:
             muted = dynamic.group_muted
