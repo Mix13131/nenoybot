@@ -6,11 +6,12 @@ from typing import Any
 
 from app_v2.domain.enums import EventType, PrimaryAction, ResponseMode, ScopeType
 from app_v2.domain.events import EventEnvelope, SceneAnalysis
-from app_v2.domain.outbound import OutboundMessage
+from app_v2.domain.outbound import OutboundMessage, OutboundReaction
 from app_v2.services.dispatcher import DispatcherPolicyState, decide
 from app_v2.services.group_silence_wakeup import silence_wakeup_window_open
 from app_v2.services.group_humanity import classify_group_humanity
 from app_v2.services.operation_receipts import group_operation_receipts
+from app_v2.services.reaction_policy import choose_reaction
 
 
 class GroupPipelineError(RuntimeError):
@@ -30,6 +31,7 @@ class GroupPipelineResult:
     selected_memory_ids: tuple[str, ...] = ()
     mapped_memory_ids: tuple[str, ...] = ()
     generation_failed: bool = False
+    reaction_emoji: str | None = None
 
 
 def _should_map_group_memory(event: EventEnvelope, scene: SceneAnalysis) -> bool:
@@ -448,6 +450,67 @@ class GroupPipeline:
                     "mode": None,
                     "intervention_score": 0,
                 }
+            )
+
+        reaction = choose_reaction(
+            event,
+            scene,
+            proposed_action=decision.primary_action,
+            social_repair=humanity.social_repair,
+            has_operational_action=any(
+                (
+                    reminder_action_state is not None,
+                    scheduled_action_interpretation is not None,
+                    birthday_action_state is not None,
+                )
+            ),
+        )
+        if reaction is not None:
+            decision = decision.model_copy(
+                update={"primary_action": PrimaryAction.REACTION_ONLY}
+            )
+            intervention = self.intervention_repo.record(
+                event_id=event.event_id,
+                scope_type=event.scope_type,
+                scope_id=event.scope_id,
+                decision=decision,
+                selected_memory_ids=list(behavior_memory_ids),
+                generated_text=None,
+                extra_metadata={
+                    "outbound_action": {
+                        "kind": "reaction",
+                        "emoji": reaction.emoji,
+                        "target_message_id": event.message_id,
+                        "reason": reaction.reason,
+                    }
+                },
+            )
+            outbound = OutboundReaction(
+                action_id=f"reaction:{event.event_id}",
+                scope_type=ScopeType.GROUP,
+                scope_id=event.scope_id,
+                target_message_id=event.message_id,
+                emoji=reaction.emoji,
+                dedupe_key=f"reaction:{event.event_id}",
+                metadata={
+                    "event_id": event.event_id,
+                    "intervention_id": str(intervention.id),
+                    "action_kind": "reaction",
+                    "reaction_reason": reaction.reason,
+                },
+            )
+            outbox_id, created = self.outbox_repo.enqueue(outbound)
+            return GroupPipelineResult(
+                event_id=event.event_id,
+                allowed=True,
+                access_reason=access.reason,
+                primary_action=PrimaryAction.REACTION_ONLY,
+                mode=decision.mode,
+                outbox_id=outbox_id,
+                outbox_created=created,
+                selected_memory_ids=behavior_memory_ids,
+                mapped_memory_ids=mapped_memory_ids,
+                reaction_emoji=reaction.emoji,
             )
 
         if decision.primary_action is not PrimaryAction.REPLY:
