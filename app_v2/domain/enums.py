@@ -101,6 +101,7 @@ class ReasonCode(str, Enum):
     SOFT_DAILY_LIMIT = "soft_daily_limit"
     BOT_SPOKE_RECENTLY = "bot_spoke_recently"
     PREVIOUS_UNSOLICITED_IGNORED = "previous_unsolicited_ignored"
+    INITIATIVE_NO_ACTION = "initiative_no_action"
     PERSONAL_DEFAULT_REPLY = "personal_default_reply"
     GROUP_DEFAULT_SILENCE = "group_default_silence"
     HIGH_INITIATIVE = "high_initiative"

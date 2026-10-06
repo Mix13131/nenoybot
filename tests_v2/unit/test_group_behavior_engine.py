@@ -4,7 +4,7 @@ from datetime import datetime, timezone
 
 from app_v2.domain.enums import EventType, MemoryOrigin, MemoryStatus, PrimaryAction, ResponseMode, ScopeType
 from app_v2.domain.events import EventEnvelope, SceneAnalysis
-from app_v2.domain.memory import MemoryCard, UsagePolicy
+from app_v2.domain.memory import MemoryCard, MemoryEvidence, UsagePolicy
 from app_v2.repositories.group_context_repo import GroupContext, ParticipantContext
 from app_v2.repositories.memory_repo import RankedMemory
 from app_v2.services.dispatcher import decide
@@ -51,7 +51,15 @@ def context(*, profile=None, participant=None) -> GroupContext:
     )
 
 
-def memory(memory_id: str, memory_type: str, *, payload=None, confidence=.95) -> RankedMemory:
+def memory(
+    memory_id: str,
+    memory_type: str,
+    *,
+    payload=None,
+    confidence=.95,
+    evidence_message_id: str | None = None,
+    proactive: bool = True,
+) -> RankedMemory:
     now=datetime.now(timezone.utc)
     card=MemoryCard(
         id=memory_id,
@@ -66,7 +74,19 @@ def memory(memory_id: str, memory_type: str, *, payload=None, confidence=.95) ->
         freshness=.95,
         status=MemoryStatus.ACTIVE,
         origin=MemoryOrigin.INFERRED,
-        usage_policy=UsagePolicy(assist=True, callback=True, roast=True, proactive=True),
+        usage_policy=UsagePolicy(assist=True, callback=True, roast=True, proactive=proactive),
+        evidence=(
+            [
+                MemoryEvidence(
+                    message_id=evidence_message_id,
+                    author_id="123",
+                    timestamp=now,
+                    excerpt="synthetic evidence",
+                )
+            ]
+            if evidence_message_id is not None
+            else []
+        ),
         created_at=now,
         updated_at=now,
     )
@@ -292,7 +312,8 @@ def test_style_initiative_delta_uses_existing_policy_without_new_opportunity_log
 
 def test_negative_roast_style_reduces_high_default_intervention_appetite() -> None:
     scene = SceneAnalysis(
-        roast_opportunity=0.82,
+        banter_score=0.95,
+        roast_opportunity=0.92,
         contradiction_score=0.80,
         help_opportunity=0.80,
     )
@@ -310,7 +331,7 @@ def test_negative_roast_style_reduces_high_default_intervention_appetite() -> No
         style_deltas={"roast": -2},
     )
 
-    assert baseline.scene.roast_opportunity == 0.82
+    assert baseline.scene.roast_opportunity == 0.92
     assert cooled.scene.roast_opportunity < 0.80
     assert decide(event("подкол"), baseline.scene, baseline.state).primary_action is PrimaryAction.REPLY
     assert decide(event("подкол"), cooled.scene, cooled.state).primary_action is PrimaryAction.IGNORE
@@ -401,3 +422,119 @@ def test_dynamic_initiative_cannot_revive_explicit_zero() -> None:
 
     assert plan.context_profile["initiative"] == 0
     assert plan.state.initiative_level == 0
+
+
+def test_weak_live_chatter_sets_no_action_opportunity() -> None:
+    plan = GroupBehaviorEngine(FakeRetrieval([])).plan(
+        event=event("обычная болтовня"),
+        group_context=context(),
+        scene=SceneAnalysis(banter_score=0.4),
+        now=datetime.now(timezone.utc),
+    )
+
+    opportunity = plan.state.metadata["initiative_opportunity"]
+    assert plan.state.initiative_opportunity_eligible is False
+    assert opportunity["suppressors"] == ["no_grounded_hook"]
+
+
+def test_high_initiative_does_not_create_opportunity_from_weak_material() -> None:
+    profile = dict(context().profile)
+    profile["initiative"] = 10
+    plan = GroupBehaviorEngine(FakeRetrieval([])).plan(
+        event=event("обычная болтовня"),
+        group_context=context(profile=profile),
+        scene=SceneAnalysis(),
+        now=datetime.now(timezone.utc),
+    )
+
+    assert plan.state.initiative_level == 10
+    assert plan.state.initiative_opportunity_eligible is False
+
+
+def test_live_proactive_safe_grounded_callback_can_be_eligible() -> None:
+    retrieval = FakeRetrieval([memory("j1", "running_joke", proactive=True)])
+    plan = GroupBehaviorEngine(retrieval).plan(
+        event=event("опять то же самое"),
+        group_context=context(),
+        scene=SceneAnalysis(),
+        now=datetime.now(timezone.utc),
+    )
+
+    opportunity = plan.state.metadata["initiative_opportunity"]
+    decision = decide(event("опять то же самое"), plan.scene, plan.state)
+    assert plan.scene.callback_opportunity >= 0.82
+    assert plan.state.initiative_opportunity_eligible is True
+    assert opportunity["hook_family"] == "callback"
+    assert decision.primary_action is PrimaryAction.REPLY
+    assert decision.mode is ResponseMode.GROUP_CALLBACK
+
+
+def test_non_proactive_memory_cannot_open_unsolicited_opportunity() -> None:
+    retrieval = FakeRetrieval(
+        [memory("j1", "running_joke", proactive=False)]
+    )
+    plan = GroupBehaviorEngine(retrieval).plan(
+        event=event("опять то же самое"),
+        group_context=context(),
+        scene=SceneAnalysis(),
+        now=datetime.now(timezone.utc),
+    )
+
+    assert plan.scene.callback_opportunity >= 0.82
+    assert plan.state.initiative_opportunity_eligible is False
+
+
+def test_silence_wakeup_rejects_unrelated_old_group_callback() -> None:
+    wakeup = event("", event_type=EventType.GROUP_SILENCE_WAKEUP).model_copy(
+        update={
+            "actor_user_id": None,
+            "message_id": None,
+            "metadata": {
+                "last_human_message_id": 77,
+                "last_human_excerpt": "ну всё, разошлись",
+            },
+        }
+    )
+    retrieval = FakeRetrieval(
+        [memory("j1", "running_joke", evidence_message_id="12", proactive=True)]
+    )
+    plan = GroupBehaviorEngine(retrieval).plan(
+        event=wakeup,
+        group_context=context(),
+        scene=SceneAnalysis(),
+        now=datetime.now(timezone.utc),
+    )
+
+    assert plan.scene.callback_opportunity >= 0.82
+    assert plan.state.initiative_opportunity_eligible is False
+    assert plan.state.metadata["initiative_opportunity"]["stale_context"] is True
+
+
+def test_silence_wakeup_allows_callback_grounded_in_last_human_message() -> None:
+    wakeup = event("", event_type=EventType.GROUP_SILENCE_WAKEUP).model_copy(
+        update={
+            "actor_user_id": None,
+            "message_id": None,
+            "metadata": {
+                "last_human_message_id": 77,
+                "last_human_excerpt": "ну всё, опять эта история",
+            },
+        }
+    )
+    retrieval = FakeRetrieval(
+        [memory("j1", "running_joke", evidence_message_id="77", proactive=True)]
+    )
+    plan = GroupBehaviorEngine(retrieval).plan(
+        event=wakeup,
+        group_context=context(),
+        scene=SceneAnalysis(),
+        now=datetime.now(timezone.utc),
+    )
+
+    opportunity = plan.state.metadata["initiative_opportunity"]
+    decision = decide(wakeup, plan.scene, plan.state)
+    assert plan.state.initiative_opportunity_eligible is True
+    assert opportunity["hook_family"] == "callback"
+    assert opportunity["stale_context"] is True
+    assert decision.primary_action is PrimaryAction.REPLY
+    assert decision.mode is ResponseMode.GROUP_CALLBACK

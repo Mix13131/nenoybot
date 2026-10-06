@@ -139,17 +139,16 @@ def build(scene, *, guard=None):
     return pipeline, generator, interventions, outbox
 
 
-def test_silence_wakeup_passes_last_human_excerpt_to_scene_analyzer():
+def test_weak_silence_wakeup_passes_context_but_stays_silent():
     scene = Scene()
     pipeline, generator, _, outbox = build(scene)
 
     result = pipeline.process(event("последняя человеческая реплика"), now=NOW)
 
     assert scene.calls == [("silence:test:1", "последняя человеческая реплика")]
-    assert result.primary_action is PrimaryAction.REPLY
-    assert result.mode is ResponseMode.GROUP_BANTER
-    assert generator.calls == 1
-    assert len(outbox.items) == 1
+    assert result.primary_action is PrimaryAction.IGNORE
+    assert generator.calls == 0
+    assert outbox.items == []
 
 
 def test_serious_last_scene_suppresses_silence_wakeup_before_generation():
@@ -171,10 +170,9 @@ def test_historical_question_cannot_turn_silence_wakeup_into_explicit_bypass():
 
     result = pipeline.process(event("НеНой, ты тут?"), now=NOW)
 
-    assert result.primary_action is PrimaryAction.REPLY
-    assert result.mode is ResponseMode.GROUP_BANTER
-    assert generator.calls == 1
-    assert len(outbox.items) == 1
+    assert result.primary_action is PrimaryAction.IGNORE
+    assert generator.calls == 0
+    assert outbox.items == []
 
 
 

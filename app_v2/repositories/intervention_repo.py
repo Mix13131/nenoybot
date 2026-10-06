@@ -17,6 +17,60 @@ class InterventionRecord:
     generated_text: str | None
 
 
+
+
+_INITIATIVE_HOOKS = {"statement_watch", "callback", "help", "banter"}
+_INITIATIVE_REASONS = {
+    "priority_statement",
+    "grounded_callback",
+    "grounded_contradiction",
+    "broken_commitment",
+    "fresh_help_opportunity",
+    "fresh_banter_opportunity",
+    "one_recent_ignore",
+    "positive_feedback_support",
+}
+_INITIATIVE_SUPPRESSORS = {
+    "policy_degraded",
+    "unsafe_scene",
+    "negative_feedback_recent",
+    "repeated_ignored",
+    "recent_unsolicited_bot",
+    "no_grounded_hook",
+    "below_quality_threshold",
+}
+
+
+def _sanitize_initiative_opportunity(value: Any) -> dict[str, Any] | None:
+    if not isinstance(value, dict):
+        return None
+    try:
+        quality_score = max(0, min(100, int(value.get("quality_score", 0))))
+    except (TypeError, ValueError):
+        quality_score = 0
+    hook = value.get("hook_family")
+    if hook not in _INITIATIVE_HOOKS:
+        hook = None
+    reasons = value.get("reasons")
+    suppressors = value.get("suppressors")
+    return {
+        "eligible": bool(value.get("eligible", False)),
+        "quality_score": quality_score,
+        "hook_family": hook,
+        "reasons": [
+            str(item)
+            for item in (reasons if isinstance(reasons, list) else [])
+            if str(item) in _INITIATIVE_REASONS
+        ],
+        "suppressors": [
+            str(item)
+            for item in (suppressors if isinstance(suppressors, list) else [])
+            if str(item) in _INITIATIVE_SUPPRESSORS
+        ],
+        "stale_context": bool(value.get("stale_context", False)),
+        "version": "initiative-opportunity-v1",
+    }
+
 class InterventionRepository:
     def __init__(self, conn) -> None:
         self.conn = conn
@@ -53,6 +107,11 @@ class InterventionRepository:
         feedback_family = metadata.get("feedback_family")
         if feedback_family == "social_ack":
             persisted_metadata["feedback_family"] = feedback_family
+        initiative_opportunity = _sanitize_initiative_opportunity(
+            metadata.get("initiative_opportunity")
+        )
+        if initiative_opportunity is not None:
+            persisted_metadata["initiative_opportunity"] = initiative_opportunity
         row = self.conn.execute(
             """
             INSERT INTO interventions(

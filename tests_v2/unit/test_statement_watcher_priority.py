@@ -3,7 +3,7 @@ from __future__ import annotations
 from datetime import datetime, timezone
 from types import SimpleNamespace
 
-from app_v2.domain.enums import EventType, MemoryOrigin, MemoryStatus, PrimaryAction, ResponseMode, ScopeType
+from app_v2.domain.enums import EventType, MemoryOrigin, MemoryStatus, PrimaryAction, ReasonCode, ResponseMode, ScopeType
 from app_v2.domain.events import EventEnvelope, SceneAnalysis
 from app_v2.domain.memory import MemoryCard, MemoryEvidence, UsagePolicy
 from app_v2.services.dispatcher import DispatcherPolicyState, decide
@@ -23,7 +23,7 @@ def event(text: str = "передумал, никуда не иду") -> EventEn
     )
 
 
-def test_priority_statement_bypasses_ordinary_cooldown() -> None:
+def test_priority_statement_respects_cooldown_in_initiative_v2() -> None:
     state = DispatcherPolicyState(
         cooldown_active=True,
         bot_spoke_recently=True,
@@ -34,9 +34,8 @@ def test_priority_statement_bypasses_ordinary_cooldown() -> None:
 
     decision = decide(event(), scene, state)
 
-    assert decision.primary_action is PrimaryAction.REPLY
-    assert decision.mode is ResponseMode.GROUP_CALLBACK
-    assert any(reason.value == "statement_watch" for reason in decision.reason_codes)
+    assert decision.primary_action is PrimaryAction.IGNORE
+    assert decision.reason_codes == [ReasonCode.COOLDOWN_ACTIVE]
 
 
 def test_priority_statement_still_respects_hard_daily_limit_and_mute() -> None:

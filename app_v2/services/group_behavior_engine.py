@@ -11,6 +11,7 @@ from app_v2.domain.events import EventEnvelope, SceneAnalysis
 from app_v2.repositories.group_context_repo import GroupContext
 from app_v2.services.dispatcher import DispatcherPolicyState
 from app_v2.services.group_style import apply_style_deltas
+from app_v2.services.initiative_opportunity import evaluate_initiative_opportunity
 
 
 _CALLBACK_TYPES = {"running_joke", "pattern", "contradiction", "commitment", "decision", "quote"}
@@ -321,6 +322,8 @@ class GroupBehaviorEngine:
             hard_daily_limit = dynamic.hard_daily_limit
             bot_spoke_recently = dynamic.bot_spoke_recently
             ignored_recent = dynamic.ignored_unsolicited_recent
+            positive_feedback_recent = dynamic.positive_feedback_recent
+            negative_feedback_recent = dynamic.negative_feedback_recent
             dynamic_metadata = {
                 **dynamic.metadata,
                 "silence_requested_control": dynamic.silence_requested,
@@ -336,6 +339,8 @@ class GroupBehaviorEngine:
             hard_daily_limit = 10
             bot_spoke_recently = False
             ignored_recent = 0
+            positive_feedback_recent = 0
+            negative_feedback_recent = 0
             dynamic_metadata = {}
 
         priority_statement = bool(
@@ -349,6 +354,51 @@ class GroupBehaviorEngine:
 
         if policy_degraded:
             cooldown_active = True
+
+        proactive_callback_cards = [
+            item for item in callback_cards
+            if bool(item.card.usage_policy.proactive)
+        ]
+        if event.event_type is EventType.GROUP_SILENCE_WAKEUP:
+            last_human_message_id = str(
+                event.metadata.get("last_human_message_id") or ""
+            ).strip()
+            proactive_callback_cards = [
+                item
+                for item in proactive_callback_cards
+                if last_human_message_id
+                and any(
+                    str(evidence.message_id or "") == last_human_message_id
+                    for evidence in item.card.evidence
+                )
+            ]
+
+        opportunity_grounded_contradiction = any(
+            item.card.memory_type == "contradiction"
+            for item in proactive_callback_cards
+        )
+        opportunity_broken_commitment = any(
+            item.card.memory_type == "commitment"
+            and str(item.card.payload.get("status", "")).lower()
+            in {"broken", "overdue", "missed"}
+            for item in proactive_callback_cards
+        )
+
+        opportunity = evaluate_initiative_opportunity(
+            event,
+            effective_scene,
+            has_grounded_callback=bool(proactive_callback_cards),
+            grounded_contradiction=opportunity_grounded_contradiction,
+            broken_commitment=opportunity_broken_commitment,
+            priority_statement=priority_statement,
+            allow_callbacks=allow_callbacks,
+            allow_roast=allow_roast,
+            ignored_recent=ignored_recent,
+            negative_feedback_recent=negative_feedback_recent,
+            positive_feedback_recent=positive_feedback_recent,
+            bot_spoke_recently=bot_spoke_recently,
+            policy_degraded=policy_degraded,
+        )
 
         callback_ids = tuple(item.card.id for item in callback_cards)
         if statement_watch_result and statement_watch_result.memory_id:
@@ -371,6 +421,7 @@ class GroupBehaviorEngine:
             priority_statement=priority_statement,
             allow_roast=allow_roast,
             allow_callbacks=allow_callbacks,
+            initiative_opportunity_eligible=opportunity.eligible,
             metadata={
                 "group_profile": profile.get("profile", "friends"),
                 "unsolicited_enabled": unsolicited_enabled,
@@ -381,6 +432,7 @@ class GroupBehaviorEngine:
                 "policy_degraded": policy_degraded,
                 "memory_unavailable": memory_unavailable,
                 "initiative_unavailable": initiative_unavailable,
+                "initiative_opportunity": opportunity.as_metadata(),
                 "connector": connector_state,
                 "social_style_deltas": {
                     key: int(value)

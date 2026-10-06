@@ -412,6 +412,9 @@ class GroupPipeline:
                 initiative_level=connector_initiative,
                 allow_roast=False,
                 allow_callbacks=False,
+                initiative_opportunity_eligible=(
+                    event.event_type is not EventType.GROUP_SILENCE_WAKEUP
+                ),
                 metadata={
                     "group_profile": profile.get("profile", "friends"),
                     "connector": (

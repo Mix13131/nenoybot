@@ -76,3 +76,57 @@ def test_intervention_persists_only_sanitized_capability_telemetry() -> None:
     serialized = json.dumps(persisted, ensure_ascii=False)
     assert "must-not-persist" not in serialized
     assert "private historical text" not in serialized
+
+
+def test_initiative_opportunity_metadata_is_strictly_sanitized() -> None:
+    conn = FakeConn()
+    decision = DispatcherDecision(
+        primary_action=PrimaryAction.IGNORE,
+        metadata={
+            "policy_version": "test-policy",
+            "initiative_opportunity": {
+                "eligible": False,
+                "quality_score": 999,
+                "hook_family": "invented-private-hook",
+                "reasons": [
+                    "grounded_callback",
+                    "raw text from user",
+                ],
+                "suppressors": [
+                    "no_grounded_hook",
+                    "user:123456",
+                ],
+                "stale_context": True,
+                "version": "attacker-version",
+                "raw_text": "private chat text",
+                "actor_id": "123456",
+            },
+        },
+    )
+
+    InterventionRepository(conn).record(
+        event_id="evt-initiative",
+        scope_type=ScopeType.GROUP,
+        scope_id="-100777",
+        decision=decision,
+        selected_memory_ids=[],
+        generated_text=None,
+    )
+
+    _, params = conn.calls[0]
+    persisted = json.loads(params[-1])
+    opportunity = persisted["initiative_opportunity"]
+
+    assert opportunity == {
+        "eligible": False,
+        "quality_score": 100,
+        "hook_family": None,
+        "reasons": ["grounded_callback"],
+        "suppressors": ["no_grounded_hook"],
+        "stale_context": True,
+        "version": "initiative-opportunity-v1",
+    }
+    serialized = json.dumps(persisted, ensure_ascii=False)
+    assert "private chat text" not in serialized
+    assert "123456" not in serialized
+    assert "raw text from user" not in serialized
