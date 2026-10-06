@@ -190,6 +190,7 @@ def build_runtime(conn: Any, config: AppConfig) -> RuntimeComponents:
         connector_resolver=connector_resolver,
         url_reader=url_reader,
         birthday_service=birthday_service,
+        reaction_capability_client=telegram_profile_client,
     )
 
     action_engine = ActionEngine(task_repo=task_repo, reminder_repo=reminder_repo)
