@@ -88,7 +88,7 @@ class Context:
         self.calls.append(kwargs)
         event=kwargs["event"]; decision=kwargs["decision"]; p=kwargs["personality"]
         memories=()
-        if kwargs["memory_usage"]=="callback":
+        if kwargs["memory_usage"] in {"callback", "proactive"}:
             memories=(GenerationMemory("joke-already-going","running_joke","уже еду раньше выезда",.96,.9,()),)
         return GenerationContext(
             scope_type=ScopeType.GROUP,scope_id=event.scope_id,
