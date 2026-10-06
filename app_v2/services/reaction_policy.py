@@ -53,6 +53,14 @@ def choose_reaction(
     # accounting authoritative without adding conversation-ownership inference.
     if event.event_type not in _EXPLICIT_REACTION_EVENTS:
         return None
+    if (
+        event.event_type in {EventType.REPLY_TO_BOT, EventType.REPLY_TO_BOT_MESSAGE}
+        and event.metadata.get("reply_to_configured_bot") is not True
+    ):
+        # Telegram historically classified a reply to any bot as REPLY_TO_BOT.
+        # Reaction-only is stricter: it requires positive evidence that the
+        # replied-to bot is this configured НеНой instance.
+        return None
     if event.event_type in {EventType.COMMAND, EventType.REACTION_ADDED, EventType.REACTION_REMOVED}:
         return None
     if not event.message_id or not event.message_id.isdigit():
