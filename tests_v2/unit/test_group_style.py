@@ -211,3 +211,18 @@ def test_pipeline_exposes_sanitized_style_in_action_and_intervention_metadata() 
     assert "user:one" not in repr(metadata)
     persisted = subject.intervention_repo.rows[0]["extra_metadata"]["social_style"]
     assert persisted == metadata
+
+
+def test_sparse_legacy_profile_adapts_implicit_group_defaults() -> None:
+    sparse = {"profile": "friends", "profanity_level": 8, "profanity_frequency": 5}
+    rows = [ev("banter_roast", "negative", "user:1")]
+    state = GroupStyleService(FakeRepo({"g": rows})).evaluate(
+        "g", base_profile=sparse, now=NOW
+    )
+
+    assert "roast" not in sparse
+    assert state.deltas["roast"] == -2
+    assert state.effective_profile["roast"] == 7
+    assert state.effective_profile["humor"] == 8
+    assert state.effective_profile["playfulness"] == 8
+    assert state.as_metadata(sparse)["base"]["roast"] == 9

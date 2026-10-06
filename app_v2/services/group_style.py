@@ -5,6 +5,8 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta
 from typing import Any, Mapping
 
+from app_v2.services.personality_engine import FRIENDS_GROUP_DEFAULT
+
 
 STYLE_VERSION = "group_style_v1"
 STYLE_WINDOW_DAYS = 30
@@ -52,14 +54,14 @@ class GroupStyleState:
 
     def as_metadata(self, base_profile: Mapping[str, Any]) -> dict[str, Any]:
         base_dimensions = {
-            key: int(round(value))
-            for key, value in base_profile.items()
-            if key in _STYLE_DIMENSIONS and isinstance(value, (int, float)) and not isinstance(value, bool)
+            key: value
+            for key in sorted(_STYLE_DIMENSIONS)
+            if (value := _profile_level(base_profile, key)) is not None
         }
         effective_dimensions = {
-            key: int(round(value))
-            for key, value in self.effective_profile.items()
-            if key in _STYLE_DIMENSIONS and isinstance(value, (int, float)) and not isinstance(value, bool)
+            key: value
+            for key in sorted(_STYLE_DIMENSIONS)
+            if (value := _profile_level(self.effective_profile, key)) is not None
         }
         return {
             "version": self.version,
@@ -78,6 +80,13 @@ def _level(value: Any) -> int | None:
     return max(0, min(10, int(round(value))))
 
 
+def _profile_level(profile: Mapping[str, Any], dimension: str) -> int | None:
+    explicit = _level(profile.get(dimension))
+    if explicit is not None:
+        return explicit
+    return _level(FRIENDS_GROUP_DEFAULT.get(dimension))
+
+
 def apply_style_deltas(
     base_profile: Mapping[str, Any],
     deltas: Mapping[str, int | float],
@@ -86,7 +95,7 @@ def apply_style_deltas(
     for dimension, delta in deltas.items():
         if dimension not in _STYLE_DIMENSIONS:
             continue
-        current = _level(result.get(dimension))
+        current = _profile_level(result, dimension)
         if current is None:
             continue
         result[dimension] = max(0, min(10, current + int(round(delta))))
