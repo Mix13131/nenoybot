@@ -120,6 +120,27 @@ class FakeOutbox:
         return oid, True
 
 
+class FakeReactionCapability:
+    def __init__(self, *, supported=True):
+        self.supported = supported
+
+    def supports(self, emoji):
+        return self.supported
+
+
+class FakeReactionCapabilityClient:
+    def __init__(self, *, supported=True, error=None):
+        self.supported = supported
+        self.error = error
+        self.calls = []
+
+    def get_reaction_capabilities(self, scope_id):
+        self.calls.append(scope_id)
+        if self.error:
+            raise self.error
+        return FakeReactionCapability(supported=self.supported)
+
+
 class FakeMemoryMapper:
     def __init__(self, memory_ids=("mapped-1",)):
         self.memory_ids=tuple(memory_ids)
@@ -133,7 +154,16 @@ class FakeMemoryMapper:
         )
 
 
-def pipeline(*, access=None, scene=None, context=None, generator=None, outbox=None, mapper=None):
+def pipeline(
+    *,
+    access=None,
+    scene=None,
+    context=None,
+    generator=None,
+    outbox=None,
+    mapper=None,
+    reaction_capabilities=None,
+):
     return GroupPipeline(
         access_service=access or FakeAccess(),
         scene_analyzer=FakeSceneAnalyzer(scene),
@@ -143,6 +173,11 @@ def pipeline(*, access=None, scene=None, context=None, generator=None, outbox=No
         intervention_repo=FakeInterventions(),
         outbox_repo=outbox or FakeOutbox(),
         memory_mapper=mapper,
+        reaction_capability_client=(
+            reaction_capabilities
+            if reaction_capabilities is not None
+            else FakeReactionCapabilityClient()
+        ),
         unsolicited_enabled=False,
     )
 
