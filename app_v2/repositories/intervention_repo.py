@@ -44,6 +44,9 @@ class InterventionRepository:
         url_read = metadata.get("url_read")
         if isinstance(url_read, dict):
             persisted_metadata["url_read"] = dict(url_read)
+        outbound_action = metadata.get("outbound_action")
+        if isinstance(outbound_action, dict):
+            persisted_metadata["outbound_action"] = dict(outbound_action)
         row = self.conn.execute(
             """
             INSERT INTO interventions(
