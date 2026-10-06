@@ -74,6 +74,7 @@ class GroupPipeline:
         connector_resolver: Any | None = None,
         url_reader: Any | None = None,
         birthday_service: Any | None = None,
+        reaction_capability_client: Any | None = None,
         unsolicited_enabled: bool = False,
     ) -> None:
         self.access_service = access_service
@@ -92,6 +93,7 @@ class GroupPipeline:
         self.connector_resolver = connector_resolver
         self.url_reader = url_reader
         self.birthday_service = birthday_service
+        self.reaction_capability_client = reaction_capability_client
         self.unsolicited_enabled = unsolicited_enabled
 
     def _mapper_context(self, event: EventEnvelope) -> tuple[dict[str, Any], ...]:
@@ -465,6 +467,22 @@ class GroupPipeline:
                 )
             ),
         )
+        if reaction is not None:
+            capability_ok = False
+            if self.reaction_capability_client is not None:
+                try:
+                    capability = self.reaction_capability_client.get_reaction_capabilities(
+                        event.scope_id
+                    )
+                    capability_ok = bool(capability.supports(reaction.emoji))
+                except Exception:
+                    # Reaction is optional polish. Unknown Telegram capability
+                    # must preserve the normal text reply rather than turn a
+                    # user-addressed message into a terminal failed reaction.
+                    capability_ok = False
+            if not capability_ok:
+                reaction = None
+
         if reaction is not None:
             decision = decision.model_copy(
                 update={"primary_action": PrimaryAction.REACTION_ONLY}
