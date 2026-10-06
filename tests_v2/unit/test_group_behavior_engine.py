@@ -121,7 +121,8 @@ def test_running_joke_strengthens_grounded_callback_and_selects_callback_mode() 
     decision=decide(event(), plan.scene, plan.state)
 
     assert plan.callback_memory_ids == ("j1",)
-    assert plan.memory_usage == "proactive"
+    assert plan.memory_usage == "callback"
+    assert plan.memory_require_proactive is True
     assert plan.state.running_joke_fit is True
     assert plan.scene.callback_opportunity >= .82
     assert decision.primary_action is PrimaryAction.REPLY
@@ -129,6 +130,7 @@ def test_running_joke_strengthens_grounded_callback_and_selects_callback_mode() 
     assert retrieval.calls[0][0] is ScopeType.GROUP
     assert retrieval.calls[0][1] == "-100777"
     assert retrieval.calls[0][2]["callback_fatigue_minutes"] == 180
+    assert retrieval.calls[0][2]["require_proactive"] is True
 
 
 def test_exhausted_or_missing_running_joke_cannot_force_callback() -> None:
@@ -672,8 +674,30 @@ def test_non_proactive_statement_memory_is_withheld_when_neighbor_opens_hook() -
 
     decision = decide(event("опять эта история"), plan.scene, plan.state)
     assert plan.callback_memory_ids == ("j1",)
-    assert plan.memory_usage == "proactive"
+    assert plan.memory_usage == "callback"
+    assert plan.memory_require_proactive is True
     assert plan.statement_watch is None
     assert plan.state.metadata["statement_watch"] is None
     assert plan.state.initiative_opportunity_eligible is True
     assert decision.primary_action is PrimaryAction.REPLY
+
+
+def test_semantically_explicit_group_question_keeps_normal_callback_memory() -> None:
+    retrieval = FakeRetrieval(
+        [memory("j1", "running_joke", proactive=False)]
+    )
+    evt = event("НеНой, а что скажешь?")
+    scene = SceneAnalysis(question_to_bot=True)
+    plan = GroupBehaviorEngine(retrieval).plan(
+        event=evt,
+        group_context=context(),
+        scene=scene,
+        now=datetime.now(timezone.utc),
+    )
+
+    decision = decide(evt, plan.scene, plan.state)
+    assert "require_proactive" not in retrieval.calls[0][2]
+    assert plan.memory_require_proactive is False
+    assert plan.callback_memory_ids == ("j1",)
+    assert decision.primary_action is PrimaryAction.REPLY
+    assert decision.mode is ResponseMode.GROUP_DIRECT_REPLY
