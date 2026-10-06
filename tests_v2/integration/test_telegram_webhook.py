@@ -53,8 +53,40 @@ def test_normalize_group_reply_to_bot_and_mentions() -> None:
     assert normalized.envelope.event_type is EventType.REPLY_TO_BOT
     assert normalized.envelope.scope_type is ScopeType.GROUP
     assert normalized.envelope.metadata["reply_to_bot"] is True
+    assert normalized.envelope.metadata["reply_to_configured_bot"] is True
     assert normalized.envelope.metadata["direct_mention"] is True
     assert normalized.envelope.metadata["mentions"][0]["type"] == "mention"
+
+
+def test_reply_to_unrelated_bot_is_not_verified_as_configured_bot() -> None:
+    update = {
+        "update_id": 110,
+        "message": {
+            "message_id": 13,
+            "date": 1720000006,
+            "from": {"id": 22, "first_name": "Серёга", "is_bot": False},
+            "chat": {"id": -10055, "type": "supergroup", "title": "Друзья"},
+            "text": "спасибо",
+            "reply_to_message": {
+                "message_id": 12,
+                "from": {"id": 555, "is_bot": True, "username": "other_bot"},
+                "text": "Готово",
+            },
+        },
+    }
+
+    normalized = normalize_update(
+        update,
+        bot_username="NeNoiBro_bot",
+        bot_user_id="999",
+    )
+
+    assert normalized is not None
+    # Preserve historical routing semantics, but expose stricter identity
+    # evidence so optional reaction-only output can fail closed.
+    assert normalized.envelope.event_type is EventType.REPLY_TO_BOT
+    assert normalized.envelope.metadata["reply_to_bot"] is True
+    assert normalized.envelope.metadata["reply_to_configured_bot"] is False
 
 
 def test_normalize_configured_group_mention_as_direct_mention() -> None:
