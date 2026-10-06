@@ -73,7 +73,7 @@ def traffic(conn, chat_id, title="fixture", chat_type="supergroup"):
 
 def test_migration_preserves_all_historical_denials_and_inactive_rows(legacy_db):
     pg, url = legacy_db
-    assert run_migrations(url) == [7, 8]
+    assert run_migrations(url) == [7, 8, 9]
     assert run_migrations(url) == []
     with pg.connect(url) as conn:
         for identifier in (-1009901, -1009903, -1009904, -1009905):
@@ -184,7 +184,7 @@ def test_parallel_migration_runs_apply_transition_once(legacy_db):
     _, url = legacy_db
     with ThreadPoolExecutor(max_workers=2) as pool:
         results = list(pool.map(lambda _: run_migrations(url), range(2)))
-    assert sorted(results, key=len) == [[], [7, 8]]
+    assert sorted(results, key=len) == [[], [7, 8, 9]]
 
 
 def test_concurrent_duplicate_first_updates_have_one_chat_member_message_and_event(legacy_db):
