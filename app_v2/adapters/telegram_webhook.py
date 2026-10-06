@@ -184,19 +184,23 @@ def _normalize_message(
     else:
         event_type = EventType.GROUP_MESSAGE
 
-    incomplete_turn = False
-    if (
-        scope_type is ScopeType.GROUP
-        and text
-        and event_type in {EventType.DIRECT_MENTION, EventType.REPLY_TO_BOT}
-    ):
-        body = _address_body(
+    address_body = (
+        _address_body(
             text,
             bot_username=bot_username,
             name_address=name_address,
             reply_to_bot=reply_to_bot,
         )
-        incomplete_turn = _looks_like_incomplete_turn(body)
+        if text
+        else None
+    )
+    incomplete_turn = False
+    if (
+        scope_type is ScopeType.GROUP
+        and address_body
+        and event_type in {EventType.DIRECT_MENTION, EventType.REPLY_TO_BOT}
+    ):
+        incomplete_turn = _looks_like_incomplete_turn(address_body)
 
     message_id = message.get("message_id")
     envelope = EventEnvelope(
@@ -218,6 +222,7 @@ def _normalize_message(
             "reply_to_text": reply_to_text,
             "direct_mention": direct_mention,
             "name_address": name_address,
+            "address_body": address_body,
             "incomplete_turn": incomplete_turn,
             "mentions": _mention_metadata(message),
             "message_thread_id": message.get("message_thread_id"),
