@@ -93,6 +93,33 @@ def _is_direct_mention(
     return _is_name_address(text)
 
 
+def _is_reply_to_configured_bot(
+    reply_from: dict[str, Any] | None,
+    *,
+    bot_username: str | None,
+    bot_user_id: str | None,
+) -> bool:
+    """Verify that a replied-to bot is this configured НеНой instance."""
+
+    if not reply_from or not reply_from.get("is_bot"):
+        return False
+
+    if (
+        bot_user_id
+        and reply_from.get("id") is not None
+        and str(reply_from["id"]) == str(bot_user_id)
+    ):
+        return True
+
+    configured_username = (bot_username or "").strip().lstrip("@").lower()
+    reply_username = str(reply_from.get("username") or "").strip().lstrip("@").lower()
+    return bool(
+        configured_username
+        and reply_username
+        and reply_username == configured_username
+    )
+
+
 def _address_body(
     text: str,
     *,
@@ -163,6 +190,11 @@ def _normalize_message(
     reply = message.get("reply_to_message") if isinstance(message.get("reply_to_message"), dict) else None
     reply_from = reply.get("from") if reply and isinstance(reply.get("from"), dict) else None
     reply_to_bot = bool(reply_from and reply_from.get("is_bot"))
+    reply_to_configured_bot = _is_reply_to_configured_bot(
+        reply_from,
+        bot_username=bot_username,
+        bot_user_id=bot_user_id,
+    )
     reply_to_text = reply.get("text") if reply and isinstance(reply.get("text"), str) else None
     name_address = _is_name_address(text or "")
     direct_mention = _is_direct_mention(
@@ -219,6 +251,7 @@ def _normalize_message(
             "telegram_chat_type": chat.get("type"),
             "actor_username": actor.get("username") if actor else None,
             "reply_to_bot": reply_to_bot,
+            "reply_to_configured_bot": reply_to_configured_bot,
             "reply_to_text": reply_to_text,
             "direct_mention": direct_mention,
             "name_address": name_address,
