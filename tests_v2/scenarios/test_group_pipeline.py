@@ -167,6 +167,7 @@ def pipeline(
     mapper=None,
     reaction_capabilities=None,
     contextual_scene=None,
+    group_style=None,
 ):
     return GroupPipeline(
         access_service=access or FakeAccess(),
@@ -182,6 +183,7 @@ def pipeline(
             if reaction_capabilities is not None
             else FakeReactionCapabilityClient()
         ),
+        group_style_service=group_style,
         unsolicited_enabled=False,
     )
 

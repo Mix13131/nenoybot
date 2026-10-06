@@ -47,6 +47,9 @@ class InterventionRepository:
         outbound_action = metadata.get("outbound_action")
         if isinstance(outbound_action, dict):
             persisted_metadata["outbound_action"] = dict(outbound_action)
+        social_style = metadata.get("social_style")
+        if isinstance(social_style, dict):
+            persisted_metadata["social_style"] = dict(social_style)
         row = self.conn.execute(
             """
             INSERT INTO interventions(

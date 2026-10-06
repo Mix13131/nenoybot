@@ -16,6 +16,7 @@ from app_v2.repositories.group_context_repo import GroupContextRepository
 from app_v2.repositories.participant_directory_repo import ParticipantDirectoryRepository
 from app_v2.repositories.group_initiative_repo import GroupInitiativeRepository
 from app_v2.repositories.group_silence_wakeup_repo import GroupSilenceWakeupRepository
+from app_v2.repositories.group_style_repo import GroupStyleRepository
 from app_v2.repositories.intervention_repo import InterventionRepository
 from app_v2.repositories.maintenance_repo import MaintenanceRepository
 from app_v2.repositories.memory_repo import MemoryRepository
@@ -37,6 +38,7 @@ from app_v2.services.group_behavior_engine import GroupBehaviorEngine
 from app_v2.services.group_initiative import GroupInitiativeService
 from app_v2.services.group_pipeline import GroupPipeline
 from app_v2.services.group_reminders import GroupReminderService
+from app_v2.services.group_style import GroupStyleService
 from app_v2.services.memory_mapper import MemoryMapper, MemoryMapperStore
 from app_v2.services.personal_pipeline import PersonalPipeline, envelope_from_claimed_event
 from app_v2.services.personality_engine import PersonalityEngine
@@ -112,6 +114,7 @@ def build_runtime(conn: Any, config: AppConfig) -> RuntimeComponents:
     group_context_repo = GroupContextRepository(conn)
     participant_directory_repo = ParticipantDirectoryRepository(conn)
     group_initiative_repo = GroupInitiativeRepository(conn)
+    group_style_repo = GroupStyleRepository(conn)
     silence_wakeup_repo = GroupSilenceWakeupRepository(conn)
     birthday_repo = BirthdayRepository(conn)
     connector_repo = ConnectorRepository(conn)
@@ -132,6 +135,7 @@ def build_runtime(conn: Any, config: AppConfig) -> RuntimeComponents:
     )
     response_generator = ResponseGenerator(adapter=adapter)
     feedback_collector = FeedbackCollector(feedback_repo)
+    group_style_service = GroupStyleService(group_style_repo)
     connector_resolver = PersistedGroupConnectorResolver(
         connector_repo,
         fallback=LegacyGroupConnectorResolver(),
@@ -191,6 +195,7 @@ def build_runtime(conn: Any, config: AppConfig) -> RuntimeComponents:
         url_reader=url_reader,
         birthday_service=birthday_service,
         reaction_capability_client=telegram_profile_client,
+        group_style_service=group_style_service,
     )
 
     action_engine = ActionEngine(task_repo=task_repo, reminder_repo=reminder_repo)

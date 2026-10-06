@@ -257,3 +257,34 @@ def test_initiative_failure_forces_unsolicited_silence_but_keeps_explicit_path()
     direct_decision=decide(direct, direct_plan.scene, direct_plan.state)
     assert direct_decision.primary_action is PrimaryAction.REPLY
     assert direct_decision.mode is ResponseMode.GROUP_DIRECT_REPLY
+
+
+def test_negative_style_overlay_changes_real_roast_policy() -> None:
+    profile = dict(context().profile)
+    profile["roast"] = 2
+    plan = GroupBehaviorEngine(FakeRetrieval([])).plan(
+        event=event(),
+        group_context=context(profile=profile),
+        scene=SceneAnalysis(roast_opportunity=0.95, banter_score=0.9),
+        now=datetime.now(timezone.utc),
+        style_deltas={"roast": -3},
+    )
+
+    assert plan.context_profile["roast"] == 0
+    assert plan.state.allow_roast is False
+    assert plan.state.metadata["social_style_deltas"]["roast"] == -3
+
+
+def test_style_initiative_delta_uses_existing_policy_without_new_opportunity_logic() -> None:
+    profile = dict(context().profile)
+    profile["initiative"] = 5
+    plan = GroupBehaviorEngine(FakeRetrieval([])).plan(
+        event=event(),
+        group_context=context(profile=profile),
+        scene=SceneAnalysis(),
+        now=datetime.now(timezone.utc),
+        style_deltas={"initiative": -2},
+    )
+
+    assert plan.context_profile["initiative"] == 3
+    assert plan.state.initiative_level == 3

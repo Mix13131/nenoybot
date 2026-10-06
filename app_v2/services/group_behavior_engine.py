@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections.abc import Mapping
 from dataclasses import dataclass
 from datetime import datetime
 from typing import Any
@@ -9,6 +10,7 @@ from app_v2.domain.enums import EventType, ScopeType
 from app_v2.domain.events import EventEnvelope, SceneAnalysis
 from app_v2.repositories.group_context_repo import GroupContext
 from app_v2.services.dispatcher import DispatcherPolicyState
+from app_v2.services.group_style import apply_style_deltas
 
 
 _CALLBACK_TYPES = {"running_joke", "pattern", "contradiction", "commitment", "decision", "quote"}
@@ -79,6 +81,7 @@ class GroupBehaviorEngine:
         scene: SceneAnalysis,
         now: datetime,
         connector_config: ConnectorConfig | None = None,
+        style_deltas: Mapping[str, int | float] | None = None,
     ) -> GroupBehaviorPlan:
         if event.scope_type is not ScopeType.GROUP:
             raise ValueError("GroupBehaviorEngine requires group scope")
@@ -107,6 +110,15 @@ class GroupBehaviorEngine:
                 high=1440,
             )
             connector_state = None
+
+        bounded_style_deltas = dict(style_deltas or {})
+        profile = apply_style_deltas(profile, bounded_style_deltas)
+        try:
+            initiative_delta = int(round(float(bounded_style_deltas.get("initiative", 0))))
+        except (TypeError, ValueError):
+            initiative_delta = 0
+        initiative_delta = max(-3, min(2, initiative_delta))
+        initiative = _int(initiative + initiative_delta, initiative)
 
         roast_level = _int(profile.get("roast"), 9)
         callback_level = _int(profile.get("callback"), 10)
@@ -251,7 +263,10 @@ class GroupBehaviorEngine:
         if dynamic is not None:
             muted = dynamic.group_muted
             cooldown_active = (not unsolicited_enabled) or dynamic.cooldown_active
-            initiative = dynamic.initiative_level
+            initiative = _int(
+                dynamic.initiative_level + initiative_delta,
+                dynamic.initiative_level,
+            )
             unsolicited_today = dynamic.unsolicited_today
             soft_daily_limit = dynamic.soft_daily_limit
             hard_daily_limit = dynamic.hard_daily_limit
@@ -318,6 +333,11 @@ class GroupBehaviorEngine:
                 "memory_unavailable": memory_unavailable,
                 "initiative_unavailable": initiative_unavailable,
                 "connector": connector_state,
+                "social_style_deltas": {
+                    key: int(value)
+                    for key, value in bounded_style_deltas.items()
+                    if isinstance(value, (int, float)) and not isinstance(value, bool)
+                },
                 **dynamic_metadata,
             },
         )

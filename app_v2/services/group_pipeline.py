@@ -80,6 +80,7 @@ class GroupPipeline:
         url_reader: Any | None = None,
         birthday_service: Any | None = None,
         reaction_capability_client: Any | None = None,
+        group_style_service: Any | None = None,
         unsolicited_enabled: bool = False,
     ) -> None:
         self.access_service = access_service
@@ -99,6 +100,7 @@ class GroupPipeline:
         self.url_reader = url_reader
         self.birthday_service = birthday_service
         self.reaction_capability_client = reaction_capability_client
+        self.group_style_service = group_style_service
         self.unsolicited_enabled = unsolicited_enabled
 
     def _mapper_context(self, event: EventEnvelope) -> tuple[dict[str, Any], ...]:
@@ -323,6 +325,24 @@ class GroupPipeline:
         adaptation = participant_profile.get("personality_modifiers")
         if not isinstance(adaptation, dict):
             adaptation = {}
+
+        base_profile = dict(profile)
+        social_style = None
+        social_style_metadata: dict[str, Any] | None = None
+        if self.group_style_service is not None:
+            try:
+                social_style = self.group_style_service.evaluate(
+                    event.scope_id,
+                    base_profile=base_profile,
+                    now=current,
+                )
+                social_style_metadata = social_style.as_metadata(base_profile)
+            except Exception:
+                # Adaptive style is optional. Evidence/read failures must not
+                # break an explicit Group response or change the base profile.
+                social_style = None
+                social_style_metadata = None
+
         memory_usage = "assist"
         callback_fatigue_minutes = 60
         behavior_memory_ids: tuple[str, ...] = ()
@@ -332,6 +352,8 @@ class GroupPipeline:
         # but it must not burn LLM/initiative logic trying to classify a
         # synthetic empty message.
         if event.event_type is EventType.BIRTHDAY_DUE:
+            if social_style is not None:
+                profile = dict(social_style.effective_profile)
             muted = bool(group_context.silent_until and group_context.silent_until > current)
             state = DispatcherPolicyState(
                 group_muted=muted,
@@ -359,6 +381,8 @@ class GroupPipeline:
             }
             if connector_config is not None:
                 plan_kwargs["connector_config"] = connector_config
+            if social_style is not None:
+                plan_kwargs["style_deltas"] = dict(social_style.deltas)
             plan = self.group_behavior_engine.plan(**plan_kwargs)
             scene = plan.scene
             state = plan.state
@@ -369,6 +393,8 @@ class GroupPipeline:
             behavior_memory_ids = tuple(plan.callback_memory_ids)
             statement_watch_state = plan.statement_watch
         else:
+            if social_style is not None:
+                profile = dict(social_style.effective_profile)
             muted = bool(group_context.silent_until and group_context.silent_until > current)
             connector_unsolicited = (
                 connector_config.behavior.unsolicited_enabled
@@ -534,7 +560,8 @@ class GroupPipeline:
                         "emoji": reaction.emoji,
                         "target_message_id": event.message_id,
                         "reason": reaction.reason,
-                    }
+                    },
+                    "social_style": social_style_metadata,
                 },
             )
             outbound = OutboundReaction(
@@ -586,6 +613,7 @@ class GroupPipeline:
                     "statement_watch": statement_watch_state,
                     "operation_receipts": operation_receipts,
                     "birthday_profile": birthday_action_state,
+                    "social_style": social_style_metadata,
                 },
             )
             return GroupPipelineResult(
@@ -636,6 +664,7 @@ class GroupPipeline:
             "behavior_probe_ids": list(behavior_memory_ids),
             "mapped_memory_ids": list(mapped_memory_ids),
             "operation_receipts": operation_receipts,
+            "social_style": social_style_metadata,
         }
         if birthday_action_state is not None:
             action_state["birthday_profile"] = birthday_action_state
@@ -698,6 +727,7 @@ class GroupPipeline:
                     "operation_receipts": operation_receipts,
                     "birthday_profile": birthday_action_state,
                     "url_read": url_read_telemetry,
+                    "social_style": social_style_metadata,
                 },
             )
             return GroupPipelineResult(
@@ -727,6 +757,7 @@ class GroupPipeline:
                 "operation_receipts": operation_receipts,
                 "birthday_profile": birthday_action_state,
                 "url_read": url_read_telemetry,
+                "social_style": social_style_metadata,
             },
         )
         outbound = OutboundMessage(
