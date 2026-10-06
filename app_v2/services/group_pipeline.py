@@ -344,6 +344,7 @@ class GroupPipeline:
                 social_style_metadata = None
 
         memory_usage = "assist"
+        memory_require_proactive = False
         callback_fatigue_minutes = 60
         behavior_memory_ids: tuple[str, ...] = ()
         statement_watch_state: dict[str, Any] | None = None
@@ -389,6 +390,7 @@ class GroupPipeline:
             profile = dict(plan.context_profile)
             adaptation = dict(plan.participant_adaptation)
             memory_usage = plan.memory_usage
+            memory_require_proactive = plan.memory_require_proactive
             callback_fatigue_minutes = plan.callback_fatigue_minutes
             behavior_memory_ids = tuple(plan.callback_memory_ids)
             statement_watch_state = plan.statement_watch
@@ -700,6 +702,8 @@ class GroupPipeline:
             "callback_fatigue_minutes": callback_fatigue_minutes,
             "action_state": action_state,
         }
+        if memory_require_proactive:
+            context_kwargs["memory_require_proactive"] = True
         if external_context:
             context_kwargs["external_context"] = external_context
         context = self.context_builder.build(**context_kwargs)
@@ -784,10 +788,15 @@ class GroupPipeline:
             },
         )
         outbox_id, created = self.outbox_repo.enqueue(outbound)
-        if created and self.group_behavior_engine is not None and behavior_memory_ids:
+        callback_used_ids = (
+            selected_memory_ids
+            if memory_usage == "callback" and memory_require_proactive
+            else behavior_memory_ids
+        )
+        if created and self.group_behavior_engine is not None and callback_used_ids:
             self.group_behavior_engine.mark_callback_memories_used(
                 event.scope_id,
-                behavior_memory_ids,
+                callback_used_ids,
             )
         return GroupPipelineResult(
             event_id=event.event_id,
