@@ -244,3 +244,15 @@ def test_direct_mention_bypasses_dynamic_hard_limit_and_share_block() -> None:
     assert plan.state.cooldown_active is True
     assert decision.primary_action is PrimaryAction.REPLY
     assert decision.metadata["unsolicited"] is False
+
+
+def test_positive_feedback_cannot_revive_explicit_initiative_zero() -> None:
+    repo = FakeRepo(positive=100)
+    snapshot = GroupInitiativeService(repo).evaluate(
+        event=event(),
+        group_context=context({"initiative": 0}),
+        now=NOW,
+    )
+
+    assert snapshot.initiative_level == 0
+    assert snapshot.metadata["positive_bonus"] == 0

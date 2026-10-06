@@ -172,10 +172,20 @@ class GroupInitiativeService:
             and last_unsolicited > now - timedelta(minutes=effective_cooldown)
         )
 
-        positive_bonus = 1 if positive >= 3 else 0
+        positive_bonus = 1 if positive >= 3 and base_initiative > 0 else 0
         negative_penalty = min(4, negative * 2)
         ignore_penalty = 1 if ignored >= 2 else 0
-        initiative = max(0, min(10, base_initiative + positive_bonus - negative_penalty - ignore_penalty))
+        initiative = (
+            0
+            if base_initiative == 0
+            else max(
+                0,
+                min(
+                    10,
+                    base_initiative + positive_bonus - negative_penalty - ignore_penalty,
+                ),
+            )
+        )
 
         scene_since = now - timedelta(minutes=share_window_minutes)
         group_messages = self.repo.count_messages_since(event.scope_id, scene_since)
