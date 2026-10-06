@@ -25,6 +25,12 @@ f.id DESC
 
 _DIRECT_REASONS = {"direct_mention", "reply_to_bot", "question_to_bot"}
 _OPERATIONAL_REASONS = {"scheduled_reminder", "birthday"}
+_DIRECT_MODES = {
+    "group_direct_reply",
+    "group_help",
+    "group_organizer",
+    "group_arbiter",
+}
 
 
 def _reason_set(raw: Any) -> set[str]:
@@ -63,6 +69,8 @@ def classify_intervention_family(
         return "callback"
     if normalized_mode in {"group_roast", "group_banter"}:
         return "banter_roast"
+    if normalized_mode in _DIRECT_MODES:
+        return "direct"
     if "callback_opportunity" in reasons:
         return "callback"
     if "roast_opportunity" in reasons:

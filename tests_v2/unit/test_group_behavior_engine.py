@@ -363,3 +363,41 @@ def test_positive_learning_cannot_enable_explicit_initiative_zero() -> None:
 
     assert plan.context_profile["initiative"] == 0
     assert plan.state.initiative_level == 0
+
+
+def test_dynamic_initiative_cannot_revive_explicit_zero() -> None:
+    from types import SimpleNamespace
+
+    class PositiveDynamicInitiative:
+        def evaluate(self, **kwargs):
+            return SimpleNamespace(
+                group_muted=False,
+                silence_requested=False,
+                cooldown_active=False,
+                initiative_level=1,
+                unsolicited_today=0,
+                soft_daily_limit=6,
+                hard_daily_limit=10,
+                bot_spoke_recently=False,
+                ignored_unsolicited_recent=0,
+                metadata={},
+                bot_share_blocked=False,
+                positive_feedback_recent=3,
+                negative_feedback_recent=0,
+            )
+
+    profile = dict(context().profile)
+    profile["initiative"] = 0
+    plan = GroupBehaviorEngine(
+        FakeRetrieval([]),
+        initiative_service=PositiveDynamicInitiative(),
+    ).plan(
+        event=event(),
+        group_context=context(profile=profile),
+        scene=SceneAnalysis(),
+        now=datetime.now(timezone.utc),
+        style_deltas={"initiative": 2},
+    )
+
+    assert plan.context_profile["initiative"] == 0
+    assert plan.state.initiative_level == 0

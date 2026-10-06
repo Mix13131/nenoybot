@@ -134,6 +134,7 @@ class GroupBehaviorEngine:
             )
             connector_state = None
 
+        initiative_hard_off = initiative == 0
         bounded_style_deltas = dict(style_deltas or {})
         if "initiative" in bounded_style_deltas and "initiative" not in profile:
             profile = dict(profile)
@@ -142,7 +143,7 @@ class GroupBehaviorEngine:
         initiative_delta = _style_delta(bounded_style_deltas, "initiative")
         # Explicit initiative=0 is a policy hard-off and cannot be granted by
         # learned positive feedback.
-        if initiative == 0 and initiative_delta > 0:
+        if initiative_hard_off and initiative_delta > 0:
             initiative_delta = 0
         initiative = _int(initiative + initiative_delta, initiative)
 
@@ -307,9 +308,13 @@ class GroupBehaviorEngine:
         if dynamic is not None:
             muted = dynamic.group_muted
             cooldown_active = (not unsolicited_enabled) or dynamic.cooldown_active
-            initiative = _int(
-                dynamic.initiative_level + initiative_delta,
-                dynamic.initiative_level,
+            initiative = (
+                0
+                if initiative_hard_off
+                else _int(
+                    dynamic.initiative_level + initiative_delta,
+                    dynamic.initiative_level,
+                )
             )
             unsolicited_today = dynamic.unsolicited_today
             soft_daily_limit = dynamic.soft_daily_limit

@@ -40,7 +40,7 @@ def test_family_classification_is_deterministic_and_bounded() -> None:
     ) == "direct"
     assert classify_intervention_family(
         primary_action="reply",
-        mode="group_direct_reply",
+        mode=None,
         reason_codes=[],
         metadata={},
     ) == "proactive"
@@ -53,3 +53,22 @@ def test_delivered_callback_mode_wins_over_secondary_roast_reason() -> None:
         reason_codes=["callback_opportunity", "roast_opportunity"],
         metadata={},
     ) == "callback"
+
+
+def test_delivered_help_mode_wins_over_secondary_callback_reason() -> None:
+    assert classify_intervention_family(
+        primary_action="reply",
+        mode="group_help",
+        reason_codes=["help_opportunity", "callback_opportunity"],
+        metadata={},
+    ) == "direct"
+
+
+def test_all_direct_group_modes_ignore_secondary_style_opportunities() -> None:
+    for mode in ("group_direct_reply", "group_organizer", "group_arbiter"):
+        assert classify_intervention_family(
+            primary_action="reply",
+            mode=mode,
+            reason_codes=["callback_opportunity", "roast_opportunity"],
+            metadata={},
+        ) == "direct"
