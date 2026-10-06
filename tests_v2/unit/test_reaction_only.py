@@ -26,7 +26,7 @@ def test_safe_short_acknowledgement_reacts_without_generator_call() -> None:
     outbound = outbox.calls[0]
     assert isinstance(outbound, OutboundReaction)
     assert outbound.target_message_id == "55"
-    assert outbound.dedupe_key == "reaction:g1"
+    assert outbound.dedupe_key == "reply:g1"
     assert subject.intervention_repo.rows[0]["generated_text"] is None
     assert subject.intervention_repo.rows[0]["extra_metadata"]["outbound_action"] == {
         "kind": "reaction",
@@ -44,7 +44,7 @@ def test_duplicate_reaction_enqueue_is_idempotent() -> None:
     assert first.outbox_id == second.outbox_id
     assert first.outbox_created is True
     assert second.outbox_created is False
-    assert list(outbox.by_key) == ["reaction:same"]
+    assert list(outbox.by_key) == ["reply:same"]
 
 
 def test_question_and_help_request_remain_text() -> None:
@@ -144,6 +144,99 @@ def test_stripped_direct_address_body_can_select_reaction() -> None:
     )
 
     result = pipeline(generator=generator).process(addressed)
+
+    assert result.primary_action is PrimaryAction.REACTION_ONLY
+    assert result.reaction_emoji == "👍"
+    assert generator.calls == []
+
+
+def test_capability_flip_on_event_retry_cannot_send_reaction_and_text() -> None:
+    outbox = FakeOutbox()
+    evt = event(EventType.DIRECT_MENTION, event_id="flip", text="спасибо!")
+
+    first = pipeline(
+        outbox=outbox,
+        reaction_capabilities=FakeReactionCapabilityClient(supported=True),
+    ).process(evt)
+
+    generator = FakeGenerator()
+    second = pipeline(
+        outbox=outbox,
+        generator=generator,
+        reaction_capabilities=FakeReactionCapabilityClient(supported=False),
+    ).process(evt)
+
+    assert first.primary_action is PrimaryAction.REACTION_ONLY
+    assert first.outbox_created is True
+    assert second.primary_action is PrimaryAction.REPLY
+    assert second.outbox_created is False
+    assert first.outbox_id == second.outbox_id
+    assert list(outbox.by_key) == ["reply:flip"]
+    assert len(outbox.calls) == 2
+
+
+def test_reply_to_serious_bot_context_stays_text() -> None:
+    generator = FakeGenerator()
+    replied = event(EventType.REPLY_TO_BOT, text="спасибо").model_copy(
+        update={
+            "metadata": {
+                "reply_to_bot": True,
+                "reply_to_text": "Мне сейчас очень тяжело, это серьёзная ситуация.",
+                "address_body": "спасибо",
+            }
+        }
+    )
+    subject = pipeline(
+        generator=generator,
+        contextual_scene=SceneAnalysis(
+            reply_to_bot=True,
+            seriousness_score=0.95,
+            sensitivity_score=0.9,
+        ),
+    )
+
+    result = subject.process(replied)
+
+    assert result.primary_action is PrimaryAction.REPLY
+    assert result.reaction_emoji is None
+    assert len(generator.calls) == 1
+
+
+def test_reply_without_replied_text_fails_closed_to_text() -> None:
+    generator = FakeGenerator()
+    replied = event(EventType.REPLY_TO_BOT, text="спасибо").model_copy(
+        update={
+            "metadata": {
+                "reply_to_bot": True,
+                "address_body": "спасибо",
+            }
+        }
+    )
+
+    result = pipeline(generator=generator).process(replied)
+
+    assert result.primary_action is PrimaryAction.REPLY
+    assert result.reaction_emoji is None
+    assert len(generator.calls) == 1
+
+
+def test_reply_to_safe_bot_context_can_use_reaction() -> None:
+    generator = FakeGenerator()
+    replied = event(EventType.REPLY_TO_BOT, text="спасибо").model_copy(
+        update={
+            "metadata": {
+                "reply_to_bot": True,
+                "reply_to_text": "Готово, всё получилось.",
+                "address_body": "спасибо",
+            }
+        }
+    )
+    subject = pipeline(
+        generator=generator,
+        contextual_scene=SceneAnalysis(reply_to_bot=True),
+    )
+
+    result = subject.process(replied)
 
     assert result.primary_action is PrimaryAction.REACTION_ONLY
     assert result.reaction_emoji == "👍"
