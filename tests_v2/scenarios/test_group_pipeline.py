@@ -56,11 +56,14 @@ class FakeAccess:
 
 
 class FakeSceneAnalyzer:
-    def __init__(self, scene=None):
+    def __init__(self, scene=None, *, contextual_scene=None):
         self.scene = scene or SceneAnalysis()
+        self.contextual_scene = contextual_scene
         self.calls = []
-    def analyze(self, event):
+    def analyze(self, event, *, recent_context=None):
         self.calls.append(event)
+        if recent_context and self.contextual_scene is not None:
+            return self.contextual_scene
         return self.scene
 
 
@@ -120,6 +123,27 @@ class FakeOutbox:
         return oid, True
 
 
+class FakeReactionCapability:
+    def __init__(self, *, supported=True):
+        self.supported = supported
+
+    def supports(self, emoji):
+        return self.supported
+
+
+class FakeReactionCapabilityClient:
+    def __init__(self, *, supported=True, error=None):
+        self.supported = supported
+        self.error = error
+        self.calls = []
+
+    def get_reaction_capabilities(self, scope_id):
+        self.calls.append(scope_id)
+        if self.error:
+            raise self.error
+        return FakeReactionCapability(supported=self.supported)
+
+
 class FakeMemoryMapper:
     def __init__(self, memory_ids=("mapped-1",)):
         self.memory_ids=tuple(memory_ids)
@@ -133,16 +157,33 @@ class FakeMemoryMapper:
         )
 
 
-def pipeline(*, access=None, scene=None, context=None, generator=None, outbox=None, mapper=None):
+def pipeline(
+    *,
+    access=None,
+    scene=None,
+    context=None,
+    generator=None,
+    outbox=None,
+    mapper=None,
+    reaction_capabilities=None,
+    contextual_scene=None,
+    group_style=None,
+):
     return GroupPipeline(
         access_service=access or FakeAccess(),
-        scene_analyzer=FakeSceneAnalyzer(scene),
+        scene_analyzer=FakeSceneAnalyzer(scene, contextual_scene=contextual_scene),
         personality_engine=PersonalityEngine(),
         context_builder=context or FakeContextBuilder(),
         response_generator=generator or FakeGenerator(),
         intervention_repo=FakeInterventions(),
         outbox_repo=outbox or FakeOutbox(),
         memory_mapper=mapper,
+        reaction_capability_client=(
+            reaction_capabilities
+            if reaction_capabilities is not None
+            else FakeReactionCapabilityClient()
+        ),
+        group_style_service=group_style,
         unsolicited_enabled=False,
     )
 

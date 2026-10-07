@@ -305,6 +305,7 @@ class MemoryRepository:
         min_confidence: float = 0.5,
         min_freshness: float = 0.1,
         callback_fatigue_minutes: int | None = None,
+        require_proactive: bool = False,
         limit: int = 24,
     ) -> list[RankedMemory]:
         usage_sql = _usage_clause(usage)
@@ -320,6 +321,9 @@ class MemoryRepository:
             "(valid_until IS NULL OR valid_until >= CURRENT_TIMESTAMP)",
         ]
         params: list[object] = [scope_type.value, scope_id, min_confidence, min_freshness]
+
+        if require_proactive and usage != "proactive":
+            conditions.append(_usage_clause("proactive"))
 
         subject_boost_sql = "0"
         if keys:
@@ -357,6 +361,7 @@ class MemoryRepository:
         min_confidence: float = 0.5,
         min_freshness: float = 0.1,
         callback_fatigue_minutes: int | None = None,
+        require_proactive: bool = False,
         limit: int = 16,
     ) -> list[RankedMemory]:
         seeds = list(seed_ids)
@@ -386,6 +391,8 @@ class MemoryRepository:
             min_confidence,
             min_freshness,
         ]
+        if require_proactive and usage != "proactive":
+            conditions.append(_usage_clause("proactive", alias="mc"))
         if callback_fatigue_minutes is not None:
             conditions.append(
                 "(mc.last_used_at IS NULL OR mc.last_used_at <= CURRENT_TIMESTAMP - (%s * INTERVAL '1 minute'))"

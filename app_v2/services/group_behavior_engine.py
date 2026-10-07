@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections.abc import Mapping
 from dataclasses import dataclass
 from datetime import datetime
 from typing import Any
@@ -9,6 +10,8 @@ from app_v2.domain.enums import EventType, ScopeType
 from app_v2.domain.events import EventEnvelope, SceneAnalysis
 from app_v2.repositories.group_context_repo import GroupContext
 from app_v2.services.dispatcher import DispatcherPolicyState
+from app_v2.services.group_style import apply_style_deltas
+from app_v2.services.initiative_opportunity import evaluate_initiative_opportunity
 
 
 _CALLBACK_TYPES = {"running_joke", "pattern", "contradiction", "commitment", "decision", "quote"}
@@ -37,6 +40,29 @@ def _bool(value: Any, default: bool = False) -> bool:
     return bool(value)
 
 
+def _style_delta(values: Mapping[str, int | float], key: str) -> int:
+    try:
+        parsed = int(round(float(values.get(key, 0))))
+    except (TypeError, ValueError):
+        return 0
+    return max(-3, min(2, parsed))
+
+
+def _style_opportunity(value: float, delta: int) -> float:
+    """Modulate an existing opportunity without inventing a new one."""
+
+    if value <= 0 or delta == 0:
+        return value
+    factor = {
+        -3: 0.70,
+        -2: 0.85,
+        -1: 0.93,
+        1: 1.05,
+        2: 1.10,
+    }.get(delta, 1.0)
+    return max(0.0, min(1.0, value * factor))
+
+
 def _is_grounded_callback_card(item: Any) -> bool:
     card = item.card
     if card.memory_type not in _CALLBACK_TYPES:
@@ -51,6 +77,7 @@ class GroupBehaviorPlan:
     scene: SceneAnalysis
     state: DispatcherPolicyState
     memory_usage: str
+    memory_require_proactive: bool
     callback_fatigue_minutes: int
     callback_memory_ids: tuple[str, ...]
     context_profile: dict[str, Any]
@@ -79,6 +106,7 @@ class GroupBehaviorEngine:
         scene: SceneAnalysis,
         now: datetime,
         connector_config: ConnectorConfig | None = None,
+        style_deltas: Mapping[str, int | float] | None = None,
     ) -> GroupBehaviorPlan:
         if event.scope_type is not ScopeType.GROUP:
             raise ValueError("GroupBehaviorEngine requires group scope")
@@ -108,6 +136,21 @@ class GroupBehaviorEngine:
             )
             connector_state = None
 
+        initiative_hard_off = initiative == 0
+        bounded_style_deltas = dict(style_deltas or {})
+        if "initiative" in bounded_style_deltas and "initiative" not in profile:
+            profile = dict(profile)
+            profile["initiative"] = initiative
+        profile = apply_style_deltas(profile, bounded_style_deltas)
+        initiative_delta = _style_delta(bounded_style_deltas, "initiative")
+        # Explicit initiative=0 is a policy hard-off and cannot be granted by
+        # learned positive feedback.
+        if initiative_hard_off and initiative_delta > 0:
+            initiative_delta = 0
+        initiative = _int(initiative + initiative_delta, initiative)
+
+        roast_delta = _style_delta(bounded_style_deltas, "roast")
+        callback_delta = _style_delta(bounded_style_deltas, "callback")
         roast_level = _int(profile.get("roast"), 9)
         callback_level = _int(profile.get("callback"), 10)
         roast_tolerance = _int(participant.get("roast_tolerance"), 7)
@@ -151,18 +194,41 @@ class GroupBehaviorEngine:
             and effective_scene.sensitivity_score < 0.75
         )
         subject_keys = [f"user:{event.actor_user_id}"] if event.actor_user_id else []
+        explicit_group_turn = (
+            event.event_type
+            in {
+                EventType.DIRECT_MENTION,
+                EventType.REPLY_TO_BOT,
+                EventType.REPLY_TO_BOT_MESSAGE,
+            }
+            or effective_scene.direct_mention
+            or effective_scene.reply_to_bot
+            or effective_scene.question_to_bot
+        )
+        unsolicited_memory_only = (
+            event.event_type is EventType.GROUP_SILENCE_WAKEUP
+            or (
+                event.event_type is EventType.GROUP_MESSAGE
+                and not explicit_group_turn
+            )
+        )
 
         probe = []
         memory_unavailable = False
         if not silence_requested and callback_level > 0 and roast_tolerance >= 3:
             try:
+                retrieval_kwargs = {
+                    "usage": "callback",
+                    "subject_keys": subject_keys,
+                    "callback_fatigue_minutes": fatigue,
+                    "limit": 6,
+                }
+                if unsolicited_memory_only:
+                    retrieval_kwargs["require_proactive"] = True
                 probe = self.retrieval_engine.retrieve(
                     ScopeType.GROUP,
                     event.scope_id,
-                    usage="callback",
-                    subject_keys=subject_keys,
-                    callback_fatigue_minutes=fatigue,
-                    limit=6,
+                    **retrieval_kwargs,
                 )
             except Exception:
                 probe = []
@@ -170,19 +236,51 @@ class GroupBehaviorEngine:
                 policy_degraded = True
 
         callback_cards = [item for item in probe if _is_grounded_callback_card(item)]
-        running_joke_fit = any(item.card.memory_type == "running_joke" for item in callback_cards)
+        behavior_callback_cards = (
+            [
+                item
+                for item in callback_cards
+                if bool(item.card.usage_policy.proactive)
+            ]
+            if unsolicited_memory_only
+            else list(callback_cards)
+        )
+        if event.event_type is EventType.GROUP_SILENCE_WAKEUP:
+            last_human_telegram_message_id = str(
+                event.metadata.get("last_human_telegram_message_id") or ""
+            ).strip()
+            behavior_callback_cards = [
+                item
+                for item in behavior_callback_cards
+                if last_human_telegram_message_id
+                and any(
+                    str(evidence.message_id or "")
+                    == last_human_telegram_message_id
+                    for evidence in item.card.evidence
+                )
+            ]
+
+        running_joke_fit = any(
+            item.card.memory_type == "running_joke"
+            for item in behavior_callback_cards
+        )
         grounded_contradiction_fit = any(
-            item.card.memory_type == "contradiction" for item in callback_cards
+            item.card.memory_type == "contradiction"
+            for item in behavior_callback_cards
         )
         broken_commitment = any(
             item.card.memory_type == "commitment"
             and str(item.card.payload.get("status", "")).lower() in {"broken", "overdue", "missed"}
-            for item in callback_cards
+            for item in behavior_callback_cards
         )
-
         statement_watch_result = None
         statement_watch_state: dict[str, Any] | None = None
-        statement_cards = [item.card for item in callback_cards if item.card.memory_type in _STATEMENT_TYPES]
+        statement_watch_proactive = False
+        statement_cards = [
+            item.card
+            for item in behavior_callback_cards
+            if item.card.memory_type in _STATEMENT_TYPES
+        ]
         if (
             self.statement_watcher is not None
             and statement_cards
@@ -197,20 +295,31 @@ class GroupBehaviorEngine:
                 scene=effective_scene,
                 candidates=statement_cards,
             )
-            if statement_watch_result.relation != "none":
+            if statement_watch_result.memory_id:
+                statement_watch_proactive = any(
+                    card.id == statement_watch_result.memory_id
+                    and bool(card.usage_policy.proactive)
+                    for card in statement_cards
+                )
+            if (
+                statement_watch_result.relation != "none"
+                and statement_watch_proactive
+            ):
                 statement_watch_state = statement_watch_result.as_action_state()
 
         allow_callbacks = (
             not policy_degraded
             and not silence_requested
             and callback_level > 0
+            and callback_delta > -3
             and roast_tolerance >= 3
-            and bool(callback_cards)
+            and bool(behavior_callback_cards)
         )
         allow_roast = (
             not policy_degraded
             and not silence_requested
             and roast_level > 0
+            and roast_delta > -3
             and roast_tolerance >= 5
             and safe_scene
         )
@@ -231,7 +340,11 @@ class GroupBehaviorEngine:
                 if allow_roast:
                     changes["roast_opportunity"] = max(effective_scene.roast_opportunity, 0.80)
 
-            if statement_watch_result is not None and statement_watch_result.should_intervene:
+            if (
+                statement_watch_result is not None
+                and statement_watch_result.should_intervene
+                and statement_watch_proactive
+            ):
                 relation = statement_watch_result.relation
                 changes["callback_opportunity"] = max(effective_scene.callback_opportunity, 0.94)
                 if relation == "contradiction":
@@ -248,15 +361,38 @@ class GroupBehaviorEngine:
             if changes:
                 effective_scene = effective_scene.model_copy(update=changes)
 
+        appetite_changes: dict[str, float] = {}
+        if callback_delta:
+            appetite_changes["callback_opportunity"] = _style_opportunity(
+                effective_scene.callback_opportunity,
+                callback_delta,
+            )
+        if roast_delta:
+            appetite_changes["roast_opportunity"] = _style_opportunity(
+                effective_scene.roast_opportunity,
+                roast_delta,
+            )
+        if appetite_changes:
+            effective_scene = effective_scene.model_copy(update=appetite_changes)
+
         if dynamic is not None:
             muted = dynamic.group_muted
             cooldown_active = (not unsolicited_enabled) or dynamic.cooldown_active
-            initiative = dynamic.initiative_level
+            initiative = (
+                0
+                if initiative_hard_off
+                else _int(
+                    dynamic.initiative_level + initiative_delta,
+                    dynamic.initiative_level,
+                )
+            )
             unsolicited_today = dynamic.unsolicited_today
             soft_daily_limit = dynamic.soft_daily_limit
             hard_daily_limit = dynamic.hard_daily_limit
             bot_spoke_recently = dynamic.bot_spoke_recently
             ignored_recent = dynamic.ignored_unsolicited_recent
+            positive_feedback_recent = dynamic.positive_feedback_recent
+            negative_feedback_recent = dynamic.negative_feedback_recent
             dynamic_metadata = {
                 **dynamic.metadata,
                 "silence_requested_control": dynamic.silence_requested,
@@ -272,11 +408,14 @@ class GroupBehaviorEngine:
             hard_daily_limit = 10
             bot_spoke_recently = False
             ignored_recent = 0
+            positive_feedback_recent = 0
+            negative_feedback_recent = 0
             dynamic_metadata = {}
 
         priority_statement = bool(
             statement_watch_result
             and statement_watch_result.strong_mismatch
+            and statement_watch_proactive
             and unsolicited_enabled
             and not muted
             and safe_scene
@@ -286,8 +425,44 @@ class GroupBehaviorEngine:
         if policy_degraded:
             cooldown_active = True
 
-        callback_ids = tuple(item.card.id for item in callback_cards)
-        if statement_watch_result and statement_watch_result.memory_id:
+        opportunity_grounded_contradiction = any(
+            item.card.memory_type == "contradiction"
+            for item in behavior_callback_cards
+        )
+        opportunity_broken_commitment = any(
+            item.card.memory_type == "commitment"
+            and str(item.card.payload.get("status", "")).lower()
+            in {"broken", "overdue", "missed"}
+            for item in behavior_callback_cards
+        )
+
+        opportunity = evaluate_initiative_opportunity(
+            event,
+            effective_scene,
+            has_grounded_callback=bool(behavior_callback_cards),
+            grounded_contradiction=opportunity_grounded_contradiction,
+            broken_commitment=opportunity_broken_commitment,
+            priority_statement=priority_statement,
+            allow_callbacks=allow_callbacks,
+            allow_roast=allow_roast,
+            ignored_recent=ignored_recent,
+            negative_feedback_recent=negative_feedback_recent,
+            positive_feedback_recent=positive_feedback_recent,
+            bot_spoke_recently=bot_spoke_recently,
+            policy_degraded=policy_degraded,
+        )
+
+        generation_memory_usage = "callback" if allow_callbacks else "assist"
+        memory_require_proactive = (
+            unsolicited_memory_only and opportunity.eligible
+        )
+
+        callback_ids = tuple(item.card.id for item in behavior_callback_cards)
+        if (
+            statement_watch_result
+            and statement_watch_result.memory_id
+            and statement_watch_proactive
+        ):
             callback_ids = (
                 statement_watch_result.memory_id,
                 *tuple(item for item in callback_ids if item != statement_watch_result.memory_id),
@@ -307,6 +482,7 @@ class GroupBehaviorEngine:
             priority_statement=priority_statement,
             allow_roast=allow_roast,
             allow_callbacks=allow_callbacks,
+            initiative_opportunity_eligible=opportunity.eligible,
             metadata={
                 "group_profile": profile.get("profile", "friends"),
                 "unsolicited_enabled": unsolicited_enabled,
@@ -317,7 +493,13 @@ class GroupBehaviorEngine:
                 "policy_degraded": policy_degraded,
                 "memory_unavailable": memory_unavailable,
                 "initiative_unavailable": initiative_unavailable,
+                "initiative_opportunity": opportunity.as_metadata(),
                 "connector": connector_state,
+                "social_style_deltas": {
+                    key: int(value)
+                    for key, value in bounded_style_deltas.items()
+                    if isinstance(value, (int, float)) and not isinstance(value, bool)
+                },
                 **dynamic_metadata,
             },
         )
@@ -325,7 +507,8 @@ class GroupBehaviorEngine:
         return GroupBehaviorPlan(
             scene=effective_scene,
             state=state,
-            memory_usage="callback" if allow_callbacks else "assist",
+            memory_usage=generation_memory_usage,
+            memory_require_proactive=memory_require_proactive,
             callback_fatigue_minutes=fatigue,
             callback_memory_ids=callback_ids if not policy_degraded else (),
             context_profile=profile,

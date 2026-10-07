@@ -28,6 +28,7 @@ def candidate(**overrides):
         },
         "silent_until": None,
         "last_human_message_id": 77,
+        "last_human_telegram_message_id": 7077,
         "last_human_message_at": NOW - timedelta(hours=4),
         "last_human_excerpt": "ну всё, разбежались по делам",
         "last_successful_wakeup_message_id": None,
@@ -193,3 +194,40 @@ def test_mute_cooldown_negative_and_soft_limit_all_fail_closed():
         repo = Repo()
         assert service(repo=repo, initiative=Initiative(**overrides)).run_once(now=NOW) is False
         assert repo.enqueued == []
+
+
+def test_positive_feedback_cannot_enqueue_wakeup_when_initiative_is_hard_off():
+    class HardOffInitiative:
+        def evaluate(self, *, event, group_context, now):
+            from app_v2.services.group_initiative import GroupInitiativeService
+            return GroupInitiativeService(
+                FakeInitiativeRepo()
+            ).evaluate(
+                event=event,
+                group_context=group_context.__class__(
+                    **{
+                        **group_context.__dict__,
+                        "profile": {
+                            **group_context.profile,
+                            "initiative": 0,
+                        },
+                    }
+                ),
+                now=now,
+            )
+
+    class FakeInitiativeRepo:
+        def count_feedback_since(self, scope_id, feedback_types, since):
+            return 100 if "positive" in set(feedback_types) else 0
+        def count_unsolicited_since(self, scope_id, since):
+            return 0
+        def last_unsolicited_at(self, scope_id):
+            return None
+        def count_messages_since(self, scope_id, since):
+            return 20
+        def set_silent_until(self, scope_id, silent_until):
+            return True
+
+    repo = Repo()
+    assert service(repo=repo, initiative=HardOffInitiative()).run_once(now=NOW) is False
+    assert repo.enqueued == []

@@ -44,6 +44,7 @@ class GenerationContext:
     estimated_memory_tokens: int
     external_context: tuple[dict[str, Any], ...] = ()
     estimated_external_tokens: int = 0
+    participant_directory: dict[str, Any] | None = None
 
     def as_dict(self) -> dict[str, Any]:
         data = asdict(self)
@@ -63,6 +64,8 @@ class ContextBuilder:
         memory_max_cards: int = 8,
         memory_token_budget: int = 1200,
         external_token_budget: int = 8000,
+        participant_directory_repo: Any | None = None,
+        participant_directory_limit: int = 20,
     ) -> None:
         self.message_repo = message_repo
         self.retrieval_engine = retrieval_engine
@@ -72,6 +75,8 @@ class ContextBuilder:
         self.memory_max_cards = max(self.memory_min_cards, memory_max_cards)
         self.memory_token_budget = max(100, memory_token_budget)
         self.external_token_budget = max(500, external_token_budget)
+        self.participant_directory_repo = participant_directory_repo
+        self.participant_directory_limit = max(1, min(participant_directory_limit, 50))
 
     def mapper_context(
         self,
@@ -141,6 +146,7 @@ class ContextBuilder:
         subject_keys: Iterable[str] = (),
         memory_usage: str = "assist",
         callback_fatigue_minutes: int = 60,
+        memory_require_proactive: bool = False,
         action_state: dict[str, Any] | None = None,
         external_context: Iterable[dict[str, Any]] = (),
     ) -> GenerationContext:
@@ -162,13 +168,18 @@ class ContextBuilder:
             degraded["hot_messages_unavailable"] = True
 
         try:
+            retrieval_kwargs = {
+                "usage": memory_usage,
+                "subject_keys": subject_keys,
+                "callback_fatigue_minutes": callback_fatigue_minutes,
+                "limit": self.memory_max_cards,
+            }
+            if memory_require_proactive:
+                retrieval_kwargs["require_proactive"] = True
             ranked = self.retrieval_engine.retrieve(
                 event.scope_type,
                 event.scope_id,
-                usage=memory_usage,
-                subject_keys=subject_keys,
-                callback_fatigue_minutes=callback_fatigue_minutes,
-                limit=self.memory_max_cards,
+                **retrieval_kwargs,
             )
             memories, memory_tokens = self._fit_memories(ranked)
         except Exception:
@@ -179,6 +190,20 @@ class ContextBuilder:
             degraded["memory_unavailable"] = True
 
         external_items, external_tokens = self._fit_external(external_context)
+
+        participant_directory = None
+        if event.scope_type is ScopeType.GROUP and self.participant_directory_repo is not None:
+            try:
+                participants = self.participant_directory_repo.list_recent(
+                    event.scope_id,
+                    limit=self.participant_directory_limit,
+                )
+                participant_directory = {
+                    "coverage": "observed_participants_only_not_complete_membership",
+                    "participants": [item.as_context() for item in participants],
+                }
+            except Exception:
+                degraded["participant_directory_unavailable"] = True
 
         effective_action_state = dict(action_state or {})
         if degraded:
@@ -199,6 +224,7 @@ class ContextBuilder:
             estimated_memory_tokens=memory_tokens,
             external_context=tuple(external_items),
             estimated_external_tokens=external_tokens,
+            participant_directory=participant_directory,
         )
 
     def _fit_external(

@@ -568,3 +568,25 @@ def test_semantic_interpretation_preserves_zero_cancel_truth_guard():
 
     assert result.text != model_text
     assert "Активное напоминание не остановлено" in result.text
+
+
+def test_group_generator_payload_includes_observed_participant_directory():
+    adapter = FakeAdapter()
+    context = _context(ScopeType.GROUP, ResponseMode.GROUP_DIRECT_REPLY)
+    context = GenerationContext(
+        **{
+            **context.__dict__,
+            "participant_directory": {
+                "coverage": "observed_participants_only_not_complete_membership",
+                "participants": [{"label": "Алиса", "username": "@alice", "role": "member"}],
+            },
+        }
+    )
+
+    ResponseGenerator(adapter=adapter).generate(context)
+
+    payload = json.loads(adapter.calls[0][1])
+    assert payload["participant_directory"]["coverage"] == "observed_participants_only_not_complete_membership"
+    assert payload["participant_directory"]["participants"] == [
+        {"label": "Алиса", "username": "@alice", "role": "member"}
+    ]

@@ -6,11 +6,12 @@ from typing import Any
 
 from app_v2.domain.enums import EventType, PrimaryAction, ResponseMode, ScopeType
 from app_v2.domain.events import EventEnvelope, SceneAnalysis
-from app_v2.domain.outbound import OutboundMessage
+from app_v2.domain.outbound import OutboundMessage, OutboundReaction
 from app_v2.services.dispatcher import DispatcherPolicyState, decide
 from app_v2.services.group_silence_wakeup import silence_wakeup_window_open
 from app_v2.services.group_humanity import classify_group_humanity
 from app_v2.services.operation_receipts import group_operation_receipts
+from app_v2.services.reaction_policy import choose_reaction
 
 
 class GroupPipelineError(RuntimeError):
@@ -30,6 +31,12 @@ class GroupPipelineResult:
     selected_memory_ids: tuple[str, ...] = ()
     mapped_memory_ids: tuple[str, ...] = ()
     generation_failed: bool = False
+    reaction_emoji: str | None = None
+
+
+def _group_output_dedupe_key(event_id: str) -> str:
+    """One durable output identity per Group event, regardless of text vs reaction."""
+    return f"reply:{event_id}"
 
 
 def _should_map_group_memory(event: EventEnvelope, scene: SceneAnalysis) -> bool:
@@ -72,6 +79,8 @@ class GroupPipeline:
         connector_resolver: Any | None = None,
         url_reader: Any | None = None,
         birthday_service: Any | None = None,
+        reaction_capability_client: Any | None = None,
+        group_style_service: Any | None = None,
         unsolicited_enabled: bool = False,
     ) -> None:
         self.access_service = access_service
@@ -90,6 +99,8 @@ class GroupPipeline:
         self.connector_resolver = connector_resolver
         self.url_reader = url_reader
         self.birthday_service = birthday_service
+        self.reaction_capability_client = reaction_capability_client
+        self.group_style_service = group_style_service
         self.unsolicited_enabled = unsolicited_enabled
 
     def _mapper_context(self, event: EventEnvelope) -> tuple[dict[str, Any], ...]:
@@ -314,7 +325,26 @@ class GroupPipeline:
         adaptation = participant_profile.get("personality_modifiers")
         if not isinstance(adaptation, dict):
             adaptation = {}
+
+        base_profile = dict(profile)
+        social_style = None
+        social_style_metadata: dict[str, Any] | None = None
+        if self.group_style_service is not None:
+            try:
+                social_style = self.group_style_service.evaluate(
+                    event.scope_id,
+                    base_profile=base_profile,
+                    now=current,
+                )
+                social_style_metadata = social_style.as_metadata(base_profile)
+            except Exception:
+                # Adaptive style is optional. Evidence/read failures must not
+                # break an explicit Group response or change the base profile.
+                social_style = None
+                social_style_metadata = None
+
         memory_usage = "assist"
+        memory_require_proactive = False
         callback_fatigue_minutes = 60
         behavior_memory_ids: tuple[str, ...] = ()
         statement_watch_state: dict[str, Any] | None = None
@@ -323,6 +353,8 @@ class GroupPipeline:
         # but it must not burn LLM/initiative logic trying to classify a
         # synthetic empty message.
         if event.event_type is EventType.BIRTHDAY_DUE:
+            if social_style is not None:
+                profile = dict(social_style.effective_profile)
             muted = bool(group_context.silent_until and group_context.silent_until > current)
             state = DispatcherPolicyState(
                 group_muted=muted,
@@ -350,16 +382,21 @@ class GroupPipeline:
             }
             if connector_config is not None:
                 plan_kwargs["connector_config"] = connector_config
+            if social_style is not None:
+                plan_kwargs["style_deltas"] = dict(social_style.deltas)
             plan = self.group_behavior_engine.plan(**plan_kwargs)
             scene = plan.scene
             state = plan.state
             profile = dict(plan.context_profile)
             adaptation = dict(plan.participant_adaptation)
             memory_usage = plan.memory_usage
+            memory_require_proactive = plan.memory_require_proactive
             callback_fatigue_minutes = plan.callback_fatigue_minutes
             behavior_memory_ids = tuple(plan.callback_memory_ids)
             statement_watch_state = plan.statement_watch
         else:
+            if social_style is not None:
+                profile = dict(social_style.effective_profile)
             muted = bool(group_context.silent_until and group_context.silent_until > current)
             connector_unsolicited = (
                 connector_config.behavior.unsolicited_enabled
@@ -377,6 +414,9 @@ class GroupPipeline:
                 initiative_level=connector_initiative,
                 allow_roast=False,
                 allow_callbacks=False,
+                initiative_opportunity_eligible=(
+                    event.event_type is not EventType.GROUP_SILENCE_WAKEUP
+                ),
                 metadata={
                     "group_profile": profile.get("profile", "friends"),
                     "connector": (
@@ -450,6 +490,117 @@ class GroupPipeline:
                 }
             )
 
+        reaction = choose_reaction(
+            event,
+            scene,
+            proposed_action=decision.primary_action,
+            social_repair=humanity.social_repair,
+            has_operational_action=any(
+                (
+                    reminder_action_state is not None,
+                    scheduled_action_interpretation is not None,
+                    birthday_action_state is not None,
+                )
+            ),
+        )
+
+        if (
+            reaction is not None
+            and event.event_type in {EventType.REPLY_TO_BOT, EventType.REPLY_TO_BOT_MESSAGE}
+        ):
+            reply_context = str(event.metadata.get("reply_to_text") or "").strip()
+            if not reply_context:
+                # A reply to media/unknown content has insufficient safety
+                # context for a playful acknowledgement.
+                reaction = None
+            else:
+                contextual_scene = self.scene_analyzer.analyze(
+                    event,
+                    recent_context=reply_context,
+                )
+                reaction = choose_reaction(
+                    event,
+                    contextual_scene,
+                    proposed_action=decision.primary_action,
+                    social_repair=humanity.social_repair,
+                    has_operational_action=any(
+                        (
+                            reminder_action_state is not None,
+                            scheduled_action_interpretation is not None,
+                            birthday_action_state is not None,
+                        )
+                    ),
+                )
+
+        reaction_fallback_family: str | None = None
+        if reaction is not None:
+            capability_ok = False
+            if self.reaction_capability_client is not None:
+                try:
+                    capability = self.reaction_capability_client.get_reaction_capabilities(
+                        event.scope_id
+                    )
+                    capability_ok = bool(capability.supports(reaction.emoji))
+                except Exception:
+                    # Reaction is optional polish. Unknown Telegram capability
+                    # must preserve the normal text reply rather than turn a
+                    # user-addressed message into a terminal failed reaction.
+                    capability_ok = False
+            if not capability_ok:
+                # Unlike setMessageReaction, the fallback is a bot-authored
+                # message and can receive attributable reaction/reply feedback.
+                reaction_fallback_family = "social_ack"
+                reaction = None
+
+        if reaction is not None:
+            decision = decision.model_copy(
+                update={"primary_action": PrimaryAction.REACTION_ONLY}
+            )
+            intervention = self.intervention_repo.record(
+                event_id=event.event_id,
+                scope_type=event.scope_type,
+                scope_id=event.scope_id,
+                decision=decision,
+                selected_memory_ids=list(behavior_memory_ids),
+                generated_text=None,
+                extra_metadata={
+                    "outbound_action": {
+                        "kind": "reaction",
+                        "emoji": reaction.emoji,
+                        "target_message_id": event.message_id,
+                        "reason": reaction.reason,
+                    },
+                    "social_style": social_style_metadata,
+                },
+            )
+            outbound = OutboundReaction(
+                action_id=f"reaction:{event.event_id}",
+                scope_type=ScopeType.GROUP,
+                scope_id=event.scope_id,
+                target_message_id=event.message_id,
+                emoji=reaction.emoji,
+                dedupe_key=_group_output_dedupe_key(event.event_id),
+                metadata={
+                    "event_id": event.event_id,
+                    "intervention_id": str(intervention.id),
+                    "action_kind": "reaction",
+                    "reaction_reason": reaction.reason,
+                },
+            )
+            outbox_id, created = self.outbox_repo.enqueue(outbound)
+            return GroupPipelineResult(
+                event_id=event.event_id,
+                allowed=True,
+                access_reason=access.reason,
+                primary_action=PrimaryAction.REACTION_ONLY,
+                mode=decision.mode,
+                outbox_id=outbox_id,
+                outbox_created=created,
+                selected_memory_ids=behavior_memory_ids,
+                mapped_memory_ids=mapped_memory_ids,
+                reaction_emoji=reaction.emoji,
+            )
+
         if decision.primary_action is not PrimaryAction.REPLY:
             self.intervention_repo.record(
                 event_id=event.event_id,
@@ -471,6 +622,7 @@ class GroupPipeline:
                     "statement_watch": statement_watch_state,
                     "operation_receipts": operation_receipts,
                     "birthday_profile": birthday_action_state,
+                    "social_style": social_style_metadata,
                 },
             )
             return GroupPipelineResult(
@@ -521,6 +673,7 @@ class GroupPipeline:
             "behavior_probe_ids": list(behavior_memory_ids),
             "mapped_memory_ids": list(mapped_memory_ids),
             "operation_receipts": operation_receipts,
+            "social_style": social_style_metadata,
         }
         if birthday_action_state is not None:
             action_state["birthday_profile"] = birthday_action_state
@@ -549,6 +702,8 @@ class GroupPipeline:
             "callback_fatigue_minutes": callback_fatigue_minutes,
             "action_state": action_state,
         }
+        if memory_require_proactive:
+            context_kwargs["memory_require_proactive"] = True
         if external_context:
             context_kwargs["external_context"] = external_context
         context = self.context_builder.build(**context_kwargs)
@@ -583,6 +738,8 @@ class GroupPipeline:
                     "operation_receipts": operation_receipts,
                     "birthday_profile": birthday_action_state,
                     "url_read": url_read_telemetry,
+                    "social_style": social_style_metadata,
+                    "feedback_family": reaction_fallback_family,
                 },
             )
             return GroupPipelineResult(
@@ -612,6 +769,8 @@ class GroupPipeline:
                 "operation_receipts": operation_receipts,
                 "birthday_profile": birthday_action_state,
                 "url_read": url_read_telemetry,
+                "social_style": social_style_metadata,
+                "feedback_family": reaction_fallback_family,
             },
         )
         outbound = OutboundMessage(
@@ -620,7 +779,7 @@ class GroupPipeline:
             scope_id=event.scope_id,
             text=generated.text,
             reply_to_message_id=event.message_id,
-            dedupe_key=f"reply:{event.event_id}",
+            dedupe_key=_group_output_dedupe_key(event.event_id),
             metadata={
                 "event_id": event.event_id,
                 "intervention_id": str(intervention.id),
@@ -629,10 +788,15 @@ class GroupPipeline:
             },
         )
         outbox_id, created = self.outbox_repo.enqueue(outbound)
-        if created and self.group_behavior_engine is not None and behavior_memory_ids:
+        callback_used_ids = (
+            selected_memory_ids
+            if memory_usage == "callback" and memory_require_proactive
+            else behavior_memory_ids
+        )
+        if created and self.group_behavior_engine is not None and callback_used_ids:
             self.group_behavior_engine.mark_callback_memories_used(
                 event.scope_id,
-                behavior_memory_ids,
+                callback_used_ids,
             )
         return GroupPipelineResult(
             event_id=event.event_id,

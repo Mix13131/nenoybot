@@ -182,6 +182,7 @@ def test_silence_wakeup_gets_one_explicit_unsolicited_reply_path():
             unsolicited_today=0,
             soft_daily_limit=6,
             hard_daily_limit=10,
+            initiative_opportunity_eligible=True,
         ),
     )
 
@@ -201,6 +202,7 @@ def test_silence_wakeup_can_use_grounded_callback_mode():
             cooldown_active=False,
             unsolicited_today=0,
             soft_daily_limit=6,
+            initiative_opportunity_eligible=True,
         ),
     )
 
@@ -256,3 +258,77 @@ def test_silence_wakeup_is_blocked_if_feedback_turns_negative_after_enqueue():
 
     assert decision.primary_action is PrimaryAction.IGNORE
     assert decision.reason_codes == [ReasonCode.NEGATIVE_FEEDBACK_RECENT]
+
+
+def test_high_initiative_cannot_override_no_action_quality_gate() -> None:
+    decision = decide(
+        _event(),
+        SceneAnalysis(callback_opportunity=0.9, contradiction_score=0.9),
+        DispatcherPolicyState(
+            initiative_level=10,
+            initiative_opportunity_eligible=False,
+            metadata={
+                "initiative_opportunity": {
+                    "eligible": False,
+                    "quality_score": 0,
+                    "hook_family": None,
+                    "reasons": [],
+                    "suppressors": ["no_grounded_hook"],
+                    "stale_context": False,
+                    "version": "initiative-opportunity-v1",
+                }
+            },
+        ),
+    )
+
+    assert decision.primary_action is PrimaryAction.IGNORE
+    assert decision.reason_codes == [ReasonCode.INITIATIVE_NO_ACTION]
+
+
+def test_weak_silence_wakeup_is_no_action() -> None:
+    decision = decide(
+        _event(event_type=EventType.GROUP_SILENCE_WAKEUP),
+        SceneAnalysis(),
+        DispatcherPolicyState(
+            cooldown_active=False,
+            unsolicited_today=0,
+            soft_daily_limit=6,
+            initiative_opportunity_eligible=False,
+        ),
+    )
+
+    assert decision.primary_action is PrimaryAction.IGNORE
+    assert decision.reason_codes == [ReasonCode.INITIATIVE_NO_ACTION]
+
+
+def test_direct_mention_ignores_proactive_quality_gate() -> None:
+    decision = decide(
+        _event(event_type=EventType.DIRECT_MENTION),
+        SceneAnalysis(direct_mention=True),
+        DispatcherPolicyState(
+            initiative_opportunity_eligible=False,
+            cooldown_active=True,
+        ),
+    )
+
+    assert decision.primary_action is PrimaryAction.REPLY
+    assert decision.mode is ResponseMode.GROUP_DIRECT_REPLY
+
+
+def test_reminder_and_birthday_ignore_proactive_quality_gate() -> None:
+    state = DispatcherPolicyState(initiative_opportunity_eligible=False)
+    reminder = decide(
+        _event(event_type=EventType.REMINDER_DUE),
+        SceneAnalysis(),
+        state,
+    )
+    birthday = decide(
+        _event(event_type=EventType.BIRTHDAY_DUE),
+        SceneAnalysis(),
+        state,
+    )
+
+    assert reminder.primary_action is PrimaryAction.REPLY
+    assert reminder.reason_codes == [ReasonCode.SCHEDULED_REMINDER]
+    assert birthday.primary_action is PrimaryAction.REPLY
+    assert birthday.reason_codes == [ReasonCode.BIRTHDAY]

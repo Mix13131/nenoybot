@@ -31,6 +31,7 @@ class DispatcherPolicyState:
     priority_statement: bool = False
     allow_roast: bool = True
     allow_callbacks: bool = True
+    initiative_opportunity_eligible: bool = True
     metadata: dict[str, object] = field(default_factory=dict)
 
 
@@ -224,35 +225,6 @@ def decide(
             metadata={"policy_version": POLICY_VERSION, "unsolicited": True, **state.metadata},
         )
 
-    # Rare high-confidence "caught you" moments are the product value of the
-    # watcher. They may bypass ordinary cooldown/recent-bot penalties, while
-    # mute, hard daily cap and safety gates above still win.
-    if (
-        state.priority_statement
-        and state.allow_callbacks
-        and scene.seriousness_score < 0.75
-        and scene.conflict_score < 0.75
-        and scene.sensitivity_score < 0.75
-    ):
-        reasons = [ReasonCode.STATEMENT_WATCH, ReasonCode.CALLBACK_OPPORTUNITY]
-        if scene.contradiction_score >= 0.75:
-            reasons.append(ReasonCode.CONTRADICTION)
-        if state.broken_commitment_relevant:
-            reasons.append(ReasonCode.BROKEN_COMMITMENT)
-        return DispatcherDecision(
-            primary_action=PrimaryAction.REPLY,
-            mode=ResponseMode.GROUP_CALLBACK,
-            intervention_score=95,
-            reason_codes=reasons,
-            target_user_id=event.actor_user_id,
-            metadata={
-                "policy_version": POLICY_VERSION,
-                "unsolicited": True,
-                "priority_statement": True,
-                **state.metadata,
-            },
-        )
-
     if state.cooldown_active:
         return DispatcherDecision(
             primary_action=PrimaryAction.IGNORE,
@@ -293,6 +265,13 @@ def decide(
                 reason_codes=[ReasonCode.SENSITIVE_CONTEXT],
                 metadata={"policy_version": POLICY_VERSION, "unsolicited": True, **state.metadata},
             )
+        if not state.initiative_opportunity_eligible:
+            return DispatcherDecision(
+                primary_action=PrimaryAction.IGNORE,
+                intervention_score=0,
+                reason_codes=[ReasonCode.INITIATIVE_NO_ACTION],
+                metadata={"policy_version": POLICY_VERSION, "unsolicited": True, **state.metadata},
+            )
         return DispatcherDecision(
             primary_action=PrimaryAction.REPLY,
             mode=_group_mode(scene, state),
@@ -303,6 +282,43 @@ def decide(
                 "policy_version": POLICY_VERSION,
                 "unsolicited": True,
                 "silence_reengagement": True,
+                **state.metadata,
+            },
+        )
+
+    if not state.initiative_opportunity_eligible:
+        return DispatcherDecision(
+            primary_action=PrimaryAction.IGNORE,
+            intervention_score=0,
+            reason_codes=[ReasonCode.INITIATIVE_NO_ACTION],
+            target_user_id=event.actor_user_id,
+            metadata={"policy_version": POLICY_VERSION, "unsolicited": True, **state.metadata},
+        )
+
+    # A strong grounded statement can still be a high-value unsolicited turn,
+    # but 46D no longer lets it bypass cooldown or other hard gates above.
+    if (
+        state.priority_statement
+        and state.allow_callbacks
+        and scene.seriousness_score < 0.75
+        and scene.conflict_score < 0.75
+        and scene.sensitivity_score < 0.75
+    ):
+        reasons = [ReasonCode.STATEMENT_WATCH, ReasonCode.CALLBACK_OPPORTUNITY]
+        if scene.contradiction_score >= 0.75:
+            reasons.append(ReasonCode.CONTRADICTION)
+        if state.broken_commitment_relevant:
+            reasons.append(ReasonCode.BROKEN_COMMITMENT)
+        return DispatcherDecision(
+            primary_action=PrimaryAction.REPLY,
+            mode=ResponseMode.GROUP_CALLBACK,
+            intervention_score=95,
+            reason_codes=reasons,
+            target_user_id=event.actor_user_id,
+            metadata={
+                "policy_version": POLICY_VERSION,
+                "unsolicited": True,
+                "priority_statement": True,
                 **state.metadata,
             },
         )

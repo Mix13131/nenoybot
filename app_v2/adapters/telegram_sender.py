@@ -33,6 +33,9 @@ class TelegramSender:
         self.client = client or httpx.Client(timeout=timeout_seconds)
 
     def send(self, destination_id: str, payload: dict[str, Any]) -> dict[str, Any]:
+        if payload.get("kind") == "reaction":
+            return self._set_reaction(destination_id, payload)
+
         text = payload.get("text")
         if not isinstance(text, str) or not text.strip():
             raise TelegramSendError("Outbound Telegram payload must contain non-empty text")
@@ -78,3 +81,37 @@ class TelegramSender:
             )
         result = data.get("result")
         return result if isinstance(result, dict) else {"result": result}
+
+    def _set_reaction(self, destination_id: str, payload: dict[str, Any]) -> dict[str, Any]:
+        emoji = payload.get("emoji")
+        if emoji not in {"😂", "👍", "🔥"}:
+            raise TelegramSendError("Outbound Telegram reaction is not allowlisted")
+        try:
+            target_message_id = int(payload["target_message_id"])
+        except (KeyError, TypeError, ValueError) as exc:
+            raise TelegramSendError("Outbound Telegram reaction requires a valid message id") from exc
+
+        response = self.client.post(
+            f"{self.base_url}/bot{self.token}/setMessageReaction",
+            json={
+                "chat_id": destination_id,
+                "message_id": target_message_id,
+                "reaction": [{"type": "emoji", "emoji": emoji}],
+                "is_big": False,
+            },
+        )
+        if getattr(response, "status_code", 500) >= 400:
+            body = getattr(response, "text", "")
+            raise TelegramSendError(f"Telegram HTTP {response.status_code}: {body[:1000]}")
+        try:
+            data = response.json()
+        except Exception as exc:
+            raise TelegramSendError("Telegram returned invalid JSON") from exc
+        if not data.get("ok"):
+            raise TelegramSendError(
+                f"Telegram API error: {data.get('description') or 'unknown error'}"
+            )
+        # setMessageReaction returns True, not a bot-authored message.
+        if data.get("result") is not True:
+            raise TelegramSendError("Telegram reaction was not confirmed")
+        return {"reaction_set": True}

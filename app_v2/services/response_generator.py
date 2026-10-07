@@ -520,5 +520,6 @@ class ResponseGenerator:
                 for memory in context.memories
             ],
             "external_context": list(context.external_context),
+            "participant_directory": context.participant_directory,
             "action_state": context.action_state,
         }

@@ -51,10 +51,22 @@ def ingest_telegram_update(
             if repo.event_exists(normalized.telegram_update_id):
                 return IngestResult(status="duplicate", event_id=normalized.envelope.event_id)
 
-            user_id = repo.upsert_user(normalized.telegram_user)
+            user_id = repo.upsert_user(
+                normalized.telegram_user,
+                observed_at=normalized.envelope.occurred_at,
+                observed_update_id=normalized.telegram_update_id,
+                username_observed=True,
+            )
             chat_id = repo.upsert_chat(normalized.telegram_chat)
             if normalized.is_group:
-                repo.upsert_member(chat_id, user_id)
+                repo.upsert_member(
+                    chat_id,
+                    user_id,
+                    user=normalized.telegram_user,
+                    observed_at=normalized.envelope.occurred_at,
+                    observed_update_id=normalized.telegram_update_id,
+                    username_observed=True,
+                )
             repo.store_message(normalized, chat_id, user_id)
             inserted = repo.insert_event(normalized)
 

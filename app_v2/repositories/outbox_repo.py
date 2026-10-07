@@ -5,7 +5,7 @@ from dataclasses import dataclass
 from datetime import datetime
 from typing import Any
 
-from app_v2.domain.outbound import OutboundMessage
+from app_v2.domain.outbound import OutboundMessage, OutboundReaction
 
 
 @dataclass(frozen=True)
@@ -32,15 +32,27 @@ class OutboxRepository:
     def __init__(self, conn) -> None:
         self.conn = conn
 
-    def enqueue(self, message: OutboundMessage) -> tuple[int, bool]:
-        payload = {
-            "message_id": message.message_id,
-            "scope_type": message.scope_type.value,
-            "scope_id": message.scope_id,
-            "text": message.text,
-            "reply_to_message_id": message.reply_to_message_id,
-            "metadata": message.metadata,
-        }
+    def enqueue(self, message: OutboundMessage | OutboundReaction) -> tuple[int, bool]:
+        if isinstance(message, OutboundReaction):
+            payload = {
+                "kind": "reaction",
+                "action_id": message.action_id,
+                "scope_type": message.scope_type.value,
+                "scope_id": message.scope_id,
+                "target_message_id": message.target_message_id,
+                "emoji": message.emoji,
+                "metadata": message.metadata,
+            }
+        else:
+            payload = {
+                "kind": "message",
+                "message_id": message.message_id,
+                "scope_type": message.scope_type.value,
+                "scope_id": message.scope_id,
+                "text": message.text,
+                "reply_to_message_id": message.reply_to_message_id,
+                "metadata": message.metadata,
+            }
         row = self.conn.execute(
             """
             INSERT INTO outbox(dedupe_key, channel, destination_id, payload, status, available_at)

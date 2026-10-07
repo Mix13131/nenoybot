@@ -53,8 +53,40 @@ def test_normalize_group_reply_to_bot_and_mentions() -> None:
     assert normalized.envelope.event_type is EventType.REPLY_TO_BOT
     assert normalized.envelope.scope_type is ScopeType.GROUP
     assert normalized.envelope.metadata["reply_to_bot"] is True
+    assert normalized.envelope.metadata["reply_to_configured_bot"] is True
     assert normalized.envelope.metadata["direct_mention"] is True
     assert normalized.envelope.metadata["mentions"][0]["type"] == "mention"
+
+
+def test_reply_to_unrelated_bot_is_not_verified_as_configured_bot() -> None:
+    update = {
+        "update_id": 110,
+        "message": {
+            "message_id": 13,
+            "date": 1720000006,
+            "from": {"id": 22, "first_name": "Серёга", "is_bot": False},
+            "chat": {"id": -10055, "type": "supergroup", "title": "Друзья"},
+            "text": "спасибо",
+            "reply_to_message": {
+                "message_id": 12,
+                "from": {"id": 555, "is_bot": True, "username": "other_bot"},
+                "text": "Готово",
+            },
+        },
+    }
+
+    normalized = normalize_update(
+        update,
+        bot_username="NeNoiBro_bot",
+        bot_user_id="999",
+    )
+
+    assert normalized is not None
+    # Preserve historical routing semantics, but expose stricter identity
+    # evidence so optional reaction-only output can fail closed.
+    assert normalized.envelope.event_type is EventType.REPLY_TO_BOT
+    assert normalized.envelope.metadata["reply_to_bot"] is True
+    assert normalized.envelope.metadata["reply_to_configured_bot"] is False
 
 
 def test_normalize_configured_group_mention_as_direct_mention() -> None:
@@ -197,13 +229,13 @@ def test_ingestor_duplicate_is_idempotent(monkeypatch) -> None:
         def event_exists(self, update_id: int) -> bool:
             return update_id in known_updates
 
-        def upsert_user(self, user):
+        def upsert_user(self, user, **kwargs):
             return 1
 
         def upsert_chat(self, chat):
             return 1
 
-        def upsert_member(self, chat_id, user_id):
+        def upsert_member(self, chat_id, user_id, **kwargs):
             return None
 
         def store_message(self, normalized, chat_id, user_id):
@@ -222,3 +254,42 @@ def test_ingestor_duplicate_is_idempotent(monkeypatch) -> None:
     assert first.status == "accepted"
     assert second.status == "duplicate"
     assert first.event_id == second.event_id == "tg:400"
+
+
+def test_direct_mention_preserves_conversational_body_without_username_address() -> None:
+    update = {
+        "update_id": 108,
+        "message": {
+            "message_id": 11,
+            "date": 1720000004,
+            "from": {"id": 22, "first_name": "Серёга", "is_bot": False},
+            "chat": {"id": -10055, "type": "supergroup", "title": "Друзья"},
+            "text": "@NeNoiBro_bot спасибо!",
+            "entities": [{"type": "mention", "offset": 0, "length": 13}],
+        },
+    }
+
+    normalized = normalize_update(update, bot_username="NeNoiBro_bot")
+
+    assert normalized is not None
+    assert normalized.envelope.event_type is EventType.DIRECT_MENTION
+    assert normalized.envelope.metadata["address_body"] == "спасибо!"
+
+
+def test_name_address_preserves_conversational_body_without_product_name() -> None:
+    update = {
+        "update_id": 109,
+        "message": {
+            "message_id": 12,
+            "date": 1720000005,
+            "from": {"id": 22, "first_name": "Серёга", "is_bot": False},
+            "chat": {"id": -10055, "type": "supergroup", "title": "Друзья"},
+            "text": "НеНой, спасибо!",
+        },
+    }
+
+    normalized = normalize_update(update)
+
+    assert normalized is not None
+    assert normalized.envelope.event_type is EventType.DIRECT_MENTION
+    assert normalized.envelope.metadata["address_body"] == "спасибо!"
