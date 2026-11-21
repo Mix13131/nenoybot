@@ -185,11 +185,11 @@ The generator must not control consent/permissions or persist state directly. An
 - If participant describes severe exhaustion, medical trouble, distress, family conflict or unsafe conditions, avoid “push harder”; choose care / clarification / NO_ACTION. Do not assume bot provides medical or psychotherapy services.
 - One participant declining does not authorize analysis of them via another person's prompt.
 - History imported from an exported HTML/JSON is *separate opt-in and import project*, not part of P0 and never included in public repository.
-- Proposed retention for seven-day pilot: bounded source references only; raw text governed by independently reviewed current v2 policy, with shorter Reflection-specific summaries where feasible. Owner must approve exact TTL, forget semantics, and backup disclosures at G2/G3.
+- **Memory-first requires authorized raw source archive retention beyond generic 30-day default**, subject to independently approved lifecycle, per-author/topic consent, deletion and backup policy. Source summaries are additions, not substitutes; no unlimited sensitive inference labels.
 - Existing `group_profile` friends behavior is not consent to intensive Reflection analysis. Use a dedicated explicit feature flag per group/topic with separate per-user consent, default OFF.
 - Logging/telemetry: do not write raw reflection excerpts, medical claims, chat IDs or API secrets into public artifacts. Existing runtime logs may contain chat identity; evaluate access/retention separately.
 
-### G2 v1.2 phase boundary to preserve in implementation
+### G2 v1.5 memory-first boundary to preserve in implementation
 
 - **INITIAL-LIVE** may evaluate an opted-in fresh report or direct request and retrieve **relevant permitted prior messages** from a topic/author/consent-filtered archive; never pass default chat-wide HOT/LONG or non-consenting quoted text to the model.
 - **INITIAL-LIVE** supports sourced history but cannot claim uncollected or lost messages exist; recurring behavior requires distinct evidence and 'first ever' requires self-confirmation.
@@ -216,7 +216,7 @@ A check-before-HTTP **cannot retract a Telegram request already in flight** or a
 
 **S2 — history-backed selection and delivery:** exclusive route; evaluate new reports with current + selected relevant sourced history, SILENCE/ONE_QUESTION/ONE_EXPERIMENT, **no answer-count cap**; semantic de-duplication, safety and feedback, model cost telemetry/runaway breaker, purpose-specific send-time consent. On-demand track #166 from actual archived coverage.
 
-**S3 — P0 tests and controlled pilot:** frozen **6 useful questions + 6 experiments + 12 routine/silent + 12 unsafe** fixtures, per-purpose consent tests, mandatory silent-evaluation budget, revocation/race and other-group regressions; after G8/G9, opt-in 7-day pilot. P1 history is not prerequisite.
+**S3 — memory-first tests and controlled pilot:** synthetic history >30 days across authorized topics and authors, edits, coverage gaps, retention/forget, sourced pattern evidence, on-demand track, repeated valuable reports without answer-count caps, plus 6 question/6 experiment/12 routine/12 unsafe cases. Monitor real model spend, incident breaker, privacy and delivery races. Pilot only after G8/G9 consent and permission.
 
 **S4 — optional older history import:** pre-activation Telegram Desktop export separately authorized and validated, with explicit coverage gaps; never pretend Bot API provided old history.
 
@@ -249,10 +249,10 @@ Follow G2 [50 specified synthetic acceptance scenarios, split by stage](BREAK_PA
 1. First rollout: Reports topic only (recommended for P0) vs broader consented multi-topic dialogue (later goal to analyze “the whole chat”).
 2. Where/how to record independent per-person consent and explain ambient base-bot collection.
 3. Exact Reflection TTL, outcome recording, deletion/backup disclosure, opt-out UX.
-4. Whether the initial single-report experiment is useful enough for early P0 before full longitudinal context.
+4. Exact initial archive completeness (from enablement) and how to handle pre-existing exports/coverage gaps before claiming history-backed advice.
 5. Separate approval for additive DB migration and any production data access.
 6. Review proposed model boundary (candidate generation vs deterministic gates) and reliability tests.
 
 **Project OS status:** `G3 v1.5 OWNER CHANGE REQUEST / DRAFT`; memory-first source archive and no numerical reply caps are new, not yet reviewed. G4/G5 BLOCKED_FOR_BUILD, G7 not active, G8/G9 not granted.
 
-**One next safe operation:** independent exact-HEAD Codex review of newly expanded *selective proactive P0* design and revised #167 task contract, then owner acceptance of exact group/topic, per-person background-analysis/public-reply consent, 2/week + 48h caps, cost, retention and silent/active quality thresholds. No merge, deploy or CI activation.
+**One next safe operation:** independent review of memory-first G2/G3 and updated G4 #167; then owner approval of history retention, per-author/topic consent, migration, archive security/forget and financial emergency protection. **No reply count cap.** No merge, deploy or CI activation.
