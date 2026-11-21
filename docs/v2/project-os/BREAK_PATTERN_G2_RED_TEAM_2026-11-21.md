@@ -97,7 +97,7 @@ The above scenarios are *specifications*, not executed tests. In G5/G6 add regre
 | --- | --- | --- | --- |
 | BP-T39 (P1) | Group owner expands allowlist to Chat; participant granted Reports only | Historical report/track requested | Chat is not fetched or summarized; no owner-only consent override |
 | BP-T40 (P0) | Same report contains quoted third-party `reply_to_text` and other person's private issue | Route/scene/generator processes request | Third-party sentinel absent from **every** Reflection model request; only author's current explicitly supplied text |
-| BP-T41 (P0) | Prior suggestion declined yesterday and user asks “another” without resupplying context | Bot processes request | No secret ledger/HOT lookup; asks to supply original suggestion/context or current report; no fabricated memory |
+| BP-T41 | Prior suggestion declined yesterday and user asks for another without repeating details | Bot processes request | Retrieve source-backed prior experiment ONLY from consented archive and scope; propose a distinct option; if source missing, ask instead of fabricating |
 | BP-T42 | User requests weekly/30-day track from available authorized archive | Bot processes request | Source-backed dated summary; only periods/authors/topics actually covered; never turn on wider collection without permission |
 | BP-T43 (P0) | Valid current report, author opted in, eligible low-risk surprising alternative | Positive creativity benchmark | A suitable proposal is generated; NO_ACTION here counts as a quality miss |
 | BP-T44 (P0) | Eligible synthetic test set frozen at 12 examples | Two separate reviewers evaluate | >=9/12 accepted, reviewers agree on accepted examples, candidate not generic and not unsafe; otherwise REWORK |
