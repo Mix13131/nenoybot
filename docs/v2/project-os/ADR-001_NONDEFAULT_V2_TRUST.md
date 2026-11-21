@@ -1,10 +1,10 @@
 # ADR-001 — Project OS trust model for NeНой v2 on a non-default branch
 
-**Status:** `REWORK v1.1 / NOT APPROVED`  
-**Date:** 2026-11-20  
-**Owner decision needed:** human project owner, after independent technical review  
-**Issue:** [#161](https://github.com/Mix13131/nenoybot/issues/161)  
-**Related evidence:** [G1 baseline](G1_BROWNFIELD_BASELINE_2026-11-20.md)  
+**Status:** `REWORK v1.1 / NOT APPROVED`
+**Date:** 2026-11-20
+**Owner decision needed:** human project owner, after independent technical review
+**Issue:** [#161](https://github.com/Mix13131/nenoybot/issues/161)
+**Related evidence:** [G1 baseline](G1_BROWNFIELD_BASELINE_2026-11-20.md)
 **Applies to:** Project OS governance for NeНой 2.0 only; `main/app/`, `tests/`, production runtime and other groups remain unchanged.
 
 ## Context
