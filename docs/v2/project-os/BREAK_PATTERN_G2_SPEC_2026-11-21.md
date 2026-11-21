@@ -1,6 +1,6 @@
 # G2 Product Specification — «АнтиАвтопилот» / Break Pattern Engine
 
-**Status:** REWORK v1.2 / G2 REVIEW REQUIRED. Independent Codex review completed on previous HEAD and raised unresolved P1/P2 findings; current revision is unreviewed. No owner acceptance or build permission.
+**Status:** CHANGE REQUEST / v1.3 PROPOSED. Codex reviewed v1.2 with no new findings; the new opt-in proactive mode needs exact-HEAD re-review, owner privacy acceptance and separate build authorization.
 **Date:** 2026-11-21
 **Request:** Issue #163 (https://github.com/Mix13131/nenoybot/issues/163)
 **Parent:** Reflection Coach #161 (https://github.com/Mix13131/nenoybot/issues/161)
@@ -18,7 +18,7 @@
 
 **Behavioral value, not clinical claim:** identify a grounded habitual choice, offer one surprising, safe, concrete change in approach, let the participant try/decline, and learn what actually happened.
 
-**P0 user story (current-report only):** With consent and verified group/topic access, when a participant directly asks НеНой for an unexpected approach to the **current report or explicitly supplied scenario**, НеНой proposes one reversible alternative, does not assert a longitudinal pattern, and accepts refusal without follow-ups.
+**P0 user story (selective autonomous + requested):** In one configured group's Reports topic, after **each individual author explicitly opts in to automatic report analysis and group-visible occasional replies**, НеНой examines only their newly submitted report and chooses SILENCE, ONE_QUESTION or ONE_EXPERIMENT. It must prefer silence unless a genuinely helpful, grounded and safe intervention exists. Direct requests remain supported. No longitudinal pattern inference or ongoing personal track.
 
 **P1 user story (later, separately accepted):** Only after proven forum-topic provenance, separate participant consent and purpose-bound retention, analyze permitted history to identify a **source-backed recurring choice**, propose an alternative and learn from voluntary self-reports. The P1 aim to "analyze the whole chat" is **not** a P0 capability or permission.
 
@@ -29,7 +29,7 @@
 | Stage | Evidence allowed | Response | Hard boundary |
 | --- | --- | --- | --- |
 | P0-OFFLINE | Synthetic/anonymized fixtures only | Evaluate whether suggestions are concretely unusual and safe | No Telegram access or production claims |
-| P0-LIVE (requires separate owner permit) | Requesting consenting author's **current addressed report** or their explicitly supplied text | One optional experiment AND/OR one-off track snapshot **limited to the submitted report**; no longitudinal claim | Stateless across separate requests: no experiment ledger, weekly review, automatic memory, generic HOT/LONG context or assertions of a "first-time" without direct self-report |
+| P0-LIVE (requires separate owner permit) | An opted-in author's **new current report** in the exact allowed topic even without mentioning the bot, OR their direct request | On reports: SILENCE / ONE_QUESTION / ONE_EXPERIMENT. On direct request: specific optional answer or clarification. One-off track snapshot only on request | No group HOT/LONG, third-party reply, longitudinal pattern, experiment ledger or week/month track; minimal consent/cooldown counters only under approved TTL |
 | P1-HISTORY (future) | Explicit per-participant consent + group topic allowlist intersected with individual permitted topics; history with verified provenance | 2+ independent episodes for recurring choice; purpose-bound experiment ledger and on-demand weekly/monthly Personal Growth Track #166 | No analysis until topic-aware SQL retrieval, consent/revocation and retention tests pass |
 
 **P0 behavior contract (intentional simplification):** No persistent experiment ledger, completed/declined-history suppression, week/month personal track, or automatic progress tracking. “Другой вариант” in a separate turn must include the earlier suggestion or current context in the user's own new message; otherwise NeНой asks to repeat the context. P0 may generate several alternatives internally in a **single** requested turn but shows one. A one-off snapshot must explicitly state “только по этому отчёту” and never present a 30-day history.
@@ -59,7 +59,7 @@ No stage may silently change the generic group profile. The existing Telegram in
 | BPM-05 | Distinct candidate generation | Use a bounded 1–3-candidate strategy (not necessarily 3 LLM calls); choose one user-facing alternative only when genuinely different and worth testing; otherwise NO_ACTION |
 | BPM-06 | Specific first step and observation | Includes what, in which appropriate setting, what to notice and how to opt out |
 | BPM-07 | Genuine novelty, honestly qualified | No claim about “never before” without self-confirmation |
-| BPM-08 | Consent and user autonomy | Direct mention/reply only in P0; “pass”, “not now” and “less intense” are accepted immediately |
+| BPM-08 | Consent and user autonomy | P0: opt-in selective autonomous observation of author's own new report AND direct mention/reply. Pass/stop/mute must be respected and must suppress queued sends |
 | BPM-09 | Personalization without labels | Do not infer disorders, character flaws, hidden motives or stable personality from group logs |
 | BPM-10 | Sensitive-context safety | Distress, exhaustion, conflict or health concerns switch to care/no challenge; risky experiment blocked |
 | BPM-11 | No repetitions | **P1**: avoid repeated completed/declined proposals via purpose-bound ledger; **P0**: within one bounded generation only, or compare explicitly supplied previous suggestion, never secretly load group history |
@@ -142,13 +142,13 @@ Never make a person publicly disclose private health, family or relationship det
 
 ## 9. Acceptance and product quality
 
-**Gate A: requirements / privacy:** both participants can understand the data use and voluntarily opt in; consent absence means no personalized suggestions. Explicit default: no unsolicited bot message.
+**Gate A: requirements / privacy:** each participant understands the existing bot's baseline data collection and separately opts in to automatic report analysis and potential **group-visible unsolicited comments**; until then, no Reflection model analysis or unsolicited reply for that author. Owner consent alone is insufficient.
 
 **Gate B: synthetic functional tests:** run separate acceptance matrix in companion file; all privacy, safety and attribution negative tests must pass before human pilot. Include P0 context minimization, P1 topic/consent filtering, revoked consent with pending retries, and backup/Telegram deletion limits. No unsupported personal labels or claims of “never” are permitted.
 
 **Gate C: qualitative creativity with *positive* release threshold (PROPOSED owner target):** version/freeze at least 12 **eligible, evidence-sufficient, low-risk P0 examples** and 12 unsafe/insufficient examples before testing. An eligible example passes only if a concrete, personally relevant, materially different and reversible action is offered and **both independent reviewers agree**; disputed examples count as non-passing until adjudicated. Suggested MVP requirement: **at least 9 of 12 eligible** pass (>=75%), **0 unsafe or unauthorized** outputs across all negative cases, and an explicit NO_ACTION or clarification on ineligible examples. Count NO_ACTION on eligible cases as a **miss**, not a success. Reviewers compare against simple generic baselines and note strategy diversity; this is a product threshold, **not a scientifically validated psychology metric**. Set owner-accepted version before G4 and do not tune tests after seeing results.
 
-**Gate D: controlled real pilot:** after explicit permission for the P0-LIVE boundary, two consenting users run *current-report-only* requests voluntarily for 7 days. Record per proposal: useful/unhelpful, surprised/obvious, tried/declined, what was observed, annoyance, repeated suggestion. With only two users, do not present percentage claims as statistical evidence.
+**Gate D: controlled real pilot:** after explicit authorization, separately opted-in users post ordinary reports; NeНой evaluates eligible reports, mostly remains silent, selectively posts a helpful suggestion or question, and continues answering direct requests over a 7-day trial. Record per proposal: useful/unhelpful, surprised/obvious, tried/declined, what was observed, annoyance, repeated suggestion. With only two users, do not present percentage claims as statistical evidence.
 
 **Gate E: stop conditions:** any unconsented reveal, mixed-topic memory, false source attribution, high-risk unsafe suggestion, persistent shaming or reply after opted-out challenge is a pilot STOP/REWORK trigger.
 
@@ -160,4 +160,4 @@ Never make a person publicly disclose private health, family or relationship det
 - G3 requires topic-aware evidence, memory minimization, consent model, and risk gates before code.
 - G4–G5: BLOCKED_FOR_BUILD by current Project OS policy; no CI activation, app changes, DB migrations, bot runtime changes or production updates.
 
-**Recommended safe next decision:** independent exact-HEAD review of G2 v1.2; owner chooses P0 current-report-only scope and approved consent/retention. P1 track #166 remains a separate later approval. No coding or deployment.
+**Recommended safe next decision:** independent review of P0 v1.3 proactive requirements + matching G3; owner decides exact topic, per-person automatic-analysis and public-reply permission, pilot frequency, logging/retention and stop controls. P1 track #166 is separate. No code/merge/deployment.
