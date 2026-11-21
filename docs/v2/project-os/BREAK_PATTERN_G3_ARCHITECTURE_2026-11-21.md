@@ -1,11 +1,11 @@
 # G3 CONDITIONAL ARCHITECTURE — Reflection Coach + Antiautopilot
 
-**Status:** `PROPOSED / NOT APPROVED / NOT BUILD-READY`  
-**Date:** 2026-11-21  
-**Parent:** [Reflection Coach #161](https://github.com/Mix13131/nenoybot/issues/161)  
-**Feature:** [Antiautopilot #163](https://github.com/Mix13131/nenoybot/issues/163)  
-**G2:** [Draft PR #164](https://github.com/Mix13131/nenoybot/pull/164) `87ffe1fd02c050fb64bcd5207edc2b9ce5bd2b0d` — **REWORK v1.1 with P0 current-report-only / P1 history stages; no independent review**.  
-**G1:** [Draft PR #162](https://github.com/Mix13131/nenoybot/pull/162) — non-default `v2` Project OS trust unresolved.  
+**Status:** `PROPOSED / NOT APPROVED / NOT BUILD-READY`
+**Date:** 2026-11-21
+**Parent:** [Reflection Coach #161](https://github.com/Mix13131/nenoybot/issues/161)
+**Feature:** [Antiautopilot #163](https://github.com/Mix13131/nenoybot/issues/163)
+**G2:** [Draft PR #164](https://github.com/Mix13131/nenoybot/pull/164) `87ffe1fd02c050fb64bcd5207edc2b9ce5bd2b0d` — **REWORK v1.1 with P0 current-report-only / P1 history stages; no independent review**.
+**G1:** [Draft PR #162](https://github.com/Mix13131/nenoybot/pull/162) — non-default `v2` Project OS trust unresolved.
 **Observed product base:** `nenoybot/v2@805d2aafc709cb2323f228d791b16bb1f63f64b8` (must recheck when implementation starts).
 **This file:** conditional architecture exploration for owner and external reviewer; not authority to alter runtime, CI, DB or production.
 
