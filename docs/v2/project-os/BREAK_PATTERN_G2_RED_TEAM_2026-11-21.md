@@ -2,7 +2,7 @@
 
 **Date:** 2026-11-21
 **Issue:** #163. **Parent:** #161. **Source:** [G2 specification](BREAK_PATTERN_G2_SPEC_2026-11-21.md).
-**Status:** OWNER MEMORY-FIRST CHANGE v1.5 — all received permitted messages become durable evidence, no numerical reply caps. Existing tests were drafted for report-only P0 and are being revised. Current change requires new exact-HEAD independent review; no product tests run.
+**Status:** REWORK v1.6 — memory-first source-only ingestion, historical evidence send-time reauthorization, independent author grants and money-reservation tests added following Codex P1 findings. Exact-HEAD review pending, no product tests executed.
 **Product baseline:** v2@805d2aafc709cb2323f228d791b16bb1f63f64b8.
 **No real chat data in this file.**
 
@@ -174,6 +174,23 @@ These ten cases are **specified, not executed**. The output type must match the 
 | BP-T92 | Weekly/monthly Personal Growth Track requested | Dated sourced history from covered permitted period, separate plan/action/self-report/experiment outcome, no unsolicited scoreboard |
 
 These are **requirements and future tests**, not executed acceptance evidence. User approval of memory-first design does not authorize import of private historic exports, unrestricted capture of nonconsenting people or a production retention migration.
+
+### Independent memory-first Codex blocker tests (additional, NOT executed)
+
+| ID | Given / When | Required result |
+| --- | --- | --- |
+| BP-T93 | Participant grants retention, not historical inference or proactive comments; posts non-report chat | Durable source archived and source-receipt tracked; zero Reflection model calls, no Memory Card/inference or reply |
+| BP-T94 | Participant grants durable archive but model unavailable, spend breaker tripped or group has no report eligible | Every permitted text/update still archived independently; archive coverage has no analysis-induced gap |
+| BP-T95 | Participant allows direct-request reply but refuses archive and historical-use grants | Direct answer can use own currently supplied text only; no persistent Reflection source archive/history claim |
+| BP-T96 | User requests history-backed answer with sources A/B; B's topic authorization revoked while outbound is claimed | No send of queued answer; all used sources revalidated immediately before send; regenerate only after fresh permitted search |
+| BP-T97 | Author deletes/corrects an older message used in a scheduled/retried monthly track | Original derived summary cannot be sent; source version/deletion check suppresses stale content |
+| BP-T98 | Two workers concurrently receive distinct events and reserve paid summarization cost near emergency ceiling | Atomic shared USD reservation prevents overspend before provider calls, including timeouts/retries |
+| BP-T99 | Cost ledger unavailable or breaker tripped while approved user sends a routine report | Free source archive write succeeds, derived/indexing LLM calls fail closed; truthful coverage and no hidden loss |
+| BP-T100 | New Telegram media/caption/update cannot be fully interpreted by current adapter | Preserve available metadata, content type and truthful coverage flag; never claim unavailable media bytes were remembered |
+| BP-T101 | Nonconsenting author's sensitive message quoted by consenting author | No durable Reflection copy of third-party quoted content as consented evidence, no cross-author inference |
+| BP-T102 | Eight distinct high-value reports are permitted and source-grounded in one day | No numerical response limit blocks them; repeat/unsafe/value gates and provider/emergency resource controls still apply |
+
+**Archive completeness criterion:** receipt count across authorized new updates equals the durable source-event count, independent of eligibility, AI availability or answer output. Text/body scope requires explicit supported-content kinds; files/media not downloaded cannot be misreported as stored in full. Test budget and archival paths separately.
 
 ## 4. Creative quality evaluation — separate from deterministic tests
 
