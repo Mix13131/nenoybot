@@ -1,6 +1,6 @@
 # G3 CONDITIONAL ARCHITECTURE — Reflection Coach + Antiautopilot
 
-**Status:** `REWORK v1.2 / PROPOSED / NOT APPROVED / NOT BUILD-READY`
+**Status:** `CHANGE REQUEST v1.3 / PROPOSED / NOT BUILD-READY`. Owner-requested selective autonomous report observation needs fresh independent G3 review and participant-specific consent.
 **Date:** 2026-11-21
 **Parent:** [Reflection Coach #161](https://github.com/Mix13131/nenoybot/issues/161)
 **Feature:** [Antiautopilot #163](https://github.com/Mix13131/nenoybot/issues/163) + [Personal Growth Track #166](https://github.com/Mix13131/nenoybot/issues/166) (P0 one-off only, P1 longitudinal by opt-in)
@@ -11,7 +11,7 @@
 
 ## 1. Problem, result and scope
 
-Users already write daily reflection reports in a threaded Telegram group. The new mode should, **only at the requesting and consenting person's initiative**, examine permitted reports and dialogue, identify a source-grounded familiar response, propose one genuinely different safe action, and use voluntary feedback for a later suggestion.
+Users already post daily reports in one Telegram forum group. **After each individual participant opts into automatic report assessment and group-visible occasional replies**, the new mode should consider the **newly arrived report** without requiring a bot mention, choose mostly SILENCE and exceptionally one grounded question or unusual action. **Explicit direct requests remain supported.** P0 does not read past reports or build a longitudinal profile; P1 would require separately authorized history.
 
 Avoid (1) unsolicited psychotherapy, (2) random “get out of comfort zone” tasks, (3) false “you have never done X” claims, (4) other-person attribution, (5) cross-topic/private memory contamination, (6) pressure to comply.
 
@@ -29,7 +29,7 @@ Avoid (1) unsolicited psychotherapy, (2) random “get out of comfort zone” ta
 | `events.payload` | Includes normalized `metadata.message_thread_id` and text | Can serve bounded audit source, not an indefinitely retained longitudinal index |
 | `memory_cards` + `retrieval_engine.py` | Group vs Personal isolated at scope level, but no reliable topic filter for all HOT/LONG retrieval | New Reflection retrieval must NOT blindly reuse chat-wide memory cards or relation expansion |
 | `connector_repo` and `connector_presets.py` | Versioned group connector and isolated role/profile features available | Use a dedicated opt-in reflection profile; do not change default friends persona |
-| `group_pipeline.py` + Dispatcher | Group silence-first, direct mention/reply routing, existing reminders and other actions | Insert EXCLUSIVE Reflection routing immediately after group access+config resolution, **before all generic handlers with memory/action side effects**, with terminal denial/NO_ACTION; preserve other groups |
+| `group_pipeline.py` + Dispatcher | Existing event and Group pipelines; current no-mention reports may enter generic initiative/memory handlers | Enter exclusive Reflection before generic handlers for authorized topic messages; distinguish passive report and direct request; group/topic/individual opt-in and cooldown before analysis; terminal SILENCE or reply, no generic fallback |
 | `telegram_sender.py` / outbox worker | Existing sender accepts `message_thread_id`; outbox worker currently handles generic send | Reuse only with Reflection-specific pre-send authorization check for claimed/retried output and test correct-topic delivery; no claim to cancel an already-started Telegram HTTP request |
 | `llm_usage` | Existing per-call token, latency and cost telemetry | Reuse; no third-party analytics product or new infrastructure |
 | `maintenance_repo.py` | `messages.text` expires, terminal events and outbox pruned separately | Reflection-specific retention, opt-out deletion and generated-text handling need explicit scope |
@@ -186,7 +186,7 @@ The generator must not control consent/permissions or persist state directly. An
 
 ## 8. Consent, privacy and sensitive-context behavior
 
-- P0 explicit requests only; no proactive prompts, scheduled experiments, spam or daily punishment. Each participant must independently opt in before the bot analyzes **their own** report; P1 history analysis requires that person's separate, explicit authorization for each allowed topic. One consenting group member cannot grant consent for the other.
+- P0 can **autonomously evaluate newly arrived reports** in the configured topic only after each author independently consents to automatic analysis and possible group-visible selective replies; direct requests remain possible. No scheduled experiments, daily challenges or automatic progress tracking. A person can pause just their own autonomous observation. P1 history uses separate per-person topic-specific consent.
 - Public group response may quote a consenting participant's *own* message only under agreed scope; do not pull private or third-party sensitive details into public summaries.
 - If participant describes severe exhaustion, medical trouble, distress, family conflict or unsafe conditions, avoid “push harder”; choose care / clarification / NO_ACTION. Do not assume bot provides medical or psychotherapy services.
 - One participant declining does not authorize analysis of them via another person's prompt.
@@ -197,7 +197,7 @@ The generator must not control consent/permissions or persist state directly. An
 
 ### G2 v1.2 phase boundary to preserve in implementation
 
-- **P0-LIVE may use only the currently addressed report** or explicitly provided user scenario. Reusing the existing `ContextBuilder.build()` unmodified would retrieve group-wide HOT messages and Memory Cards; **a new minimal-allowlisted Reflection context constructor is required**, with negative tests verifying excluded members/topics and no Personal/LONG fetch.
+- **P0-LIVE** may evaluate an opted-in author's newly arrived report **without direct address**, or that author's explicit request. Reusing `ContextBuilder.build()` unmodified would retrieve group-wide HOT messages and Memory Cards: **a new minimal-allowlisted Reflection packet is required**, with no other authors' text, `reply_to_text`, HOT/LONG, group Scene/Mapper, or unsupported previous-report claims.
 - **P0-LIVE is not a full-history psychology engine**. The output must not claim recurring behavior or first-time novelty without self-confirmation. The two-person historical analysis goal belongs to P1 and must not be smuggled into P0 through generic retrieval.
 - **P1-HISTORY** must separately prove topic-tagged provenance and consent-aware retrieval, and account for older legacy rows without topic metadata.
 - Group owner's consent to bot operation is **not** member consent to personalized interpretation. Raw ingestion by the pre-existing bot remains a separate privacy exposure requiring a truthful notice before launch.
@@ -218,11 +218,11 @@ A check-before-HTTP **cannot retract a Telegram request already in flight** or a
 
 **S0 — owner-approved product/privacy/trust controls (blocking):** G1 manual exact-SHA governance choice, purpose-specific consent, data notice for existing bot raw ingest, agreed output visibility and retention/forget semantics. No production changes.
 
-**S1 — minimum P0 route:** one target group/topic, opt-in per-person, exclusive pre-generic routing, minimal allowlisted current-report packet, terminal denial/NO_ACTION. No topic-history SQL migration.
+**S1 — minimum P0 selective route:** one exact group/topic, purpose-versioned per-author consent to autonomous assessment/public output, early exclusive routing, cheap report eligibility filter, minimal current-report input, hard SILENCE on uncertain/unauthorized/irrelevant events. Direct requests still supported. No topic-history migration.
 
-**S2 — bounded P0 candidate + delivery:** one safe, concrete and genuinely different action from the current report; optional one-off track snapshot for #166; privacy/dedup/LLM budget gates; outbox authorization recheck for revoked consent.
+**S2 — candidate + selective policy + delivery:** per-report decision SILENCE/ONE_QUESTION/ONE_EXPERIMENT, safe and concrete text, hard per-user 2/week/48h cap and per-report dedupe, budget; on-demand one-off track snapshot #166. Outbox rechecks consent, user mute and group feature flag before each send/ retry.
 
-**S3 — P0 tests and controlled pilot:** frozen synthetic safety/creativity benchmark, regression tests for non-Reflection groups and generic actions, source/author/reply-to-text privacy, race conditions; after owner G8/G9 and explicit pilot permission, 7-day group trial with two separately consenting participants. **Do not postpone P0 behind history infrastructure.**
+**S3 — P0 tests and controlled pilot:** frozen synthetic **beneficial intervention vs proper silence** benchmark, author/topic/privacy, 2/week + 48h rate limits, cost, revocation races, non-Reflection regression tests; after G8/G9 and separate explicit opt-in, 7-day pilot measuring helpfulness and unwanted intrusions, not response volume. **P1 history is not a prerequisite.**
 
 **S4 — separately approved P1 history (later):** topic-aware schema/retrieval, consent intersection group∩participant, evidence dedupe, optional purpose-bound experiment ledger and data lifecycle, corrections/forget.
 
@@ -259,6 +259,6 @@ Follow G2 [50 specified synthetic acceptance scenarios, split by stage](BREAK_PA
 5. Separate approval for additive DB migration and any production data access.
 6. Review proposed model boundary (candidate generation vs deterministic gates) and reliability tests.
 
-**Project OS status:** `G3 REWORK v1.2 / DRAFT`; previous independent review found 3 P1 issues, current revision not yet reviewed. `G1 REWORK`, `G2 REWORK`, `G4 BLOCKED_FOR_BUILD`, `G7 NOT ACTIVE`, `G8/G9 NOT GRANTED`.
+**Project OS status:** `G3 v1.3 CHANGE REQUEST / DRAFT`; previous v1.2 exact-HEAD review found no new issues; proactive P0 is **new unreviewed scope**. G4 task contract must be revised, G4/G5 still BLOCKED_FOR_BUILD, G7 not active, G8/G9 not granted.
 
 **One next safe operation:** independent review of updated exact G1/G2/G3 documentation and new #166 product-track linkage, then obtain owner's explicit P0 consent/retention/visibility contract; only then one S1 task contract. No merge, deploy or CI activation.
