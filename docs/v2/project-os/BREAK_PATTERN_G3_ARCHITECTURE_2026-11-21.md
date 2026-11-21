@@ -4,7 +4,7 @@
 **Date:** 2026-11-21  
 **Parent:** [Reflection Coach #161](https://github.com/Mix13131/nenoybot/issues/161)  
 **Feature:** [Antiautopilot #163](https://github.com/Mix13131/nenoybot/issues/163)  
-**G2:** [Draft PR #164](https://github.com/Mix13131/nenoybot/pull/164) `df778597ccb6349b65bec853829c5144bd166855` — **preliminary Red Team calls REWORK; no independent review**.  
+**G2:** [Draft PR #164](https://github.com/Mix13131/nenoybot/pull/164) `87ffe1fd02c050fb64bcd5207edc2b9ce5bd2b0d` — **REWORK v1.1 with P0 current-report-only / P1 history stages; no independent review**.  
 **G1:** [Draft PR #162](https://github.com/Mix13131/nenoybot/pull/162) — non-default `v2` Project OS trust unresolved.  
 **Observed product base:** `nenoybot/v2@805d2aafc709cb2323f228d791b16bb1f63f64b8` (must recheck when implementation starts).
 **This file:** conditional architecture exploration for owner and external reviewer; not authority to alter runtime, CI, DB or production.
@@ -186,6 +186,13 @@ The generator must not control consent/permissions or persist state directly. De
 - Proposed retention for seven-day pilot: bounded source references only; raw text governed by independently reviewed current v2 policy, with shorter Reflection-specific summaries where feasible. Owner must approve exact TTL, forget semantics, and backup disclosures at G2/G3.
 - Existing `group_profile` friends behavior is not consent to intensive Reflection analysis. Use a dedicated explicit feature flag per group/topic with separate per-user consent, default OFF.
 - Logging/telemetry: do not write raw reflection excerpts, medical claims, chat IDs or API secrets into public artifacts. Existing runtime logs may contain chat identity; evaluate access/retention separately.
+
+### G2 v1.1 phase boundary to preserve in implementation
+
+- **P0-LIVE may use only the currently addressed report** or explicitly provided user scenario. Reusing the existing `ContextBuilder.build()` unmodified would retrieve group-wide HOT messages and Memory Cards; **a new minimal-allowlisted Reflection context constructor is required**, with negative tests verifying excluded members/topics and no Personal/LONG fetch.
+- **P0-LIVE is not a full-history psychology engine**. The output must not claim recurring behavior or first-time novelty without self-confirmation. The two-person historical analysis goal belongs to P1 and must not be smuggled into P0 through generic retrieval.
+- **P1-HISTORY** must separately prove topic-tagged provenance and consent-aware retrieval, and account for older legacy rows without topic metadata.
+- Group owner's consent to bot operation is **not** member consent to personalized interpretation. Raw ingestion by the pre-existing bot remains a separate privacy exposure requiring a truthful notice before launch.
 
 ## 9. Minimal vertical slices and sequencing
 
