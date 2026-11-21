@@ -1,10 +1,10 @@
 # G3 CONDITIONAL ARCHITECTURE — Reflection Coach + Antiautopilot
 
-**Status:** `PROPOSED / NOT APPROVED / NOT BUILD-READY`
+**Status:** `REWORK v1.2 / PROPOSED / NOT APPROVED / NOT BUILD-READY`
 **Date:** 2026-11-21
 **Parent:** [Reflection Coach #161](https://github.com/Mix13131/nenoybot/issues/161)
-**Feature:** [Antiautopilot #163](https://github.com/Mix13131/nenoybot/issues/163)
-**G2:** [Draft PR #164](https://github.com/Mix13131/nenoybot/pull/164) `87ffe1fd02c050fb64bcd5207edc2b9ce5bd2b0d` — **REWORK v1.1 with P0 current-report-only / P1 history stages; no independent review**.
+**Feature:** [Antiautopilot #163](https://github.com/Mix13131/nenoybot/issues/163) + [Personal Growth Track #166](https://github.com/Mix13131/nenoybot/issues/166) (P0 one-off only, P1 longitudinal by opt-in)
+**G2:** [Draft PR #164](https://github.com/Mix13131/nenoybot/pull/164) revised for Codex findings; **P0 current report / P1 history+track only**; updated exact SHA verified in parent PR on review request.
 **G1:** [Draft PR #162](https://github.com/Mix13131/nenoybot/pull/162) — non-default `v2` Project OS trust unresolved.
 **Observed product base:** `nenoybot/v2@805d2aafc709cb2323f228d791b16bb1f63f64b8` (must recheck when implementation starts).
 **This file:** conditional architecture exploration for owner and external reviewer; not authority to alter runtime, CI, DB or production.
@@ -29,8 +29,8 @@ Avoid (1) unsolicited psychotherapy, (2) random “get out of comfort zone” ta
 | `events.payload` | Includes normalized `metadata.message_thread_id` and text | Can serve bounded audit source, not an indefinitely retained longitudinal index |
 | `memory_cards` + `retrieval_engine.py` | Group vs Personal isolated at scope level, but no reliable topic filter for all HOT/LONG retrieval | New Reflection retrieval must NOT blindly reuse chat-wide memory cards or relation expansion |
 | `connector_repo` and `connector_presets.py` | Versioned group connector and isolated role/profile features available | Use a dedicated opt-in reflection profile; do not change default friends persona |
-| `group_pipeline.py` + Dispatcher | Group silence-first, direct mention/reply routing, existing reminders and other actions | Insert a gated route for reflection mode before ordinary roast generation; preserve unrelated paths |
-| `telegram_sender.py` | Already sends `message_thread_id` when supplied in outbox metadata | Reuse with tested correct-topic delivery and idempotent dedupe |
+| `group_pipeline.py` + Dispatcher | Group silence-first, direct mention/reply routing, existing reminders and other actions | Insert EXCLUSIVE Reflection routing immediately after group access+config resolution, **before all generic handlers with memory/action side effects**, with terminal denial/NO_ACTION; preserve other groups |
+| `telegram_sender.py` / outbox worker | Existing sender accepts `message_thread_id`; outbox worker currently handles generic send | Reuse only with Reflection-specific pre-send authorization check for claimed/retried output and test correct-topic delivery; no claim to cancel an already-started Telegram HTTP request |
 | `llm_usage` | Existing per-call token, latency and cost telemetry | Reuse; no third-party analytics product or new infrastructure |
 | `maintenance_repo.py` | `messages.text` expires, terminal events and outbox pruned separately | Reflection-specific retention, opt-out deletion and generated-text handling need explicit scope |
 | Group Lab `app_v2/group_lab.py` / Task 37 | Existing synthetic/sanitized replay infrastructure; JSON-import path, not automatic HTML history import | Reuse for synthetic quality/evidence tests, **not** as permission to upload actual Telegram exports |
@@ -45,58 +45,66 @@ Avoid (1) unsolicited psychotherapy, (2) random “get out of comfort zone” ta
 | B. Dedicated `reflection_coach_v1` route, evidence/consent policy, structured candidate + deterministic release guard in existing v2 runtime | Isolated, auditable, reversible, can reuse Postgres/outbox/model routing | Requires focused topic/memory migration, bounded new state | **RECOMMENDED / PROPOSED** |
 | C. New bot, separate AI agent server, new database | Isolated deployment | Unnecessary overhead, duplicate memory, split product | REJECT for P0 |
 
+## 3.1. Codex G3 review findings now in scope
+
+The independent Codex review on previous HEAD `658bdab29b07191f9228f1cd91f4c046c7ab6f2d` identified three P1 issues:
+
+- G3-REV-01: an exclusive Reflection route **before** generic action/reminder, statement/humanity, memory and ordinary Group Generator, not merely a prompt before the final roast.
+- G3-REV-02: a short **P0 experiment first**, without topic-history persistence/retrieval migrations before pilot; move longitudinal ledger, monthly track and weekly review to separate P1 authorization.
+- G3-REV-03: consent/feature flag **recheck at outbox send time**, including claimed processing leases and late generation; cancel before send and document impossible-to-revoke already-started Telegram requests.
+
+These are design corrections, not implemented code or G6 PASS. The revised HEAD must be independently reviewed again.
+
 ## 4. Request path and trust boundaries
 
-```text
+\`\`\`text
 Telegram group update
-    │
-    ▼
-Existing webhook → normalize (chat, actor, message, topic, reply, update)
-    │
-    ▼
-Existing ingest / durable queue  [existing raw-data policy is separately reviewed]
-    │
-    ▼
-Existing Group Pipeline
-    │
-    ├─ not reflection-enabled group, unrelated topic/intent → unchanged path
-    │
-    └─ reflection route candidate
-          │
-          ▼
-    Reflection Scope Gate (DETERMINISTIC)
-      explicit mention/reply? group/topic enabled?
-      requesting participant opted in? sensitive-context policy?
-          │
-          ├─ deny → short truthful decline or NO_ACTION
-          ▼
-    Topic-aware Evidence Retriever (DETERMINISTIC)
-      exact group + allowed topic(s) + subject + temporal bounds
-      event IDs + source references + distinct episodes
-          │
-          ├─ missing/untrusted → question / NO_ACTION
-          ▼
-    Pattern Hypothesis Generator (LLM as inference only)
-      observed behavior, not diagnosis or unverified cause
-          │
-          ▼
-    Candidate Engine (LLM bounded candidates; novelty strategies)
-          │
-          ▼
-    Quality + Safety + Consent + De-dup Gate (DETERMINISTIC controls
-      plus semantic checks; unsafe or uncertain -> NO_ACTION)
-          │
-          ▼
-    One short proposed experiment + opt-out
-          │
-          ▼
-    Existing outbox → Telegram in same topic
-          │
-          ▼
-    Optional user self-report → purpose-bounded experiment status
-```
+    |
+    v
+existing webhook → normalize (actor, chat, current message, topic, reply)
+    |
+    v
+existing durable ingest (baseline raw-text collection separately disclosed)
+    |
+    v
+Group Access + Connector Resolve
+    |
+    v
+EXCLUSIVE REFLECTION ROUTE (before birthday processing, scheduler,
+reminder handler, statement watcher, generic SceneAnalyzer/MemoryMapper,
+HOT/LONG ContextBuilder, group behavior and generic generator)
+    |
+    +-- not target group or not Reflection intent → unrelated existing path
+    |
+    +-- configured Reflection group, no direct request → silence (no proactive)
+    |
+    +-- Reflection request → deterministic group/topic/user consent gate
+                                      |
+                                      +-- denial → terminal NO_ACTION/
+                                      |            minimal consent explanation
+                                      |            (NEVER generic fallback)
+                                      v
+                               P0 CURRENT-REPORT packet
+                               (allowed author text and safe topic/time only,
+                               never reply_to_text/HOT/LONG/scene/mapper)
+                                      |
+                                      v
+                          bounded candidate LLM + policy quality/safety
+                                      |
+                                      +-- unsafe/low quality → NO_ACTION
+                                      v
+                          Reflection-tagged outbox metadata
+                                      |
+                                      v
+                     outbox pre-send/retry authorization recheck
+                                      |
+                                      +-- disabled/revoked → cancel/fail closed
+                                      v
+                         Telegram send into exact permitted topic
+\`\`\`
+Important: **all Reflection model invocations** must receive only a newly constructed, allowlisted P0 input. Neither the raw `EventEnvelope` (its `metadata.reply_to_text` may include third-party text), a generic scene, ordinary HOT/WARM/LONG, nor related group Memory Cards may reach the classifier, mapper, candidate generator or final response path. Context minimization solely in the final generator is too late. Replying to a third party's report does **not** by itself authorize analysis of that third person's content.
 
-Important: permissions and source selection occur *before* any model may see another participant's history. A prompt instruction saying “don't mention private data” does not prevent the model from receiving it. Cached HOT, related Memory Cards, and other group behaviors must not be mixed into Reflection generation.
+Non-reflection requests in other groups retain ordinary routing. In this single target group, passive daily reports remain silent under the opted-in Reflection profile; an explicit ordinary reminder command, if separately enabled and permitted, follows the existing action route, **but a Reflection request with reminder-like text never falls through** to generic scheduling after rejection or failure.
 
 ## 5. Forum-topic and provenance contract
 
@@ -116,23 +124,23 @@ Telegram Bot API has native `message_thread_id` on messages and sends; no separa
 
 ## 6. Data model changes to design, not to execute
 
-Prefer **additive** PostgreSQL migration within the existing v2 DB, version/name chosen at build time after checking all active PRs. No schema modification in this G3 PR.
+**P0 needs no topic-history table migration or longitudinal experiment ledger.** It filters using current event topic metadata and uses an explicit, authorized one-off report; retain no derived progress history. Consent/feature state might use already existing versioned group/user settings if independently accepted and tested for atomic revocation. **P1** may need a reviewed, additive PostgreSQL migration in v2; schema change is separate from this G3 Draft and requires permission.
 
-### 6.1 `messages` topic metadata (proposed)
+### 6.1 `messages` topic metadata (**P1 only**, proposed)
 - `message_thread_id BIGINT NULL` (stored only when reported);
 - `topic_scope TEXT NOT NULL` (`TOPIC | GENERAL | UNKNOWN | NOT_APPLICABLE`);
 - index on `(chat_id, topic_scope, message_thread_id, user_id, created_at)` where appropriate;
 - do not assign existing historical rows a guessed topic: mark `UNKNOWN`, exclude from topic-sensitive inference, or import only through separately reviewed owner/participant consent.
 
-### 6.2 Reflection consent (proposed)
+### 6.2 Reflection consent (P0+P1, proposed)
 Use a purpose/version-specific consent record, either a small `reflection_consents` table or a deliberately isolated versioned `chat_members.participant_profile` key. Prefer a **small table** if status, scope changes and revocations require durable audit/atomic lookup.
 
 Minimal fields: `chat_id`, `user_id`, `purpose_version`, `allowed_topic_ids`, `status=opted_in|revoked`, `consented_at`, `revoked_at`. Do **not** store personal health or psychological trait labels. Participant must independently consent to analysis of their own history, including whether others in the group may read the resulting suggestions. Deny on missing/unconfirmed consent.
 
 **Pre-ingest issue:** base bot already records ambient messages from new groups. Reflection consent gates must not be presented as if they prevent the original bot's collection. Approving Reflection means separately agreeing on the underlying bot's data notice and minimizing old raw text where feasible. If strong “no storing before opt-in” is required, design an ingestion change as a separate security task.
 
-### 6.3 Optional experiment state (proposed)
-A scoped `reflection_experiments` table or similarly auditable store:
+### 6.3 Optional experiment state and Personal Growth Track (**P1 only**, proposed)
+A scoped `reflection_experiments` table or similarly auditable store. **P0 does not keep a persistent ledger.** P1 ongoing Personal Growth Track #166 can reuse the consented source/event pointers and experiment statuses, never raw unrestricted group history:
 - `proposal_id`, `group_id`, `topic_scope/id`, `subject_user_id`;
 - `created_by_request_event_id` unique (idempotent), `strategy_kind`, `source_event_ids`;
 - `status=offered|declined|accepted|tried_self_reported|not_tried_self_reported|expired|retired`;
@@ -141,11 +149,11 @@ A scoped `reflection_experiments` table or similarly auditable store:
 - optional minimal answer `what_surprised` only with explicit consent; redact sensitive narrative and apply agreed TTL;
 - never infer success from `offered`, `accepted` or absence of refusal.
 
-**Data deletion:** scope all reflection-specific state and allow participant correction/retire/delete. Audit deletion across memory, proposals, any derived summaries, pending jobs and generated outbox; explain limits for previously published Telegram messages and backups. Existing general `events`/raw retention remains a separate obligation, not implicitly solved by deletion of experiment record.
+**Data deletion:** only promised to the extent each affected store and backup can truly be handled. Scope all reflection-specific state and allow participant correction/retire/delete. Audit deletion across memory, proposals, any derived summaries, pending jobs and generated outbox; explain limits for previously published Telegram messages and backups. Existing general `events`/raw retention remains a separate obligation, not implicitly solved by deletion of experiment record.
 
 ## 7. Generator and decision contracts (not code)
 
-**Intent:** `REFLECTION_ASK | ANTI_AUTOPILOT_ASK | ALTERNATIVE_ASK | LOWER_INTENSITY | DECLINE | RESULT_REPORT | FORGET | REVIEW`.
+**P0 intent:** `REFLECTION_ASK | ANTI_AUTOPILOT_ASK | CURRENT_REPORT_SNAPSHOT | ALTERNATIVE_ASK | LOWER_INTENSITY | DECLINE`. If another request lacks the previous supplied context, ask the participant to re-supply it. **P1 additional intents only:** `START_TRACK | RESULT_REPORT | FORGET_TRACK | REVIEW_WEEK_MONTH | LONGITUDINAL_EXPERIMENT_STATUS`; requires its own accepted data contract.
 
 Example structured candidate:
 ```json
@@ -170,9 +178,9 @@ Example structured candidate:
 }
 ```
 
-The generator must not control consent/permissions or persist state directly. Deterministic policy validates that each proposed source reference exists, belongs to the requested scope and consenting subject, that no harm/retired topic is violated, and that duplicate proposals are suppressed. Safety and behavioral novelty also need qualitative adversarial review: simple keywords cannot classify all harmful social situations.
+The generator must not control consent/permissions or persist state directly. An exclusive routed request cannot invoke generic reminder creation, memory mapper, statement watch or other Group actions, even if the input mentions dates/goals. A downstream denial/NO_ACTION must end processing without restarting the generic pipeline. Deterministic policy validates that each proposed source reference exists, belongs to the requested scope and consenting subject, that no harm/retired topic is violated, and that duplicate proposals are suppressed. Safety and behavioral novelty also need qualitative adversarial review: simple keywords cannot classify all harmful social situations.
 
-**Candidate budget:** G2 asks for 3 internal diverse alternatives; treat that as a proposed tuning choice, not an inviolate requirement. Start with 2–3 different strategies *within a bounded model call*, measure cost and quality; prefer `NO_ACTION` over more model calls without evidence of benefit.
+**Candidate budget:** G2 proposes bounded 1–3 internal diverse alternatives; treat that as a tuning choice, not an inviolate requirement. Start with 2–3 different strategies *within a bounded model call*, measure cost and quality; prefer `NO_ACTION` over more model calls without evidence of benefit.
 
 **Telegram response:** normally 2–5 human sentences, one grounded observation, one unusual experiment, one question/opt-out. No structured diagnostic report; no “ты всегда”, no “никогда не делал” without confirmation.
 
@@ -187,47 +195,60 @@ The generator must not control consent/permissions or persist state directly. De
 - Existing `group_profile` friends behavior is not consent to intensive Reflection analysis. Use a dedicated explicit feature flag per group/topic with separate per-user consent, default OFF.
 - Logging/telemetry: do not write raw reflection excerpts, medical claims, chat IDs or API secrets into public artifacts. Existing runtime logs may contain chat identity; evaluate access/retention separately.
 
-### G2 v1.1 phase boundary to preserve in implementation
+### G2 v1.2 phase boundary to preserve in implementation
 
 - **P0-LIVE may use only the currently addressed report** or explicitly provided user scenario. Reusing the existing `ContextBuilder.build()` unmodified would retrieve group-wide HOT messages and Memory Cards; **a new minimal-allowlisted Reflection context constructor is required**, with negative tests verifying excluded members/topics and no Personal/LONG fetch.
 - **P0-LIVE is not a full-history psychology engine**. The output must not claim recurring behavior or first-time novelty without self-confirmation. The two-person historical analysis goal belongs to P1 and must not be smuggled into P0 through generic retrieval.
 - **P1-HISTORY** must separately prove topic-tagged provenance and consent-aware retrieval, and account for older legacy rows without topic metadata.
 - Group owner's consent to bot operation is **not** member consent to personalized interpretation. Raw ingestion by the pre-existing bot remains a separate privacy exposure requiring a truthful notice before launch.
 
+## 8.1. P0 outbox consent version and revocation-safe send contract
+
+An exclusive Reflection response in the existing outbox requires **explicit metadata**: capability=`reflection_p0`, exact target group, forum topic scope/id, subject user, consent record/version, request_event_id, and content kind. The dispatcher may enqueue only after consent check, but **enqueuing is not an authorization to send later**.
+
+Immediately before **each** Reflection send/retry, including a previously **claimed**/leased processing job, the delivery worker must:
+1. reload feature flag, exact group/topic user consent and consent version from trusted current store;
+2. compare metadata against them; on revocation/mismatch/unknown, mark message suppressed or cancelled (not sent) in a durable, idempotent manner;
+3. if generation completed after revocation, discard generated output and do not enqueue it; handle transaction races;
+4. keep ordinary non-Reflection outbox messages unchanged.
+
+A check-before-HTTP **cannot retract a Telegram request already in flight** or a message already delivered. Document the race window and do not promise impossible retroactive deletion. Test revocation before queue, after queue, after claim, between generation and send, on worker restart/retry, and while HTTP is in flight. Any unreconciled unsafe send path is a STOP.
+
 ## 9. Minimal vertical slices and sequencing
 
-**S0 — Governance/contract (blocking):** resolve Project OS nondefault `v2` G1 trust (#162), approve/refine G2 (#164) and purpose/retention/consent. No product code.
+**S0 — owner-approved product/privacy/trust controls (blocking):** G1 manual exact-SHA governance choice, purpose-specific consent, data notice for existing bot raw ingest, agreed output visibility and retention/forget semantics. No production changes.
 
-**S1 — Provenance and opt-in (first actual engineering task):** per-user consent gate, topic-aware message persistence and retrieval, negative tests for wrong actor/topic/legacy unknown. Do not yet generate experiments. Proposed additive migration/reversible flag; exact files and SHA in a dedicated G4 Task Contract.
+**S1 — minimum P0 route:** one target group/topic, opt-in per-person, exclusive pre-generic routing, minimal allowlisted current-report packet, terminal denial/NO_ACTION. No topic-history SQL migration.
 
-**S2 — Isolated Reflexion route:** group-specific opt-in connector/profile, own generator prompt, direct mention/reply, no unsolicited or ROAST; regressions against other groups.
+**S2 — bounded P0 candidate + delivery:** one safe, concrete and genuinely different action from the current report; optional one-off track snapshot for #166; privacy/dedup/LLM budget gates; outbox authorization recheck for revoked consent.
 
-**S3 — Antiautopilot single-report mode:** generate one safe, specific alternative based on *current* authorized report; cannot claim a longitudinal pattern. This can be tested quickly without falsely asserting whole-history knowledge.
+**S3 — P0 tests and controlled pilot:** frozen synthetic safety/creativity benchmark, regression tests for non-Reflection groups and generic actions, source/author/reply-to-text privacy, race conditions; after owner G8/G9 and explicit pilot permission, 7-day group trial with two separately consenting participants. **Do not postpone P0 behind history infrastructure.**
 
-**S4 — Longitudinal evidence + history-based experiments:** consented topic-aware 2+ episode verification, controlled deduplication and strategy diversity; add optional self-reported proposal status.
+**S4 — separately approved P1 history (later):** topic-aware schema/retrieval, consent intersection group∩participant, evidence dedupe, optional purpose-bound experiment ledger and data lifecycle, corrections/forget.
 
-**S5 — Weekly review + opt-in pilot:** optional on-demand digest, direct source pointers, 7-day two-user test, product acceptance; only after evidence consider any proactive suggestion, with separate authorization.
+**S5 — P1 on-demand trajectory (later):** weekly/monthly Personal Growth Track #166 and longitudinal AntiAutopilot, evidence dates/links with limits, no unsolicited output, own red-team/acceptance and separate release gate.
 
-S1–S5 are dependencies, **not** approvals to start implementation. Do not open five coding tasks or perform broad refactors automatically.
+
+S1–S5 describe the **proposed** order, not permission to start implementation. Do not open multiple coding tasks or broad refactors automatically. P0 is useful without P1.
 
 ## 10. Test, operational reliability and cost gate
 
-Follow G2 [30 synthetic acceptance scenarios](BREAK_PATTERN_G2_RED_TEAM_2026-11-21.md). Add specific G3 tests:
+Follow G2 [50 specified synthetic acceptance scenarios, split by stage](BREAK_PATTERN_G2_RED_TEAM_2026-11-21.md); **none executed**. Add specific G3 tests:
 - SQL query under user A topic Reports never returns user B/topic Chat/Personal data; failed metadata never falls back across topics.
 - Two forwards/edits of one episode are one piece of behavioral evidence.
-- After consent revocation: no future Reflection retrieval/generation, no retries generating an opted-out message; deletion handled truthfully.
+- After consent revocation: no future Reflection generation/enqueue; **pre-send recheck on already claimed outbox rows** (and retries), no authorized sends after revoked consent except the documented in-flight Telegram race; truthful deletion/limitation.
 - Threaded reply preserves exact topic and reply-to IDs; dedupe after webhook retry.
 - Crashed LLM/memory DB yields clear response or silence; never fabricated historical claim.
 - Existing birthday/reminder/URL Reader routes and normal group persona remain unchanged.
 - Test retention/forget against all affected tables, outbox and event trails, and document backup caveats.
-- Privacy-negative fixtures and adversarial user text cannot change scope/policy.
+- Privacy-negative fixtures and adversarial user text cannot change scope/policy; sender/outbox test distinguishes current Reflection output from unrelated birthday/reminder messages, with no regression.
 - Independent qualitative reviewers compare actual novel vs generic alternatives on synthetic scenarios; source correctness and safety are hard gates even when creativity is excellent.
 
 **Monitoring:** use existing `llm_usage`, `interventions` and sanitized feature counters for latency/cost, rejected candidates, explicit requests, declined/attempted results and unwanted noise. No new monitoring infrastructure. Don't call 7-day pilot “statistically proven effectiveness”.
 
 **Failure stop:** wrong author, wrong topic, unauthorized private data, fabricated clickable evidence, unsafe challenge, unauthorized proactive message, ignored opt-out, excessive cost or stale source attribution means stop Reflection feature and investigate.
 
-**Rollback:** group-level `reflection_enabled=false` / feature flag immediately disables route, retains unrelated bot behavior; cancel any Reflection-specific pending outbox/jobs; migration is additive, schema downgrade only with separate reviewed plan; privacy deletion semantics require tested method and cannot promise to erase previously delivered Telegram messages.
+**Rollback:** group-level `reflection_enabled=false` / feature flag disables new Reflection routing, retains unrelated bot behavior; **pre-send consent check blocks queued and claimed Reflection outbox**, cancel pending work and report in-flight HTTP limitations; migration is additive, schema downgrade only with separate reviewed plan; privacy deletion semantics require tested method and cannot promise to erase previously delivered Telegram messages.
 
 ## 11. G3 decisions requiring owner and independent reviewer
 
@@ -238,6 +259,6 @@ Follow G2 [30 synthetic acceptance scenarios](BREAK_PATTERN_G2_RED_TEAM_2026-11-
 5. Separate approval for additive DB migration and any production data access.
 6. Review proposed model boundary (candidate generation vs deterministic gates) and reliability tests.
 
-**Project OS status:** `G3 PROPOSED/DRAFT` to aid architecture review. `G1 PARTIAL`, `G2 REWORK`, `G4 BLOCKED_FOR_BUILD`, `G6/G7 NOT PASSED`, `G8/G9 NOT GRANTED`.
+**Project OS status:** `G3 REWORK v1.2 / DRAFT`; previous independent review found 3 P1 issues, current revision not yet reviewed. `G1 REWORK`, `G2 REWORK`, `G4 BLOCKED_FOR_BUILD`, `G7 NOT ACTIVE`, `G8/G9 NOT GRANTED`.
 
-**One next safe operation:** independent review of exact G2/G3 documentation heads, then resolve G2 and consent policy through explicit owner decision; only afterwards create a single S1 task contract. No merge, deploy or CI activation.
+**One next safe operation:** independent review of updated exact G1/G2/G3 documentation and new #166 product-track linkage, then obtain owner's explicit P0 consent/retention/visibility contract; only then one S1 task contract. No merge, deploy or CI activation.
