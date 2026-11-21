@@ -32,11 +32,28 @@
 | P0-LIVE (requires separate owner permit) | An opted-in author's **new current report** in the exact allowed topic even without mentioning the bot, OR their direct request | On reports: SILENCE / ONE_QUESTION / ONE_EXPERIMENT. On direct request: specific optional answer or clarification. One-off track snapshot only on request | No group HOT/LONG, third-party reply, longitudinal pattern, experiment ledger or week/month track; minimal consent/cooldown counters only under approved TTL |
 | P1-HISTORY (future) | Explicit per-participant consent + group topic allowlist intersected with individual permitted topics; history with verified provenance | 2+ independent episodes for recurring choice; purpose-bound experiment ledger and on-demand weekly/monthly Personal Growth Track #166 | No analysis until topic-aware SQL retrieval, consent/revocation and retention tests pass |
 
-**P0 behavior contract (intentional simplification):** No persistent experiment ledger, completed/declined-history suppression, week/month personal track, or automatic progress tracking. “Другой вариант” in a separate turn must include the earlier suggestion or current context in the user's own new message; otherwise NeНой asks to repeat the context. P0 may generate several alternatives internally in a **single** requested turn but shows one. A one-off snapshot must explicitly state “только по этому отчёту” and never present a 30-day history.
+**P0 behavior contract (intentional simplification):** Automatic one-report evaluation is allowed **after** separate author consent, but there is no persistent experiment ledger, completed/declined-history suppression, week/month personal track, or automatic progress tracking. A minimal scoped operational cooldown/mute/dedupe record is allowed only under an owner-accepted TTL. “Другой вариант” in a separate turn must include the earlier suggestion or current context in the user's own new message; otherwise NeНой asks to repeat the context. P0 may generate several alternatives internally in a **single** requested turn but shows one. A one-off snapshot must explicitly state “только по этому отчёту” and never present a 30-day history.
 
 **P1 behavior contract (separate acceptance):** user-initiated ongoing track + limited experiment ledger may be supported after exact, purpose-bound consent, source retention, per-topic retrieval, forget/correction and queued-message revocation are implemented. Group owner cannot expand another participant's topic permissions; effective topics = group policy allowlist ∩ each participant's granted topics. No unsolicited outputs without later separate opt-in.
 
 No stage may silently change the generic group profile. The existing Telegram ingest stores raw messages before the Group Dispatcher; the Reflection consent gate alone **does not prevent baseline collection**. Resolve disclosure and data minimization as a separate privacy requirement before P0-LIVE.
+
+## 1.3. P0 selective proactive observation — replaces silence-first P0 rule
+
+**Owner's product direction (2026-11-21):** A participant should not have to call the bot after every daily report. For an independently opted-in participant, the bot may examine **each newly arrived author-owned report** in the exact approved Telegram group/forum topic and decide whether intervention adds real value. **The default output is silence**; explicit on-demand reflection/AntiAutopilot remains available. Group-owned opt-in never overrides an individual's consent.
+
+**Decision contract, in strict order:**
+
+1. **Deterministic pre-LLM gates:** exact configured Telegram chat ID and topic ID (not a mutable title); message from a known human author; a new, report-like text event; per-author, versioned **automatic analysis and group-visible occasional reply** consent; active Reflection flag; not muted/revoked; cost budget not exhausted. Unknown topic, anonymous author, forwarded-only/edited messages, unconsented participant, bot/system content -> do not analyze or respond. Preserve normal bot behavior outside this group's approved reports topic.
+2. **Current report only:** one source message from the author, small allowlisted metadata. No historical chats, cross-topic HOT/LONG, personal conversations, third-party reply text or generic scene/mapper. A user quoting a third party does not authorize profiling that party.
+3. **Opportunity evaluation:** determine if one concrete, safe, genuinely novel action or one precise question could reveal a missed alternative **in this report**. Candidate result = `SILENCE | ONE_QUESTION | ONE_EXPERIMENT`, with explainable reason code and a short expected learning value. Low relevance, generic praise, ungrounded psychology, ambiguous source, sensitive distress, or high stakes => SILENCE; never invent stable patterns or claim "never done".
+4. **Hard quotas (proposed pilot defaults):** no more than **2 unsolicited interventions per user in any rolling 7-day window**, at least **48 hours** between them, max one per source report; optional group-wide noise cap and daily model-cost ceiling. These are **ceilings**, not intervention quotas. Direct requests bypass these *only* with independent consent, correct scope and safety checks.
+5. **Operational state only:** To apply the above quotas, store minimal user/group/topic scoped `last_unsolicited_at`, count window, opt-in version, mute and event/outbox dedupe. This is NOT a longitudinal behavior ledger, psychological profile or permission to retrieve report bodies. Exact TTL and deletion/receipt contract must be accepted before build.
+6. **Send-time veto:** validate current group/topic/user/consent version, mute and feature flag immediately before sending each claimed/retried Reflection outbox message, including generation that completes after opt-out. Stop/negative feedback means stop unsolicited replies; no claim that already-started Telegram HTTP can be recalled.
+7. **Consent and visibility:** both passive AI assessment and occasional public intervention must be explained before each participant opts in. The regular bot already ingests some chat text outside Reflection; do not claim enabling/disabling this mode controls all baseline collection. Sensitive report -> do not post uninvited public psychological interpretation.
+8. **No scheduled follow-ups:** group reports trigger evaluation when received, not a timer. No daily automatic challenges, no forced participation, no comparisons between friends. Individual can explicitly request an answer whenever desired.
+
+**P0 quality acceptance is two-sided:** on a frozen sample of 12 clearly valuable/low-risk reports, >=9 should receive an independently reviewer-approved intervention (proposed target); on 12 neutral/routine reports, at least 11 should be correctly silent; on all sensitive, unsafe and unconsented cases, **zero** unauthorized or dangerous posts. Treat both unjustified silence on high-value reports and noisy intervention on routine reports as failures. Two independent reviewers determine ground truth; this is a pilot target, not a psychometric statistic. Actual thresholds must be owner-approved before G4.
 
 ## 2. Terms and evidence
 
@@ -90,7 +107,7 @@ A transformation is NOT relevant merely because its name is unusual. It must cha
 
 ## 5. Decision policy (proposed; implementation G3 only)
 
-A. Check user is explicitly addressing the bot, opted in, permitted topic, and access boundaries. **P0-LIVE must enter an exclusive route before generic Scene Analyzer, scheduling, reminders, memory mapping, statement watching, HOT/LONG retrieval or ordinary roast**. Build a new allowlisted packet with current authorized author text and safe metadata only; do not pass original event metadata wholesale, including `reply_to_text`. Denial returns a terminal NO_ACTION or a minimal consent-specific response; never fall back into generic generation.
+A. Check either an explicit authorized request or a newly arrived report in exact approved group/topic from an **individually opted-in** author. **P0-LIVE must enter an exclusive route before generic Scene Analyzer, scheduling, reminders, memory mapping, statement watching, HOT/LONG retrieval or ordinary roast**. Build a new allowlisted packet with current authorized author text and safe metadata only; do not pass original event metadata wholesale, including `reply_to_text`. Denial returns a terminal NO_ACTION or a minimal consent-specific response; never fall back into generic generation.
 B. Check sensitive context and known individual constraints. If unsafe/insufficient, use care, question or NO_ACTION.
 C. P0: evidence is the user's own current addressed report only. If the user replies to **someone else's** message, do not pass that quoted text, original event metadata, scene/mapper inputs or earlier context to any Reflection LLM call. P1: SQL retrieval must use `group_id + permitted_topics_intersection + subject_id + time` with source IDs, actor and date; dedupe episodes, forwards and edits.
 D. Identify an **observable** default behavior, not a hidden psychological cause.
@@ -118,10 +135,11 @@ Never make a person publicly disclose private health, family or relationship det
 
 ## 7. User paths
 
-- **Ask:** direct mention or reply such as “НеНой, покажи необычный ход по этому отчёту”.
+- **Automatic consideration:** an opted-in participant posts a normal report in the approved Reports topic; НеНой evaluates only this report and usually stays silent, exceptionally asks one useful question or offers one unusual experiment.
+- **Ask:** direct mention or reply such as “НеНой, покажи необычный ход по этому отчёту” remains supported.
 - **Request another:** “слишком банально, другой вариант” -> materially different transformation. P0 requires the earlier suggestion/current report to be provided again if no valid bounded current-request context; it does **not** silently retrieve history.
 - **Reduce stakes:** “помягче” -> smaller reversible step; refuse unsafe variants.
-- **Decline:** “не сегодня / пропускаю” -> acknowledge without shame or further chasing.
+- **Decline/mute:** “не сегодня / пропускаю / НеНой, не вмешивайся в мои отчёты” -> no shaming; stop autonomous evaluations and pending group replies for the user, with truthful baseline-data retention caveats.
 - **Report:** “попробовал, вот что произошло” -> distinguish performed action from expected impact.
 - **Review:** “что из нового я действительно попробовал за неделю?” -> **P1 only** after own ongoing-track consent and history storage. In P0, say that a weekly track is unavailable and offer a snapshot of the currently provided report.
 - **Forget:** “не используй эту тему” / scoped forget -> do not surface the retired content in callbacks or future experiments.
@@ -132,7 +150,7 @@ Never make a person publicly disclose private health, family or relationship det
 - Group memories are not allowed to pull from private conversations, other groups, private documents, or earlier chat exports without separate explicit opt-in.
 - Group-specific messages can still include third parties: do not propose experiments involving non-consenting people in ways that burden or manipulate them.
 - Separate **purpose-specific opt-in** from Telegram's *pre-existing* general bot ingest. Legacy `event_ingestor` currently persists `messages.text` and `events.payload` before Group policies. Decide and disclose baseline processing/retention instead of promising “nothing is stored until consent”.
-- P0-LIVE must use only the requesting consenting author's current supplied report; no automatic reading of other chat turns for personalized suggestions, even though the bot's ordinary runtime could technically retrieve them.
+- P0-LIVE may evaluate **only a freshly arrived report by an individually opted-in author** even without bot address, or that person's current explicit request. Never load other chat turns, generic HOT/LONG or third-party reply text for Reflection; direct-request consent and *continuous automatic analysis consent* must not be conflated.
 - Telegram forum topic isolation must be implemented/tested before retrospective pattern analysis across reports. Current v2 group context is chat-scoped, with partial threaded fail-closed handling.
 - Proposed minimum retained fields: authorized group/topic/user, consent version, evidence references (not secret raw quote), technique ID, suggestion ID, offered status, optional self-report, opt-out/forget state. Exact retention TTL, evidence deletion behavior, migration, source-link policy and base-bot data notice require owner decision at G2/G3.
 - Forget semantics must account for raw `messages`, `events.payload`, `memory_cards`, `interventions.generated_text`, `outbox`, derived summaries and any pending jobs; backups and already delivered Telegram messages may not be erasable by the bot. It must never falsely confirm complete deletion.
@@ -150,7 +168,7 @@ Never make a person publicly disclose private health, family or relationship det
 
 **Gate D: controlled real pilot:** after explicit authorization, separately opted-in users post ordinary reports; NeНой evaluates eligible reports, mostly remains silent, selectively posts a helpful suggestion or question, and continues answering direct requests over a 7-day trial. Record per proposal: useful/unhelpful, surprised/obvious, tried/declined, what was observed, annoyance, repeated suggestion. With only two users, do not present percentage claims as statistical evidence.
 
-**Gate E: stop conditions:** any unconsented reveal, mixed-topic memory, false source attribution, high-risk unsafe suggestion, persistent shaming or reply after opted-out challenge is a pilot STOP/REWORK trigger.
+**Gate E: stop conditions:** LLM assessment of unconsented author, cross-topic input, false author attribution, unsafe suggestion, unauthorized proactive post, quota breach, ignored per-user stop/mute, fabricated pattern or post-revocation reply is a pilot STOP/REWORK trigger.
 
 ## 10. Dependencies and actual Project OS state
 
