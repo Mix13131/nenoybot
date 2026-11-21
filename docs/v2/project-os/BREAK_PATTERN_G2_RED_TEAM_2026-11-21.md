@@ -193,7 +193,7 @@ Reviewers should compare **at least two distinct model-generated alternatives** 
 
 ## 5. Draft minimal pilot and stop policy
 
-**P0-LIVE:** a new currently authored report in the approved topic may be assessed **without a bot mention only after individual automatic-analysis opt-in**; explicit direct requests remain available. No HOT/LONG, experiment ledger, third-party reply text or generic scene/mapper and no recurring-pattern claim. The bot generally stays silent, intervening only when high value passes the novelty/safety gate and 2/week + 48-hour caps. P1 alone supports longitudinal tracking. Group's pre-existing raw message ingest must be separately disclosed and privacy-checked. **P1-HISTORY:** later, after independently verified topic provenance and retention. One proposal at a time; participants may say “not now”, “make it gentler”, “something else”, “forget that”.
+**INITIAL MEMORY-FIRST LIVE:** a new report from a participant with explicit archive, historical-analysis and proactive-response permissions may be analyzed with relevant **sourced history**, not unrestricted group context. Direct-request-only grants remain separate. No fixed reply-count/48h caps; choose silence by quality. Durable original history, topic/author consent and retention correctness are part of initial release; older missing periods require verified optional import. No fake 'complete life history'; explicit controls and budget emergency protection.
 
 **Pilot duration proposed:** 7 days after G8/G9 and participant-specific automatic-analysis/public-reply consent. Review eligible reports, true positive interventions, false positive interruptions, false silence, ignored/negative feedback, surprise, usefulness and annoyance. No daily compliance forms. For two members, present observations and examples without percentage-based efficacy claims.
 
@@ -215,7 +215,7 @@ Reviewers should compare **at least two distinct model-generated alternatives** 
 
 **Finding F-06 / medium:** “Uncommon recommendation” cannot be objectively guaranteed without longitudinal feedback and diversity tests. Define manual qualitative rubric and observable user value instead of promising novelty magic.
 
-**Finding F-07 / medium:** Proactive ideas could erode group rapport. P0 remains request-only; decide unsolicited rollout separately based on actual user satisfaction.
+**Finding F-07 / medium:** Proactive ideas may erode group rapport even without numerical quotas. Evaluate quality, consent, relevance, repetition and annoyance; no blanket request-only limit or forced reply count.
 
 **Finding F-08 / medium:** Human weekly outcomes can be introspective and not independently verifiable. Label as self-report, never as objectively verified psychological improvement.
 
@@ -226,8 +226,8 @@ Reviewers should compare **at least two distinct model-generated alternatives** 
 - **G2:** companion v1.2 spec and this matrix are **REWORK CANDIDATES** addressing the prior independent Codex findings; current updated SHA still requires its own independent review.
 - **G3:** architecture must resolve thread isolation, provenance, consent, minimum memory schema and safe generation boundary.
 - **G4–G5:** BLOCKED_FOR_BUILD; no actual tests or code changes happened.
-- **G6:** independent Codex reviewed the **previous** PR HEAD and reported four unresolved findings; the updated v1.2 document has not passed a fresh exact-HEAD review. The first-party red-team is separate; none of the 50 specified tests has been executed.
+- **G6:** old independent review of earlier document versions does not certify the owner's **new memory-first** architecture. New exact-HEAD review is required. All acceptance scenarios are still specifications, not executed product tests.
 - **G7:** NOT RUN / no trustworthy compatible Project OS install.
 - **G8/G9:** No owner exact-SHA acceptance, merge or production permit.
 
-**One next safe step:** commission a separate independent G2 risk/quality review against the exact proposed PR HEAD; present revised product/consent options for owner decision. Do not merge or deploy.
+**One next safe step:** independently review exact memory-first G2/G3 and G4 scope, then obtain owner agreement to archive consent/retention/migration/cost-safety controls. No implementation/merge/deploy assumed.
