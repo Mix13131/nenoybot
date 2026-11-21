@@ -2,7 +2,7 @@
 
 **Date:** 2026-11-21
 **Issue:** #163. **Parent:** #161. **Source:** [G2 specification](BREAK_PATTERN_G2_SPEC_2026-11-21.md).
-**Status:** REWORK v1.2 — independent Codex findings incorporated as specified tests; new HEAD review not yet completed. Tests are NOT executed, no G7/G8 PASS.
+**Status:** REWORK v1.2 — independent Codex findings on previous HEAD incorporated as specified tests; current HEAD review pending. Tests NOT executed; G7/G8 not passed.
 **Product baseline:** v2@805d2aafc709cb2323f228d791b16bb1f63f64b8.
 **No real chat data in this file.**
 
@@ -161,7 +161,7 @@ Reviewers should compare **at least two distinct model-generated alternatives** 
 - **G2:** companion v1.2 spec and this matrix are **REWORK CANDIDATES** addressing the prior independent Codex findings; current updated SHA still requires its own independent review.
 - **G3:** architecture must resolve thread isolation, provenance, consent, minimum memory schema and safe generation boundary.
 - **G4–G5:** BLOCKED_FOR_BUILD; no actual tests or code changes happened.
-- **G6:** **NOT PERFORMED**. This document is an initial analytical red-team, not an external reviewer.
+- **G6:** independent Codex reviewed the **previous** PR HEAD and reported four unresolved findings; the updated v1.2 document has not passed a fresh exact-HEAD review. The first-party red-team is separate; none of the 50 specified tests has been executed.
 - **G7:** NOT RUN / no trustworthy compatible Project OS install.
 - **G8/G9:** No owner exact-SHA acceptance, merge or production permit.
 
