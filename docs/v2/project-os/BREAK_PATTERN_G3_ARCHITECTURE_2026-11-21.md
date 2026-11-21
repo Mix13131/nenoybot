@@ -35,7 +35,7 @@ Avoid (1) unsolicited psychotherapy, (2) random “get out of comfort zone” ta
 | `maintenance_repo.py` | `messages.text` expires, terminal events and outbox pruned separately | Reflection-specific retention, opt-out deletion and generated-text handling need explicit scope |
 | Group Lab `app_v2/group_lab.py` / Task 37 | Existing synthetic/sanitized replay infrastructure; JSON-import path, not automatic HTML history import | Reuse for synthetic quality/evidence tests, **not** as permission to upload actual Telegram exports |
 
-**Source limitations:** this is static code inspection. No trusted Project OS Context Pack, runtime Telegram proof, database query, tests or independent reviewer executed.
+**Source limitations:** architecture based on static code inspection. Independent Codex reviewed the **previous G3 HEAD** with three P1 findings, now addressed in this draft; current revision still needs exact-HEAD review. No trusted Project OS Context Pack, Telegram runtime test, production query or implementation tests were executed.
 
 ## 3. Architecture options
 
@@ -186,7 +186,7 @@ The generator must not control consent/permissions or persist state directly. An
 
 ## 8. Consent, privacy and sensitive-context behavior
 
-- P0 explicit requests only; no proactive prompts, scheduled experiments, spam or daily punishment. Independent consent from both participants is needed before bot analyzes their respective histories.
+- P0 explicit requests only; no proactive prompts, scheduled experiments, spam or daily punishment. Each participant must independently opt in before the bot analyzes **their own** report; P1 history analysis requires that person's separate, explicit authorization for each allowed topic. One consenting group member cannot grant consent for the other.
 - Public group response may quote a consenting participant's *own* message only under agreed scope; do not pull private or third-party sensitive details into public summaries.
 - If participant describes severe exhaustion, medical trouble, distress, family conflict or unsafe conditions, avoid “push harder”; choose care / clarification / NO_ACTION. Do not assume bot provides medical or psychotherapy services.
 - One participant declining does not authorize analysis of them via another person's prompt.
