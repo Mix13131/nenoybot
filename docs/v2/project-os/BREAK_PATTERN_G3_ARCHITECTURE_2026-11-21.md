@@ -57,7 +57,7 @@ These are design corrections, not implemented code or G6 PASS. The revised HEAD 
 
 ## 4. Request path and trust boundaries
 
-\`\`\`text
+```text
 Telegram group update
     |
     v
@@ -101,7 +101,7 @@ HOT/LONG ContextBuilder, group behavior and generic generator)
                                       +-- disabled/revoked → cancel/fail closed
                                       v
                          Telegram send into exact permitted topic
-\`\`\`
+```
 Important: **all Reflection model invocations** must receive only a newly constructed, allowlisted P0 input. Neither the raw `EventEnvelope` (its `metadata.reply_to_text` may include third-party text), a generic scene, ordinary HOT/WARM/LONG, nor related group Memory Cards may reach the classifier, mapper, candidate generator or final response path. Context minimization solely in the final generator is too late. Replying to a third party's report does **not** by itself authorize analysis of that third person's content.
 
 Non-reflection requests in other groups retain ordinary routing. In this single target group, passive daily reports remain silent under the opted-in Reflection profile; an explicit ordinary reminder command, if separately enabled and permitted, follows the existing action route, **but a Reflection request with reminder-like text never falls through** to generic scheduling after rejection or failure.
