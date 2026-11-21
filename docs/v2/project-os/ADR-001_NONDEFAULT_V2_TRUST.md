@@ -1,6 +1,6 @@
 # ADR-001 — Project OS trust model for NeНой v2 on a non-default branch
 
-**Status:** `PROPOSED / NOT APPROVED`  
+**Status:** `REWORK v1.1 / NOT APPROVED`  
 **Date:** 2026-11-20  
 **Owner decision needed:** human project owner, after independent technical review  
 **Issue:** [#161](https://github.com/Mix13131/nenoybot/issues/161)  
@@ -22,8 +22,24 @@ The current `main` and `v2` branch metadata report `protected=false`; automated 
 | A. Move GitHub default to `v2` | Existing Project OS code could keep its invariant | Changes repository-wide workflow and v1/v2 separation; not necessary for scoped feature | **REJECT proposed** |
 | B. Put generic Project OS policy `base_branch=v2` into product unchanged | Fast to copy | Fails trusted preflight; hiding mismatch would weaken trust | **REJECT** |
 | C. Run target v2 PR through `base_branch=main` | Uses default root | GitHub PR base and local code base disagree; produces misleading verification | **REJECT** |
-| D. Explicitly support non-default product base with independently pinned controller and typed dual-branch checks | Retains product workflow; gives auditable separation of source trust and product baseline; reusable for other repos | Requires reviewed controller extension, negative tests and a bootstrap/adoption gate | **RECOMMENDED / PROPOSED** |
-| E. Keep manual Project OS G0–G10 only, without deterministic steward | Immediately usable for scoped pilot | Reviewer and human discipline are the only checks; no enforceable SHA or PR gate | **Acceptable TEMPORARY ADVISORY fallback** |
+| D. Explicitly support non-default product base with independently pinned controller and typed dual-branch checks | Retains product workflow; possible long-term verification automation | Requires external trust bootstrap, reviewed controller extension and negative tests | **FUTURE OPTION / PROPOSED** |
+| E. Use manual exact-SHA owner/reviewer gates while creating an independently accepted trust checkpoint; no automated Steward yet | Shortest safe route to controlled P0 without rewriting non-default-branch trust code | Requires human evidence discipline; checks remain advisory, not enforced | **RECOMMENDED FOR P0 / PROPOSED** |
+
+## Independent trust bootstrap — required for BOTH options D and E
+
+Codex independent review of prior PR HEAD `88a737485dd8d71812d20fe2acbef2e3d40fc64e` identified a **circular trust blocker (P1)**: stable GitHub `v2` HEAD and policy bytes do **not** prove that the policy was human-accepted. Because `v2` is currently unprotected, a malicious/unapproved governance rewrite can be pushed before a clean read and become self-authoritative.
+
+**Proposed human-controlled trust record (NOT YET CREATED OR ACCEPTED)** must be recorded independently of the unprotected target `v2` source (e.g. signed offline owner record in controlled storage, or another authenticated owner-controlled channel with immutable/exact-version retrieval and reviewer identity). Proposed minimum fields:
+- `target_repo_full_name` and immutable GitHub repository ID;
+- `repository_default_branch=main` and its exact accepted SHA at checkpoint;
+- `product_base_branch=v2` and its exact accepted SHA;
+- `controller_repo` and **owner-accepted** controller commit SHA + file/code digest;
+- `governance_policy_digest`, accepted governance canon/state digests, version;
+- `actor`, `accepted_at`, scope, authorized transition IDs, evidence URL/signature, superseded checkpoint reference.
+
+GitHub file contents, a self-written ADR, an agent comment, or an unprotected base commit are **not sufficient acceptance proof**. On missing, stale, unparseable, unverifiable or unauthorized transition evidence, report `BLOCKED/TRUST_UNKNOWN` **even for advisory automated checks** — not `VERIFIED_CONTEXT`. Legitimate GitHub metadata may still be read as untrusted status evidence. No inference that the observation-only SHA above is accepted.
+
+For manual option **E** during pre-P0 design, cite precise GitHub HEADs, independent review, owner decisions and a separately accepted control record. Do not run/claim a Project OS automated Steward pass. Option **D** becomes a separate future owner-approved project only if this manual path proves insufficient.
 
 ## Proposed model D (not implemented)
 
@@ -38,8 +54,8 @@ The current `main` and `v2` branch metadata report `protected=false`; automated 
 ### Product trust
 
 1. Independently query GitHub to confirm the full repository identity and actual default branch before trusting product config.
-2. Read the exact `v2` product-base SHA twice (before and after PR checks) and require equality. If unavailable, moved, or not a valid commit, **BLOCK**.
-3. Load project-specific policy, canon and state only from the exact trusted `v2` BASE SHA; compare to the local checkout. Never substitute the candidate PR's edited governance files as trusted policy.
+2. Query **both** anchors at start and finish: immutable GitHub repo ID, current `default_branch=main`, accepted `main` HEAD SHA, accepted product `v2` HEAD SHA. Reject changed identity, default name or either branch SHA, even if `v2` itself is unchanged. A changed but authorized baseline needs a new accepted checkpoint; no implicit promotion.
+3. First compare the policy/canon/state digests from the `v2` BASE against the **independently accepted trust record**. Only then load them as trusted; candidate PR policy, governance code or its own issue text can never bootstrap trust. A mismatch blocks even advisory validation.
 4. Verify candidate PR target `v2` and expected head SHA, remote head repository identity, local clean HEAD, ancestry, changed-file list, frozen files and action scope. Revalidate any stacked/fork ancestry from exact repository and SHA, not branch names.
 5. Explicit governance-path changes (controller, policy, state, scope config or AGENTS) require a separate reviewed governance PR. The tool must not approve changes to its own checking rules.
 6. Keep owner G8 acceptance and merge/deploy G9 outside the automatic rule set. Code review is necessary but not sufficient.
@@ -50,9 +66,9 @@ This proposal does not make `v2` a protected branch. A successful read-only cont
 
 ## Separate implementation and verification stages
 
-**Stage 1 — Controller/architecture acceptance.** Independent review of this ADR, including source-of-trust bootstrap and GitHub API failure modes; owner chooses D or E. No code.
+**Stage 1 — Owner decision on E vs D and independent trust bootstrap.** Independent re-review of this ADR, secure external checkpoint record and default+product-branch TOCTOU negative cases. No new controller code.
 
-**Stage 2 — Governance-only Draft PR.** Add scoped policy/state/canon, exact-base checks and negative tests. Work only in separate v2-derived branch/worktree. Do not rewrite existing `AGENTS.md`, enable workflows, touch production or use real chat archives.
+**Stage 2 — Conditional governance implementation (only if D explicitly selected).** Add scoped policy/state/canon, external trust record verification, exact-base checks and negative tests in a v2-derived separate Draft PR. If E selected, use documented human/SHA approvals and do not install misleading automated controls. Preserve existing `AGENTS.md` and workflows.
 
 **Stage 3 — Run full tests and independent review.** Confirm legitimate case and adversarial GOV-01..12 from G1. Report exact SHA, test command, exit code and repository rule status.
 
@@ -62,12 +78,12 @@ This proposal does not make `v2` a protected branch. A successful read-only cont
 
 ## Decision that remains open
 
-- Whether to accept **D** (stronger, reusable, requires a controller extension) or retain **E** (manual/advisory temporarily) while getting user-facing pilot value.
-- Exact Controller code location and pinned SHA after review, trust-root bootstrap and treatment of unprotected `v2`.
+- Whether to approve **E (recommended for P0)** with an independently recorded trust checkpoint; D remains optional later with separate costs/acceptance.
+- Exact external trust-record storage/actor/signature policy and accepted controller/governance digests. **None currently recorded as approved**.
 - Privacy, retention and both participants' opt-in for reflection data.
 - Whether Telegram topic-aware storage requires a schema migration (separate risk and approval).
 
-**Current decision:** `PROPOSED`; the target remains `G1 PARTIAL / G4 BLOCKED_FOR_BUILD`.
+**Current decision:** `REWORK / PROPOSED E`; the target remains `G1 PARTIAL / G4 BLOCKED_FOR_BUILD` until exact trust record and owner acceptance. No verified Steward.
 
 ## Acceptance evidence
 
