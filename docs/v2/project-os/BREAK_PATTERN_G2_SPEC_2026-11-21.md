@@ -1,9 +1,10 @@
 # G2 Product Specification — «АнтиАвтопилот» / Break Pattern Engine
 
-**Status:** REWORK v1.1 / G2 REVIEW REQUIRED. No independent review, G8 acceptance or build permission.
+**Status:** REWORK v1.2 / G2 REVIEW REQUIRED. Independent Codex review completed on previous HEAD and raised unresolved P1/P2 findings; current revision is unreviewed. No owner acceptance or build permission.
 **Date:** 2026-11-21
 **Request:** Issue #163 (https://github.com/Mix13131/nenoybot/issues/163)
 **Parent:** Reflection Coach #161 (https://github.com/Mix13131/nenoybot/issues/161)
+**Related:** on-demand Personal Growth Track #166 (https://github.com/Mix13131/nenoybot/issues/166) — shared P0 user experience, P1 longitudinal history deferred.
 **G1:** Draft PR #162 (https://github.com/Mix13131/nenoybot/pull/162), PARTIAL / ADVISORY.
 **Product baseline when authored:** nenoybot/v2 @ 805d2aafc709cb2323f228d791b16bb1f63f64b8.
 **Audience:** two consenting members of one existing Telegram group; no rollout to other groups.
@@ -28,8 +29,12 @@
 | Stage | Evidence allowed | Response | Hard boundary |
 | --- | --- | --- | --- |
 | P0-OFFLINE | Synthetic/anonymized fixtures only | Evaluate whether suggestions are concretely unusual and safe | No Telegram access or production claims |
-| P0-LIVE (requires separate owner permit) | Requesting consenting author's **current addressed report** or their explicitly supplied text | One optional counter-pattern action; transparent about not knowing long history | No retrieval of ordinary group HOT/LONG history; no pattern or "first-time" claim |
-| P1-HISTORY (future) | Permitted topic-filtered, participant-consented history with provenance | Verify 2+ independent real episodes before "recurring" claim | No analysis until topic-aware storage/retrieval and opt-in tests pass |
+| P0-LIVE (requires separate owner permit) | Requesting consenting author's **current addressed report** or their explicitly supplied text | One optional experiment AND/OR one-off track snapshot **limited to the submitted report**; no longitudinal claim | Stateless across separate requests: no experiment ledger, weekly review, automatic memory, generic HOT/LONG context or assertions of a "first-time" without direct self-report |
+| P1-HISTORY (future) | Explicit per-participant consent + group topic allowlist intersected with individual permitted topics; history with verified provenance | 2+ independent episodes for recurring choice; purpose-bound experiment ledger and on-demand weekly/monthly Personal Growth Track #166 | No analysis until topic-aware SQL retrieval, consent/revocation and retention tests pass |
+
+**P0 behavior contract (intentional simplification):** No persistent experiment ledger, completed/declined-history suppression, week/month personal track, or automatic progress tracking. “Другой вариант” in a separate turn must include the earlier suggestion or current context in the user's own new message; otherwise NeНой asks to repeat the context. P0 may generate several alternatives internally in a **single** requested turn but shows one. A one-off snapshot must explicitly state “только по этому отчёту” and never present a 30-day history.
+
+**P1 behavior contract (separate acceptance):** user-initiated ongoing track + limited experiment ledger may be supported after exact, purpose-bound consent, source retention, per-topic retrieval, forget/correction and queued-message revocation are implemented. Group owner cannot expand another participant's topic permissions; effective topics = group policy allowlist ∩ each participant's granted topics. No unsolicited outputs without later separate opt-in.
 
 No stage may silently change the generic group profile. The existing Telegram ingest stores raw messages before the Group Dispatcher; the Reflection consent gate alone **does not prevent baseline collection**. Resolve disclosure and data minimization as a separate privacy requirement before P0-LIVE.
 
@@ -57,8 +62,8 @@ No stage may silently change the generic group profile. The existing Telegram in
 | BPM-08 | Consent and user autonomy | Direct mention/reply only in P0; “pass”, “not now” and “less intense” are accepted immediately |
 | BPM-09 | Personalization without labels | Do not infer disorders, character flaws, hidden motives or stable personality from group logs |
 | BPM-10 | Sensitive-context safety | Distress, exhaustion, conflict or health concerns switch to care/no challenge; risky experiment blocked |
-| BPM-11 | No repetitions | Reject duplicate/completed/declined proposals; allow an explicit retry request |
-| BPM-12 | Optional self-report outcomes | Distinguish offered / accepted / tried_self_reported / not_tried_self_reported / declined / unknown / expired; no reply is never evidence of failure or success |
+| BPM-11 | No repetitions | **P1**: avoid repeated completed/declined proposals via purpose-bound ledger; **P0**: within one bounded generation only, or compare explicitly supplied previous suggestion, never secretly load group history |
+| BPM-12 | Optional self-report outcomes | **P1 only:** purpose-bound ledger distinguishes offered / accepted / tried_self_reported / not_tried_self_reported / declined / unknown / expired. **P0:** no durable self-report tracking or status inference |
 | BPM-13 | Participant correction and forget controls | Explicit purpose-scoped correction/revocation, cessation of new retrieval, deletion contract for derived data and pending jobs; do not promise retroactive erasure from Telegram or backups |
 | BPM-14 | Explainable source boundaries | Message IDs are not automatically verified clickable links; only cite actually authorized and validated evidence, with dates/limits when deep links cannot be verified |
 | BPM-15 | Group and topic isolation | Do not leak Personal or other-group memory; do not mix Chat/Reports topics for unsupported comparisons |
@@ -66,7 +71,7 @@ No stage may silently change the generic group profile. The existing Telegram in
 | BPM-17 | Graceful degradation | Missing history/LLM/store/permission -> transparent clarification or NO_ACTION, never fake memory |
 | BPM-18 | Short Telegram default | 2–5 sentences; details only on request |
 | BPM-19 | Collaborative exercise consent | No publicly assigned challenge for the other person without their own consent |
-| BPM-20 | Controlled learning loop | Weekly review says proposed / tried / declined / observed, with uncertainty and no fake long-term improvement |
+| BPM-20 | Controlled learning loop | **P1 only:** weekly review and Personal Growth Track #166 show proposed / tried / declined / observed with provenance; **P0:** one-off report-specific snapshot, no claimed longitudinal evidence |
 
 ## 4. Transformations catalogue (internal strategies, not a list to send)
 
@@ -85,9 +90,9 @@ A transformation is NOT relevant merely because its name is unusual. It must cha
 
 ## 5. Decision policy (proposed; implementation G3 only)
 
-A. Check user is explicitly addressing the bot, opted in, permitted topic, and access boundaries. For P0-LIVE, build a **minimal context packet limited to the current authorized message**; do not pass existing chat-wide HOT/LONG context.
+A. Check user is explicitly addressing the bot, opted in, permitted topic, and access boundaries. **P0-LIVE must enter an exclusive route before generic Scene Analyzer, scheduling, reminders, memory mapping, statement watching, HOT/LONG retrieval or ordinary roast**. Build a new allowlisted packet with current authorized author text and safe metadata only; do not pass original event metadata wholesale, including `reply_to_text`. Denial returns a terminal NO_ACTION or a minimal consent-specific response; never fall back into generic generation.
 B. Check sensitive context and known individual constraints. If unsafe/insufficient, use care, question or NO_ACTION.
-C. P0: evidence is current addressed report only. P1: retrieve evidence filtered in SQL by exact group/topic/consenting participant with source IDs, author and date; dedupe real-world episodes, forwards and edits, not just message IDs.
+C. P0: evidence is the user's own current addressed report only. If the user replies to **someone else's** message, do not pass that quoted text, original event metadata, scene/mapper inputs or earlier context to any Reflection LLM call. P1: SQL retrieval must use `group_id + permitted_topics_intersection + subject_id + time` with source IDs, actor and date; dedupe episodes, forwards and edits.
 D. Identify an **observable** default behavior, not a hidden psychological cause.
 E. Generate three diverse candidates using different transformations, each with a minimal action and learning question.
 F. Remove ungrounded, unsafe, infeasible, high-cost, coerced, duplicated, overly generic and irrelevant candidates using deterministic policies plus semantic review; uncertainty falls back to no action.
@@ -114,16 +119,16 @@ Never make a person publicly disclose private health, family or relationship det
 ## 7. User paths
 
 - **Ask:** direct mention or reply such as “НеНой, покажи необычный ход по этому отчёту”.
-- **Request another:** “слишком банально, другой вариант” -> different transformation, not superficial rewording.
+- **Request another:** “слишком банально, другой вариант” -> materially different transformation. P0 requires the earlier suggestion/current report to be provided again if no valid bounded current-request context; it does **not** silently retrieve history.
 - **Reduce stakes:** “помягче” -> smaller reversible step; refuse unsafe variants.
 - **Decline:** “не сегодня / пропускаю” -> acknowledge without shame or further chasing.
 - **Report:** “попробовал, вот что произошло” -> distinguish performed action from expected impact.
-- **Review:** “что из нового я действительно попробовал за неделю?” -> report attempted/declined/unknown separately.
+- **Review:** “что из нового я действительно попробовал за неделю?” -> **P1 only** after own ongoing-track consent and history storage. In P0, say that a weekly track is unavailable and offer a snapshot of the currently provided report.
 - **Forget:** “не используй эту тему” / scoped forget -> do not surface the retired content in callbacks or future experiments.
 
 ## 8. Privacy, consent and data contract — decisions still required
 
-- Bot owner consent is **not** consent from every group participant. Each participant must opt in for personal reports/patterns; scope and purpose disclosed in advance.
+- Bot owner consent is **not** consent from every group participant. Each participant must opt in for personal reports/patterns; scope and purpose disclosed in advance. **Cross-topic scope requires BOTH a group-level allowlist and that participant's explicit consent to every additional topic**; expanded owner-only permission never counts.
 - Group memories are not allowed to pull from private conversations, other groups, private documents, or earlier chat exports without separate explicit opt-in.
 - Group-specific messages can still include third parties: do not propose experiments involving non-consenting people in ways that burden or manipulate them.
 - Separate **purpose-specific opt-in** from Telegram's *pre-existing* general bot ingest. Legacy `event_ingestor` currently persists `messages.text` and `events.payload` before Group policies. Decide and disclose baseline processing/retention instead of promising “nothing is stored until consent”.
@@ -141,7 +146,7 @@ Never make a person publicly disclose private health, family or relationship det
 
 **Gate B: synthetic functional tests:** run separate acceptance matrix in companion file; all privacy, safety and attribution negative tests must pass before human pilot. Include P0 context minimization, P1 topic/consent filtering, revoked consent with pending retries, and backup/Telegram deletion limits. No unsupported personal labels or claims of “never” are permitted.
 
-**Gate C: qualitative creativity:** two independent reviewers judge a bounded synthetic sample for (a) relevance, (b) material difference from routine, (c) concreteness, (d) low downside, (e) learning potential. Disagreements remain visible; do not replace disagreement with fake precision.
+**Gate C: qualitative creativity with *positive* release threshold (PROPOSED owner target):** version/freeze at least 12 **eligible, evidence-sufficient, low-risk P0 examples** and 12 unsafe/insufficient examples before testing. An eligible example passes only if a concrete, personally relevant, materially different and reversible action is offered and **both independent reviewers agree**; disputed examples count as non-passing until adjudicated. Suggested MVP requirement: **at least 9 of 12 eligible** pass (>=75%), **0 unsafe or unauthorized** outputs across all negative cases, and an explicit NO_ACTION or clarification on ineligible examples. Count NO_ACTION on eligible cases as a **miss**, not a success. Reviewers compare against simple generic baselines and note strategy diversity; this is a product threshold, **not a scientifically validated psychology metric**. Set owner-accepted version before G4 and do not tune tests after seeing results.
 
 **Gate D: controlled real pilot:** after explicit permission for the P0-LIVE boundary, two consenting users run *current-report-only* requests voluntarily for 7 days. Record per proposal: useful/unhelpful, surprised/obvious, tried/declined, what was observed, annoyance, repeated suggestion. With only two users, do not present percentage claims as statistical evidence.
 
@@ -151,8 +156,8 @@ Never make a person publicly disclose private health, family or relationship det
 
 - G0 change intent is clear; exact product and privacy contract remain PROPOSED.
 - G1 is PARTIAL: Draft PR #162 proposes non-default v2 governance trust model. It is not merged, independent review not verified and no compatible Steward is installed.
-- G2 this v1.1 document addresses known first-party red-team issues but remains an owner-review candidate, **not an independent G6 PASS**.
+- G2 this v1.2 revision addresses **independent Codex findings from reviewed prior HEAD `87ffe1fd02c050fb64bcd5207edc2b9ce5bd2b0d`** but remains an unapproved owner-review candidate; **a fresh exact-HEAD independent review is required**, not a G6 PASS.
 - G3 requires topic-aware evidence, memory minimization, consent model, and risk gates before code.
 - G4–G5: BLOCKED_FOR_BUILD by current Project OS policy; no CI activation, app changes, DB migrations, bot runtime changes or production updates.
 
-**Recommended safe next decision:** accept/rework the P0 behavior and privacy scope, then commission independent G2 review and resolve G1 governance before coding.
+**Recommended safe next decision:** independent exact-HEAD review of G2 v1.2; owner chooses P0 current-report-only scope and approved consent/retention. P1 track #166 remains a separate later approval. No coding or deployment.
