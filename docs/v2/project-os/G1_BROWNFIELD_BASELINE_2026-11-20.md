@@ -2,7 +2,7 @@
 
 **Date:** 2026-11-20
 **Issue:** [#161](https://github.com/Mix13131/nenoybot/issues/161)
-**Status:** `PARTIAL / ADVISORY — NOT VERIFIED_CONTEXT`
+**Status:** `REWORK v1.1 / PARTIAL — NOT VERIFIED_CONTEXT`
 **Product:** НеНой v2 · proposed `reflection_coach_v1`
 **Scope of this change:** documentation-only technical review; no governance runtime, code, CI or production changes
 **Product source:** `Mix13131/nenoybot@v2` — GitHub SHA `805d2aafc709cb2323f228d791b16bb1f63f64b8`
@@ -27,7 +27,7 @@ Current product branch design differs from Project OS template assumptions:
 | Product ownership | `AGENTS.md` describes separate legacy `main` and `app_v2/` in `v2`; forbids unsolicited refactors, new infrastructure and direct production changes | Use isolated `v2`-derived PR and keep legacy untouched |
 | Work in flight | Open PRs against `v2`: #95, #142, #143, #144, #145, #146, #147, #150, #156 (observed 2026-11-20) | Re-check live heads and check overlap before each change |
 | GitHub default branch | `main@37383b9...` observed; branch-protected=false | May not assume Project OS trust root is protected |
-| Product base | `v2@805d2aa...` observed; branch-protected=false | Initial Project OS gate can only be **ADVISORY** until reviewed enforcement |
+| Product base | `v2@805d2aa...` observed; branch-protected=false | **Unknown policy provenance blocks even advisory trust claims** until independently accepted owner checkpoint; later passing checks remain ADVISORY without enforcement |
 | Project OS canon | `.project-os/METHOD.md` defines G0–G10, human G8, explicit G9 and read-only trusted controller | No self-approval; CI PASS is not release authorization |
 | Context Pack v1 | `scripts/project_steward/context_pack.py` compares `policy.base_branch` against GitHub `default_branch` | Policy `base_branch=v2` fails `DEFAULT_BRANCH_POLICY_MISMATCH` |
 | Context Pack v2 | `scripts/project_steward/context_pack_v2.py` repeats this check in preflight **before** open PR detail reads | Config-only workaround is not valid |
@@ -54,19 +54,21 @@ Relevant source links:
 
 **Rejected shortcut C:** switch GitHub default branch to `v2`, modify legacy `main`, or disable identity checks merely to obtain PASS. These change accepted product boundaries or weaken governance.
 
-**Recommended route (proposed ADR-001):** preserve existing product branches; run an explicitly versioned and independently reviewed **non-default product-base adapter** with two separately verified anchors:
+**Recommended near-term route (proposed ADR-001 v1.1):** preserve existing product branches and use **manual Project OS G0–G10 controls with exact-SHA owner/reviewer records (option E)**. A full non-default-branch adapter (option D) is deferred unless independently justified. Both choices require an external, independently accepted trust bootstrap; do not mistake stable GitHub metadata for governance approval.
+
+**If a future option D is specifically authorized**, its controller must have these properties:
 1. **Controller trust:** run only a trusted, reviewed and SHA-pinned Project OS implementation; never execute controller code or policy from the candidate PR with privileged credentials.
-2. **Product trust:** separately authenticate the full GitHub repository identity, the actual default branch (`main`), and the intended product base (`v2`) with exact SHA, independently fetched BASE policy/state and candidate PR base/head/diff. Recheck for branch-head races.
+2. **Product trust:** compare candidate policy/canon/state against an independently owner-accepted **checkpoint and digests outside the unprotected v2 tree**; verify repo identity and `main` AND `v2` branch identities/SHAs both before and after reading PR metadata. Any mismatch or missing external acceptance must block.
 3. The exception is **not** a blanket waiver for `DEFAULT_BRANCH_POLICY_MISMATCH`; it is a new typed contract distinguishing `repository_default_branch` from `product_base_branch` and rejecting unexpected changes to either.
-4. Until tests, independent review, merge and branch enforcement are completed, return `ADVISORY / BLOCKED` rather than `VERIFIED_CONTEXT` or `STEWARD_PASS`.
+4. Until the trust checkpoint is accepted and verified, return `BLOCKED/TRUST_UNKNOWN` even for advisory controller validation. After the accepted checkpoint but before enforceable branch protection, only report `ADVISORY`, never `VERIFIED_CONTEXT` or `STEWARD_PASS`.
 
 This route requires implementation and dedicated negative tests. **Neither the adapter nor its verification exists in this PR.**
 
 ## 4. Proposed Project OS adoption order
 
 1. **G0 + G1:** owner reviews proposed Reflection Coach scope, consent/privacy boundary and this baseline; unresolved decisions remain open. Current result: `G1 PARTIAL`, because no trusted local Context Pack was run against the target and no acceptance exists.
-2. **Independent architecture/Controller review:** approve or replace proposed ADR-001. Review how source-of-truth for controller and target BASE policy/state are pinned. Do not modify `main` as a workaround.
-3. **Separate governance-only implementation task:** add project-specific `.project-os/*` and the reviewed adapter/contract, only on a `v2`-derived branch. Preserve `AGENTS.md` and all workflows by default; add no automatic CI or branch-rule activation.
+2. **Independent architecture/Controller review:** revise ADR-001 after Codex P1 circular-trust and P2 dual-branch race findings; owner chooses manual E vs optional automated D, plus accepts an external checkpoint record. Do not modify `main` as workaround.
+3. **Conditional governance-only implementation:** only if owner chooses D, create a separate task for adapter/policy/canon with independent trust bootstrap. Under manual E use reviewer + exact-SHA gates; do not pretend the automated Project OS is installed. No auto CI or branch protection.
 4. **G6 + G7:** run deterministic and adversarial tests, verify exact PR HEAD and SOURCE, obtain independent review; Project Steward remains `ADVISORY` without enforced GitHub branch protection.
 5. **G8 + G9:** owner approval is bound to a reviewed SHA; merge and deploy require separate explicit permissions. Governance-only adoption is not production deployment.
 6. **G10:** record accepted branch baseline, policy, decision register, recovery and known blockers; ensure fresh agent can resume without old chat.
@@ -79,7 +81,7 @@ This route requires implementation and dedicated negative tests. **Neither the a
 | GOV-01 | Legitimate `v2` PR with trusted controller, reviewed BASE policy and exact fetched SHA | Pass *advisory* subject to tests and human gates |
 | GOV-02 | Merely set template `policy.base_branch=v2` without adapter | Hard BLOCKED, `DEFAULT_BRANCH_POLICY_MISMATCH` |
 | GOV-03 | Candidate PR changes its own policy/controller/state and tries to self-approve | BLOCKED / independent governance review |
-| GOV-04 | GitHub default branch unexpectedly changed from `main` | BLOCKED before PR-detail execution |
+| GOV-04 | GitHub default branch unexpectedly changed from `main` before OR **during** the read, while `v2` stays unchanged | BLOCKED; verify both anchors at final step |
 | GOV-05 | `v2` base moved between first and last verification | BLOCKED with race evidence |
 | GOV-06 | Candidate PR HEAD changed after independent review/owner decision | Review/acceptance invalidated; re-run |
 | GOV-07 | Fork PR or stacked-parent text mimics trusted ref but repo identity/SHA is wrong | BLOCKED; no implicit ancestry trust |
@@ -88,17 +90,20 @@ This route requires implementation and dedicated negative tests. **Neither the a
 | GOV-10 | Branch rules inactive / `v2` unprotected | `ADVISORY`; never claim GitHub enforcement |
 | GOV-11 | Existing v1/v2 product code or unrelated PR paths changed | BLOCKED_FOR_SCOPE |
 | GOV-12 | Real chat identifiers/secrets/Telegram export in PR | BLOCKED_FOR_PRIVACY |
+| GOV-13 | Unapproved attacker changes policy/canon in unprotected `v2` before initial GitHub read | BLOCKED: digest not in independently accepted checkpoint; stable HEAD alone insufficient |
+| GOV-14 | Accepted checkpoint missing/expired or supplied only inside untrusted candidate | BLOCKED/TRUST_UNKNOWN, including advisory validation |
+| GOV-15 | `main` HEAD changes only between first and last reads, `v2` unchanged | BLOCKED; do not issue result from mixed-state snapshot |
 
 ## 6. G1 blockers, status and next safe operation
 
-- **BLOCKER 1:** Generic Project OS Context Pack cannot validate a non-default product branch as currently implemented.
+- **BLOCKER 1:** Generic Project OS Context Pack cannot validate a non-default product branch as currently implemented. Interim manual E is proposed but no independent accepted owner checkpoint exists.
 - **BLOCKER 2:** Neither GitHub `main` nor `v2` currently has verified branch enforcement.
 - **BLOCKER 3:** No independently reviewed, product-specific `.project-os/` canon/policy/state exists in `v2`.
 - **BLOCKER 4:** Historical context for Telegram forum topics is not proven isolated.
 - **BLOCKER 5:** G0/G2 product and privacy contracts are still PROPOSED; each participant's informed opt-in for group analysis must be captured before live processing.
 
-**G1 result:** `PARTIAL / ADVISORY`, not `VERIFIED_CONTEXT`.
+**G1 result:** `REWORK / PARTIAL`. No auto validation may claim `ADVISORY TRUSTED` without external checkpoint; manual status observations remain nonauthoritative.
 **G4 build authorization:** `BLOCKED_FOR_BUILD` until required owner choices and trust contract exist.
 **What was actually checked:** GitHub repository/branch metadata, target AGENTS/source, canonical Project OS code and open PR metadata. This document does **not** claim a test run, local checkout audit, independent reviewer approval, G7 PASS, owner G8 acceptance, merge or deployment.
 
-**Exactly one next safe operation:** independent review of proposed ADR-001 and the future non-default-branch controller contract; after revision, present exact design/SHA to owner for G2/G3 approval. Keep production untouched.
+**Exactly one next safe operation:** independent re-review of proposed ADR-001 v1.1 (manual E plus external trust record, dual-anchor recheck), then present exact SHA and checkpoint contract to owner for decision. Keep production untouched.
