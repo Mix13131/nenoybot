@@ -1,6 +1,6 @@
 # G3 CONDITIONAL ARCHITECTURE — Reflection Coach + Antiautopilot
 
-**Status:** `CHANGE REQUEST v1.3 / PROPOSED / NOT BUILD-READY`. Owner-requested selective autonomous report observation needs fresh independent G3 review and participant-specific consent.
+**Status:** `REWORK v1.4 / PROPOSED / NOT BUILD-READY`. Codex reviewed v1.3 at `45869ab455847ac057035f91ab5fcaef2acb9024`, finding purpose-confused send-time consent. Current revision requires new independent review and owner privacy/cost approvals.
 **Date:** 2026-11-21
 **Parent:** [Reflection Coach #161](https://github.com/Mix13131/nenoybot/issues/161)
 **Feature:** [Antiautopilot #163](https://github.com/Mix13131/nenoybot/issues/163) + [Personal Growth Track #166](https://github.com/Mix13131/nenoybot/issues/166) (P0 one-off only, P1 longitudinal by opt-in)
@@ -11,7 +11,7 @@
 
 ## 1. Problem, result and scope
 
-Users already post daily reports in one Telegram forum group. **After each individual participant opts into automatic report assessment and group-visible occasional replies**, the new mode should consider the **newly arrived report** without requiring a bot mention, choose mostly SILENCE and exceptionally one grounded question or unusual action. **Explicit direct requests remain supported.** P0 does not read past reports or build a longitudinal profile; P1 would require separately authorized history.
+Users post daily reports in one Telegram group. After each author separately opts into **automatic assessment AND unsolicited group replies**, НеНой can evaluate only their current report without mention and usually choose SILENCE. A **direct-request-only** participant may still request a current-report analysis when autonomous evaluation is paused, if they separately consent to group-visible direct replies. No P0 history, automatic personal track or unauthorized model input.
 
 Avoid (1) unsolicited psychotherapy, (2) random “get out of comfort zone” tasks, (3) false “you have never done X” claims, (4) other-person attribution, (5) cross-topic/private memory contamination, (6) pressure to comply.
 
@@ -52,6 +52,7 @@ The independent Codex review on previous HEAD `658bdab29b07191f9228f1cd91f4c046c
 - G3-REV-01: an exclusive Reflection route **before** generic action/reminder, statement/humanity, memory and ordinary Group Generator, not merely a prompt before the final roast.
 - G3-REV-02: a short **P0 experiment first**, without topic-history persistence/retrieval migrations before pilot; move longitudinal ledger, monthly track and weekly review to separate P1 authorization.
 - G3-REV-03: consent/feature flag **recheck at outbox send time**, including claimed processing leases and late generation; cancel before send and document impossible-to-revoke already-started Telegram requests.
+- G3-REV-04 (Codex proactive v1.3): **purpose-sensitive delivery checks**: autonomous mute must not block a separately authorized direct-request response.
 
 These are design corrections, not implemented code or G6 PASS. The revised HEAD must be independently reviewed again.
 
@@ -65,13 +66,16 @@ Group Access + Connector Resolve
 EXCLUSIVE TOPIC ROUTE (before all generic LLM/memory/scheduler handlers)
     ├─ other group/topic or unrelated authorized command → existing path
     └─ exact configured Reports topic:
-         ├─ no verified author, wrong event type or no user opt-in → SILENCE
-         ├─ explicit authorized request → one-report reflection / snapshot
-         └─ new report by author with *automatic analysis + public reply* opt-in
+         ├─ no verified author / no scope-matching purpose permission → NO_REFLECTION
+         ├─ direct request + direct group-reply consent → reflection / snapshot
+         └─ new report by author with *auto analysis + unsolicited reply* opt-in
                  ↓
              cheap report eligibility filter → non-report / uncertain → SILENCE
                  ↓
-             quota/cost/stop gate → blocked → SILENCE
+             MANDATORY per-user/group daily assessment budget reservation
+                 ├─ exhausted / unknown → SILENCE without model call
+                 ↓
+             unsolicited posting quota/cooldown gate → blocked → SILENCE
                  ↓
              minimal current-author-report-only packet
              (no reply_to_text, third party, HOT/LONG, Scene/Mapper)
@@ -84,7 +88,7 @@ EXCLUSIVE TOPIC ROUTE (before all generic LLM/memory/scheduler handlers)
                                   ↓
                        consent-version-tagged outbox
                                   ↓
-                       pre-send & retry authorization + mute recheck
+                       purpose-aware pre-send/retry authorization recheck
                          ├─ revoked / disabled / mismatch → cancel
                          └─ permitted → Telegram reply in same forum topic
 ```
@@ -121,7 +125,7 @@ Telegram Bot API has native `message_thread_id` on messages and sends; no separa
 ### 6.2 Reflection consent (P0+P1, proposed)
 Use a purpose/version-specific consent record, either a small `reflection_consents` table or a deliberately isolated versioned `chat_members.participant_profile` key. Prefer a **small table** if status, scope changes and revocations require durable audit/atomic lookup.
 
-Minimal fields: `chat_id`, `user_id`, `purpose_version`, `allowed_topic_ids`, `status=opted_in|revoked`, `consented_at`, `revoked_at`. Do **not** store personal health or psychological trait labels. Participant must independently consent to analysis of their own history, including whether others in the group may read the resulting suggestions. Deny on missing/unconfirmed consent.
+Minimum consent fields: `chat_id`, `user_id`, exact permitted topic IDs, version, `direct_request_group_reply`, `auto_report_analysis`, `unsolicited_group_reply`, `autonomous_muted`, `global_revoked`, `consented_at`, `revoked_at`. These are **separate purpose grants**. Missing or unverifiable consent => deny. No personality labels, no group-owner consent in place of individual permission.
 
 **Pre-ingest issue:** base bot already records ambient messages from new groups. Reflection consent gates must not be presented as if they prevent the original bot's collection. Approving Reflection means separately agreeing on the underlying bot's data notice and minimizing old raw text where feasible. If strong “no storing before opt-in” is required, design an ingestion change as a separate security task.
 
@@ -172,7 +176,7 @@ The generator must not control consent/permissions or persist state directly. An
 
 ## 8. Consent, privacy and sensitive-context behavior
 
-- P0 can **autonomously evaluate newly arrived reports** in the configured topic only after each author independently consents to automatic analysis and possible group-visible selective replies; direct requests remain possible. No scheduled experiments, daily challenges or automatic progress tracking. A person can pause just their own autonomous observation. P1 history uses separate per-person topic-specific consent.
+- P0 can evaluate a newly arrived report only if the author granted **both automatic analysis and group-visible unsolicited output**. Someone who grants **direct-request group-reply permission only** may still invoke НеНой; an autonomous pause must not affect that direct path. Global stop blocks both. No automatic progress track or daily challenges. P1 history needs separate authorization.
 - Public group response may quote a consenting participant's *own* message only under agreed scope; do not pull private or third-party sensitive details into public summaries.
 - If participant describes severe exhaustion, medical trouble, distress, family conflict or unsafe conditions, avoid “push harder”; choose care / clarification / NO_ACTION. Do not assume bot provides medical or psychotherapy services.
 - One participant declining does not authorize analysis of them via another person's prompt.
@@ -190,11 +194,11 @@ The generator must not control consent/permissions or persist state directly. An
 
 ## 8.1. P0 outbox consent version and revocation-safe send contract
 
-An exclusive Reflection response in the existing outbox requires **explicit metadata**: capability=`reflection_p0`, exact target group, forum topic scope/id, subject user, consent record/version, request_event_id, **unsolicited=true/false** and content kind. Preserve a minimal 7-day per-user unsolicited count, 48-hour cooldown and event dedupe under accepted retention. Do not store historical psychological interpretations as a workaround. The dispatcher may enqueue only after consent check, but **enqueuing is not an authorization to send later**.
+Reflection outbox metadata must identify capability=`reflection_p0`, exact group/topic/user, request_event_id, consent version, `purpose=unsolicited_report|direct_request`, `unsolicited=true|false`, and content kind. Preserve minimally scoped cooldown/dedupe with owner-approved TTL and **mandatory pre-LLM assessment budget** (including silent outputs and retries). Do not persist psychological narratives. Enqueue is never permanent permission to send.
 
 Immediately before **each** Reflection send/retry, including a previously **claimed**/leased processing job, the delivery worker must:
-1. reload feature flag, exact group/topic user consent, **permission for autonomous analysis and public output**, individual mute/cooldown controls and consent version from trusted current store;
-2. compare metadata against them; on revocation/mismatch/unknown, mark message suppressed or cancelled (not sent) in a durable, idempotent manner;
+1. Reload group feature/topic, exact user consent version, and **purpose** from trusted current store before every queued/claimed/retried send.
+2. If `unsolicited=true`, require both auto-analysis and unsolicited group-reply grants, plus autonomous mute OFF and posting limits. If `unsolicited=false`, require direct-request public-reply grant; **ignore autonomous mute/cooldown and unsolicited grants**. Global stop, missing consent, mismatched version or feature OFF blocks both. Durably suppress unauthorized output without sending.
 3. if generation completed after revocation, discard generated output and do not enqueue it; handle transaction races;
 4. keep ordinary non-Reflection outbox messages unchanged.
 
@@ -204,11 +208,11 @@ A check-before-HTTP **cannot retract a Telegram request already in flight** or a
 
 **S0 — owner-approved product/privacy/trust controls (blocking):** G1 manual exact-SHA governance choice, purpose-specific consent, data notice for existing bot raw ingest, agreed output visibility and retention/forget semantics. No production changes.
 
-**S1 — minimum P0 selective route:** one exact group/topic, purpose-versioned per-author consent to autonomous assessment/public output, early exclusive routing, cheap report eligibility filter, minimal current-report input, hard SILENCE on uncertain/unauthorized/irrelevant events. Direct requests still supported. No topic-history migration.
+**S1 — minimum P0 selective route:** one exact group/topic, purpose-versioned **independent direct and automatic permissions**, early exclusive route, cheap report filter and current-report context; unavailable permissions => no Reflection model call. A direct-only user can still request analysis. No topic-history migration.
 
-**S2 — candidate + selective policy + delivery:** per-report decision SILENCE/ONE_QUESTION/ONE_EXPERIMENT, safe and concrete text, hard per-user 2/week/48h cap and per-report dedupe, budget; on-demand one-off track snapshot #166. Outbox rechecks consent, user mute and group feature flag before each send/ retry.
+**S2 — candidate + selective policy + delivery:** current-report SILENCE/ONE_QUESTION/ONE_EXPERIMENT, **mandatory budget for silent assessments, failures and retries** separate from 2 unsolicited/week + 48h cooldown, per-report dedupe; direct-request snapshot #166. Outbox rechecks **mode-specific** permissions before send/retry.
 
-**S3 — P0 tests and controlled pilot:** frozen synthetic **beneficial intervention vs proper silence** benchmark, author/topic/privacy, 2/week + 48h rate limits, cost, revocation races, non-Reflection regression tests; after G8/G9 and separate explicit opt-in, 7-day pilot measuring helpfulness and unwanted intrusions, not response volume. **P1 history is not a prerequisite.**
+**S3 — P0 tests and controlled pilot:** frozen **6 useful questions + 6 experiments + 12 routine/silent + 12 unsafe** fixtures, per-purpose consent tests, mandatory silent-evaluation budget, revocation/race and other-group regressions; after G8/G9, opt-in 7-day pilot. P1 history is not prerequisite.
 
 **S4 — separately approved P1 history (later):** topic-aware schema/retrieval, consent intersection group∩participant, evidence dedupe, optional purpose-bound experiment ledger and data lifecycle, corrections/forget.
 
