@@ -96,7 +96,7 @@ Source-backed memory cards, summaries, author/topic retrieval index
                     v
                 Telegram reply
 ```
-Important: **all Reflection model invocations** must receive only a newly constructed, allowlisted P0 input. Neither the raw `EventEnvelope` (its `metadata.reply_to_text` may include third-party text), a generic scene, ordinary HOT/WARM/LONG, nor related group Memory Cards may reach the classifier, mapper, candidate generator or final response path. Context minimization solely in the final generator is too late. Replying to a third party's report does **not** by itself authorize analysis of that third person's content.
+Important: **all Reflection model calls** must receive only a newly constructed, group/topic/author/consent-filtered evidence packet: current report plus selected relevant, actually archived, authorized past sources. The raw `EventEnvelope` (including `reply_to_text` that may contain third-party material), generic unfiltered HOT/LONG, unrelated Personal data or unsourced Memory Cards must **never** reach any classifier, mapper or generator. Filtering only final-generation output is too late. Replying to a third party does not authorize analysis of their content.
 
 Other groups retain ordinary routing. In the configured Reports topic, **eligible passive reports route to selective evaluation**; unauthorized, routine or low-value reports produce terminal SILENCE (no fallback to generic group LLM). Unrelated explicitly authorized commands can use the existing path, but Reflection report text containing future dates must never turn into a generic task or reminder. The user can still directly address the bot.
 
