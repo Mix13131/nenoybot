@@ -119,7 +119,7 @@ A transformation is NOT relevant merely because its name is unusual. It must cha
 
 ## 5. Decision policy (proposed; implementation G3 only)
 
-A. Check either an explicit authorized request or a newly arrived report in exact approved group/topic from an **individually opted-in** author. **P0-LIVE must enter an exclusive route before generic Scene Analyzer, scheduling, reminders, memory mapping, statement watching, HOT/LONG retrieval or ordinary roast**. Build a new allowlisted packet with current authorized author text and safe metadata only; do not pass original event metadata wholesale, including `reply_to_text`. Denial returns a terminal NO_ACTION or a minimal consent-specific response; never fall back into generic generation.
+A. Check direct/automatic purpose permissions, source-archive consent and exact group/topic/author. Reflection routing must precede generic Group LLM/action/memory side effects. Build an allowlisted current-report PLUS **selected relevant archived authorized source** context; never use generic chat-wide HOT/LONG, Personal memory or unconsented quoted reply text. Denial terminates without generic fallback.
 B. Check sensitive context and known individual constraints. If unsafe/insufficient, use care, question or NO_ACTION.
 C. Evidence = current author's report plus SQL-filtered **authorized historical source events** by exact group, consented topics, author(s), time and provenance. A reply to someone else's message never implies consent to use their content. Dedupe copied/forwarded episodes and edits; only 2+ independent episodes support a recurring-choice claim.
 D. Identify an **observable** default behavior, not a hidden psychological cause.
@@ -174,7 +174,7 @@ Never make a person publicly disclose private health, family or relationship det
 
 **Gate A: mode-specific privacy (mandatory):** obtain informed individual consent for the exact group/topic and group-visible output. **AUTO_REPORT** may analyze a passive report only with separate automatic-analysis and unsolicited-public-reply grants; otherwise no proactive Reflection model call or post. **DIRECT_REQUEST** may process the user's *own current request* with independent direct-request public-reply permission even when the autonomous flags are OFF or muted. Global Reflection stop/revocation blocks both. Group owner permission never replaces member consent.
 
-**Gate B: synthetic functional tests:** run separate acceptance matrix in companion file; all privacy, safety and attribution negative tests must pass before human pilot. Include P0 context minimization, P1 topic/consent filtering, revoked consent with pending retries, and backup/Telegram deletion limits. No unsupported personal labels or claims of “never” are permitted.
+**Gate B: memory-first tests:** verify archives across >30 days, all received authorized message coverage, edit/deletion lineage, topic/author/consent retrieval, relevant long-term evidence, absence of invented missing periods, scoped forget and backups, and responses to multiple valuable reports without numeric caps. No unsupported personality labels.
 
 **Gate C: value-sensitive positive benchmark (PROPOSED):** freeze 12 eligible safe P0 reports pre-labelled for **6 high-value questions + 6 concrete experiments**, with explicit case-level objective, plus 12 neutral/routine reports and 12+ unsafe/insufficient cases. Two independent reviewers assess source grounding, learning value, suitability of ONE_QUESTION vs ONE_EXPERIMENT, autonomy and proportionality. A useful specific question is a **positive success**, not a failed experiment; an action case requires a concrete reversible change. Provisional release target >=9/12 overall AND >=4/6 in each type, >=11/12 correct SILENCE on routine cases, **zero privacy/safety breaches**; reviewer disagreement fails until separately adjudicated. NO_ACTION on eligible = miss. No unvalidated psychological score; baseline comparison documented. Fix thresholds *before* running the benchmark.
 
@@ -186,8 +186,8 @@ Never make a person publicly disclose private health, family or relationship det
 
 - G0 change intent is clear; exact product and privacy contract remain PROPOSED.
 - G1 is PARTIAL: Draft PR #162 proposes non-default v2 governance trust model. It is not merged, independent review not verified and no compatible Steward is installed.
-- G2 this v1.2 revision addresses **independent Codex findings from reviewed prior HEAD `87ffe1fd02c050fb64bcd5207edc2b9ce5bd2b0d`** but remains an unapproved owner-review candidate; **a fresh exact-HEAD independent review is required**, not a G6 PASS.
+- G2 v1.5 is a new owner memory-first scope; older independent reviews on report-only v1.4 cannot certify it. Requires exact-HEAD review and separate owner acceptance.
 - G3 requires topic-aware evidence, memory minimization, consent model, and risk gates before code.
 - G4–G5: BLOCKED_FOR_BUILD by current Project OS policy; no CI activation, app changes, DB migrations, bot runtime changes or production updates.
 
-**Recommended safe next decision:** independent review of P0 v1.3 proactive requirements + matching G3; owner decides exact topic, per-person automatic-analysis and public-reply permission, pilot frequency, logging/retention and stop controls. P1 track #166 is separate. No code/merge/deployment.
+**Recommended safe next decision:** re-review memory-first G2/G3 v1.5 and G4 #167, then accept source archive retention/forget, author/topic consent, optional old-export import, accurate data coverage and financial emergency controls. No code/merge/deployment.
