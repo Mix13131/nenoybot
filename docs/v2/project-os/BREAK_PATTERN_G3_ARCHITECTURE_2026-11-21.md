@@ -58,53 +58,39 @@ These are design corrections, not implemented code or G6 PASS. The revised HEAD 
 ## 4. Request path and trust boundaries
 
 ```text
-Telegram group update
-    |
-    v
-existing webhook → normalize (actor, chat, current message, topic, reply)
-    |
-    v
-existing durable ingest (baseline raw-text collection separately disclosed)
-    |
-    v
+Telegram new message → webhook normalization → legacy durable ingest
+    ↓
 Group Access + Connector Resolve
-    |
-    v
-EXCLUSIVE REFLECTION ROUTE (before birthday processing, scheduler,
-reminder handler, statement watcher, generic SceneAnalyzer/MemoryMapper,
-HOT/LONG ContextBuilder, group behavior and generic generator)
-    |
-    +-- not target group or not Reflection intent → unrelated existing path
-    |
-    +-- configured Reflection group, no direct request → silence (no proactive)
-    |
-    +-- Reflection request → deterministic group/topic/user consent gate
-                                      |
-                                      +-- denial → terminal NO_ACTION/
-                                      |            minimal consent explanation
-                                      |            (NEVER generic fallback)
-                                      v
-                               P0 CURRENT-REPORT packet
-                               (allowed author text and safe topic/time only,
-                               never reply_to_text/HOT/LONG/scene/mapper)
-                                      |
-                                      v
-                          bounded candidate LLM + policy quality/safety
-                                      |
-                                      +-- unsafe/low quality → NO_ACTION
-                                      v
-                          Reflection-tagged outbox metadata
-                                      |
-                                      v
-                     outbox pre-send/retry authorization recheck
-                                      |
-                                      +-- disabled/revoked → cancel/fail closed
-                                      v
-                         Telegram send into exact permitted topic
+    ↓
+EXCLUSIVE TOPIC ROUTE (before all generic LLM/memory/scheduler handlers)
+    ├─ other group/topic or unrelated authorized command → existing path
+    └─ exact configured Reports topic:
+         ├─ no verified author, wrong event type or no user opt-in → SILENCE
+         ├─ explicit authorized request → one-report reflection / snapshot
+         └─ new report by author with *automatic analysis + public reply* opt-in
+                 ↓
+             cheap report eligibility filter → non-report / uncertain → SILENCE
+                 ↓
+             quota/cost/stop gate → blocked → SILENCE
+                 ↓
+             minimal current-author-report-only packet
+             (no reply_to_text, third party, HOT/LONG, Scene/Mapper)
+                 ↓
+             opportunity evaluator: does talking beat silence?
+                 ├─ no / sensitive / generic → SILENCE
+                 └─ useful → ONE_QUESTION or ONE_EXPERIMENT
+                                  ↓
+                       safety + relevance + diversity validator
+                                  ↓
+                       consent-version-tagged outbox
+                                  ↓
+                       pre-send & retry authorization + mute recheck
+                         ├─ revoked / disabled / mismatch → cancel
+                         └─ permitted → Telegram reply in same forum topic
 ```
 Important: **all Reflection model invocations** must receive only a newly constructed, allowlisted P0 input. Neither the raw `EventEnvelope` (its `metadata.reply_to_text` may include third-party text), a generic scene, ordinary HOT/WARM/LONG, nor related group Memory Cards may reach the classifier, mapper, candidate generator or final response path. Context minimization solely in the final generator is too late. Replying to a third party's report does **not** by itself authorize analysis of that third person's content.
 
-Non-reflection requests in other groups retain ordinary routing. In this single target group, passive daily reports remain silent under the opted-in Reflection profile; an explicit ordinary reminder command, if separately enabled and permitted, follows the existing action route, **but a Reflection request with reminder-like text never falls through** to generic scheduling after rejection or failure.
+Other groups retain ordinary routing. In the configured Reports topic, **eligible passive reports route to selective evaluation**; unauthorized, routine or low-value reports produce terminal SILENCE (no fallback to generic group LLM). Unrelated explicitly authorized commands can use the existing path, but Reflection report text containing future dates must never turn into a generic task or reminder. The user can still directly address the bot.
 
 ## 5. Forum-topic and provenance contract
 
@@ -153,7 +139,7 @@ A scoped `reflection_experiments` table or similarly auditable store. **P0 does 
 
 ## 7. Generator and decision contracts (not code)
 
-**P0 intent:** `REFLECTION_ASK | ANTI_AUTOPILOT_ASK | CURRENT_REPORT_SNAPSHOT | ALTERNATIVE_ASK | LOWER_INTENSITY | DECLINE`. If another request lacks the previous supplied context, ask the participant to re-supply it. **P1 additional intents only:** `START_TRACK | RESULT_REPORT | FORGET_TRACK | REVIEW_WEEK_MONTH | LONGITUDINAL_EXPERIMENT_STATUS`; requires its own accepted data contract.
+**P0 intent:** `AUTO_REPORT_EVALUATION | REFLECTION_ASK | ANTI_AUTOPILOT_ASK | CURRENT_REPORT_SNAPSHOT | ALTERNATIVE_ASK | LOWER_INTENSITY | DECLINE | MUTE_AUTONOMOUS`. If another request lacks the previous supplied context, ask the participant to re-supply it. **P1 additional intents only:** `START_TRACK | RESULT_REPORT | FORGET_TRACK | REVIEW_WEEK_MONTH | LONGITUDINAL_EXPERIMENT_STATUS`; requires its own accepted data contract.
 
 Example structured candidate:
 ```json
@@ -204,10 +190,10 @@ The generator must not control consent/permissions or persist state directly. An
 
 ## 8.1. P0 outbox consent version and revocation-safe send contract
 
-An exclusive Reflection response in the existing outbox requires **explicit metadata**: capability=`reflection_p0`, exact target group, forum topic scope/id, subject user, consent record/version, request_event_id, and content kind. The dispatcher may enqueue only after consent check, but **enqueuing is not an authorization to send later**.
+An exclusive Reflection response in the existing outbox requires **explicit metadata**: capability=`reflection_p0`, exact target group, forum topic scope/id, subject user, consent record/version, request_event_id, **unsolicited=true/false** and content kind. Preserve a minimal 7-day per-user unsolicited count, 48-hour cooldown and event dedupe under accepted retention. Do not store historical psychological interpretations as a workaround. The dispatcher may enqueue only after consent check, but **enqueuing is not an authorization to send later**.
 
 Immediately before **each** Reflection send/retry, including a previously **claimed**/leased processing job, the delivery worker must:
-1. reload feature flag, exact group/topic user consent and consent version from trusted current store;
+1. reload feature flag, exact group/topic user consent, **permission for autonomous analysis and public output**, individual mute/cooldown controls and consent version from trusted current store;
 2. compare metadata against them; on revocation/mismatch/unknown, mark message suppressed or cancelled (not sent) in a durable, idempotent manner;
 3. if generation completed after revocation, discard generated output and do not enqueue it; handle transaction races;
 4. keep ordinary non-Reflection outbox messages unchanged.
@@ -241,7 +227,7 @@ Follow G2 [50 specified synthetic acceptance scenarios, split by stage](BREAK_PA
 - Crashed LLM/memory DB yields clear response or silence; never fabricated historical claim.
 - Existing birthday/reminder/URL Reader routes and normal group persona remain unchanged.
 - Test retention/forget against all affected tables, outbox and event trails, and document backup caveats.
-- Privacy-negative fixtures and adversarial user text cannot change scope/policy; sender/outbox test distinguishes current Reflection output from unrelated birthday/reminder messages, with no regression.
+- Privacy-negative fixtures and adversarial user text cannot change scope/policy; sender/outbox test distinguishes current Reflection output from unrelated birthday/reminder messages. Add positive tests for useful proactive response without a command and negative tests for neutral report (silence), unknown topic, unconsenting author, 2/week cap, 48h cooldown, negative feedback and revoked queued output.
 - Independent qualitative reviewers compare actual novel vs generic alternatives on synthetic scenarios; source correctness and safety are hard gates even when creativity is excellent.
 
 **Monitoring:** use existing `llm_usage`, `interventions` and sanitized feature counters for latency/cost, rejected candidates, explicit requests, declined/attempted results and unwanted noise. No new monitoring infrastructure. Don't call 7-day pilot “statistically proven effectiveness”.
@@ -261,4 +247,4 @@ Follow G2 [50 specified synthetic acceptance scenarios, split by stage](BREAK_PA
 
 **Project OS status:** `G3 v1.3 CHANGE REQUEST / DRAFT`; previous v1.2 exact-HEAD review found no new issues; proactive P0 is **new unreviewed scope**. G4 task contract must be revised, G4/G5 still BLOCKED_FOR_BUILD, G7 not active, G8/G9 not granted.
 
-**One next safe operation:** independent review of updated exact G1/G2/G3 documentation and new #166 product-track linkage, then obtain owner's explicit P0 consent/retention/visibility contract; only then one S1 task contract. No merge, deploy or CI activation.
+**One next safe operation:** independent exact-HEAD Codex review of newly expanded *selective proactive P0* design and revised #167 task contract, then owner acceptance of exact group/topic, per-person background-analysis/public-reply consent, 2/week + 48h caps, cost, retention and silent/active quality thresholds. No merge, deploy or CI activation.
