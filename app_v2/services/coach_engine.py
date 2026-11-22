@@ -14,7 +14,7 @@ from pathlib import Path
 import re
 from typing import Any, Callable
 
-from app_v2.domain.coach import CoachPermissions, SourceProof
+from app_v2.domain.coach import CoachJob, CoachPermissions, SourceProof
 from app_v2.repositories.source_archive_repo import ArchiveSource
 from app_v2.services.coach_ai import (
     CoachAIError, CoachAIConfigurationError, CoachBudgetConfigurationError,
@@ -70,6 +70,7 @@ class CoachRequest:
     public_confirmed: bool = False
     contains_external_content: bool = False
     current_guard: Callable[[], bool] | None = field(default=None, repr=False, compare=False)
+    originating_job: CoachJob | None = field(default=None, repr=False, compare=False)
 
 
 @dataclass(frozen=True)
@@ -305,7 +306,7 @@ class CoachEngine:
 
     def _persist_facts(self, request: CoachRequest, permissions: CoachPermissions,
                        evidence: list[_Evidence], data: dict) -> int:
-        if not (permissions.retain_source and permissions.historical_inference):
+        if request.originating_job is None or not (permissions.retain_source and permissions.historical_inference):
             return 0
         if any(e.source is None for e in evidence):
             # A transient request may influence categorization. Do not persist
@@ -322,7 +323,7 @@ class CoachEngine:
             saved = self.state.save_episode(
                 author_user_id=request.author_user_id, episode_type=fact['kind'],
                 summary=fact['quote'], source_proofs=dependencies,
-                dedupe_key=dedupe,
+                dedupe_key=dedupe, originating_job=request.originating_job,
             )
             stored += bool(saved)
         return stored
@@ -443,6 +444,13 @@ class CoachEngine:
             raise ValueError('Explicit group/topic/author and a bounded date window are required')
         if getattr(self.state, 'chat_id', request.chat_id) != request.chat_id or getattr(self.state, 'message_thread_id', request.message_thread_id) != request.message_thread_id:
             raise ValueError('Request does not belong to this configured coach scope')
+        if request.originating_job is not None:
+            job = request.originating_job
+            if not isinstance(job, CoachJob) or any(
+                    getattr(job, name) != getattr(request, name) for name in (
+                        'mode', 'chat_id', 'message_thread_id', 'author_user_id', 'current_text',
+                        'source_id', 'source_checksum', 'consent_version')):
+                raise ValueError('The originating job must match the authenticated request')
         if request.current_guard is not None:
             if not callable(request.current_guard):
                 raise ValueError('The runtime current guard must be callable')
@@ -547,11 +555,12 @@ class CoachEngine:
                 for c in memory
             ):
                 raise _Rejected('known_experiment_must_not_be_reoffered')
-            if (experiment and dependencies and all(e.source is not None for e in evidence)
+            if (experiment and request.originating_job is not None
+                    and dependencies and all(e.source is not None for e in evidence)
                     and permissions.retain_source and permissions.historical_inference):
                 experiment_id = self.state.save_experiment(
                     author_user_id=request.author_user_id, proposal=experiment['instruction'],
-                    source_proofs=dependencies, status='prepared',
+                    source_proofs=dependencies, status='prepared', originating_job=request.originating_job,
                 )
             text = self._render(generated, evidence, coverage, track=track, memory=memory)
             if experiment_id:

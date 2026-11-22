@@ -12,7 +12,7 @@ from uuid import uuid4
 
 import pytest
 
-from app_v2.domain.coach import CoachPermissions, SourceProof
+from app_v2.domain.coach import CoachJob, CoachPermissions, SourceProof
 from app_v2.repositories.source_archive_repo import ArchiveSource
 from app_v2.services.coach_ai import CoachAIError, CoachBudgetExceeded
 from app_v2.services.coach_engine import CoachEngine, CoachRequest
@@ -149,6 +149,15 @@ def setup(sources=None, state=None, ai=None, mode='auto_report', **request_chang
         source_id=first.source_id if first else None,source_checksum=first.checksum if first else None,
         consent_version=7,now=NOW,days=30,public_confirmed=False)
     request=CoachRequest(**{**values,**request_changes})
+    if 'originating_job' not in request_changes:
+        request=replace(request,originating_job=CoachJob(id='synthetic-job',
+            chat_id=request.chat_id,message_thread_id=request.message_thread_id,
+            author_user_id=request.author_user_id,telegram_update_id=first.telegram_update_id if first else 101,
+            telegram_message_id=first.telegram_message_id if first else 1,mode=request.mode,
+            current_text=request.current_text,source_checksum=request.source_checksum,
+            source_id=request.source_id,consent_version=request.consent_version,lease_token='synthetic-lease',
+            occurred_at=first.occurred_at if first else NOW,window_days=request.days,
+            public_confirmed=request.public_confirmed))
     return CoachEngine(archive=archive,state=state,ai=ai,selector=selector),request,state,ai,selector,archive
 
 
@@ -160,6 +169,7 @@ def test_current_report_is_assessed_then_one_question_without_count_caps():
     assert selector.calls[0]['since']==datetime(1970,1,1,tzinfo=timezone.utc)
     assert len(result.dependencies)==1
     assert all(c['source_proofs']==result.dependencies for c in state.saved)
+    assert all(c['originating_job'] is req.originating_job for c in state.saved)
 
 
 def test_all_context_not_only_cited_fact_is_carried_to_send_and_derived_memory():
@@ -428,8 +438,29 @@ def test_one_voluntary_experiment_is_prepared_with_visible_feedback_id_not_claim
     result=engine.process(req)
     assert result.action=='ONE_EXPERIMENT' and result.experiment_id=='f'*32
     assert state.offers[0]['status']=='prepared' and 'Отказаться' in result.text
+    assert state.offers[0]['originating_job'] is req.originating_job
     assert '/accept ' + 'f'*32 in result.text and '/tried ' + 'f'*32 in result.text
     assert len(result.text)<4096
+
+
+@pytest.mark.parametrize('mode',['index','auto_report','direct'])
+def test_no_derived_memory_is_written_without_an_originating_job(mode):
+    engine,req,state,_,_,_=setup(mode=mode,originating_job=None,
+        ai=AI([assessment,lambda p:assessment(p,action='ONE_EXPERIMENT',experiment=experiment(p))]))
+    result=engine.process(req)
+    assert state.saved==[] and state.offers==[] and result.experiment_id is None
+    if mode=='index':
+        assert result.structured['facts_indexed']==0
+    else:
+        assert result.action=='ONE_EXPERIMENT'
+
+
+def test_an_unrelated_originating_job_cannot_authorize_derived_writes():
+    engine,req,state,ai,_,_=setup()
+    req=replace(req,originating_job=replace(req.originating_job,author_user_id=AUTHOR+1))
+    with pytest.raises(ValueError,match='originating job'):
+        engine.process(req)
+    assert ai.calls==[] and state.saved==[] and state.offers==[]
 
 
 def test_transient_current_cannot_be_laundered_into_a_durable_experiment_by_history():
@@ -548,42 +579,43 @@ def test_engine_real_postgres_experiment_is_offered_only_after_confirmed_send(de
     run_migrations(url)
     seed=8_200_000_000+int(uuid4().hex[:9],16)
     chat,author,topic=-seed,seed+1,17
+    at=datetime.now(timezone.utc)
     with pg.connect(url) as conn:
         conn.execute('SELECT 1')  # Roll back all synthetic state at the end.
         archive=SourceArchiveRepository(conn)
-        archive.configure_scope(chat,topic,enabled=True,activated_at=NOW-timedelta(days=2))
+        archive.configure_scope(chat,topic,enabled=True,activated_at=at-timedelta(days=2))
         archive.set_permissions(chat_id=chat,message_thread_id=topic,author_user_id=author,
             actor_user_id=author,retain_source=True,historical_inference=True,
             auto_report_analysis=True,unsolicited_group_reply=True,direct_request_group_reply=True,
-            now=NOW-timedelta(days=1))
+            now=at-timedelta(days=1))
         repo=CoachRepository(conn,chat_id=chat,message_thread_id=topic,bot_user_id=909090001)
         conn.execute("INSERT INTO coach_participant_state(chat_id,message_thread_id,author_user_id,"
                      "track_status,disclosure_version,disclosure_delivered_at) VALUES(%s,%s,%s,'active',1,%s)",
-                     (chat,topic,author,NOW-timedelta(days=1)))
+                     (chat,topic,author,at-timedelta(days=1)))
         normalized=normalize_update(dict(update_id=seed+1,message=dict(message_id=1,
-            date=int((NOW-timedelta(hours=1)).timestamp()),chat=dict(id=chat,type='supergroup',is_forum=True),
+            date=int((at-timedelta(hours=1)).timestamp()),chat=dict(id=chat,type='supergroup',is_forum=True),
             **{'from':dict(id=author,is_bot=False,first_name='Synthetic')},
             is_topic_message=True,message_thread_id=topic,text='Я закончил учебную задачу.')))
         capture=archive.capture(normalized)
         assert capture.status=='archived'
-        assert repo.enqueue_job(normalized,'auto_report',source_id=capture.source_id,now=NOW)
-        job=repo.claim_job(now=NOW)
+        assert repo.enqueue_job(normalized,'auto_report',source_id=capture.source_id,now=at)
+        job=repo.claim_job(now=at)
         assert job is not None
         propose=lambda payload: assessment(payload,action='ONE_EXPERIMENT',experiment=experiment(payload))
         engine=CoachEngine(archive=archive,state=repo,ai=AI([propose,propose]))
         decision=engine.process(CoachRequest(operation_id=job.id,mode=job.mode,chat_id=chat,
             message_thread_id=topic,author_user_id=author,current_text=job.current_text,
             source_id=job.source_id,source_checksum=job.source_checksum,
-            consent_version=job.consent_version,now=NOW))
+            consent_version=job.consent_version,now=at,originating_job=job))
         assert decision.action=='ONE_EXPERIMENT' and decision.experiment_id
         identifier=decision.experiment_id
         assert f'/accept {identifier}' in decision.text and f'/tried {identifier}' in decision.text
         assert conn.execute('SELECT status FROM coach_episodes WHERE id=%s',(identifier,)).fetchone()==('prepared',)
         assert repo.list_experiments(author_user_id=author)==[]
         assert repo.enqueue_output(job,decision.text,source_proofs=decision.dependencies,
-                                   experiment_id=identifier,now=NOW)
+                                   experiment_id=identifier,now=at)
         repo.complete_job(job)
-        output=repo.claim_output(now=NOW)
+        output=repo.claim_output(now=at)
         assert output is not None and output.experiment_id==identifier
         sent=[]
         def sender(item):
@@ -593,8 +625,8 @@ def test_engine_real_postgres_experiment_is_offered_only_after_confirmed_send(de
             return {'message_id':999}
         if delivery=='revoked':
             archive.set_permissions(chat_id=chat,message_thread_id=topic,author_user_id=author,
-                actor_user_id=author,retain_source=True,historical_inference=False,now=NOW)
-        assert repo.deliver_output(output,sender,now=NOW)==('cancelled' if delivery=='revoked' else delivery)
+                actor_user_id=author,retain_source=True,historical_inference=False,now=at)
+        assert repo.deliver_output(output,sender,now=at)==('cancelled' if delivery=='revoked' else delivery)
         if delivery=='sent':
             assert len(sent)==1
             assert conn.execute('SELECT status FROM coach_episodes WHERE id=%s',(identifier,)).fetchone()==('offered',)

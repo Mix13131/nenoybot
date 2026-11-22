@@ -64,6 +64,7 @@ class CoachWorker:
             consent_version=job.consent_version, now=datetime.now(timezone.utc),
             days=job.window_days, public_confirmed=job.public_confirmed,
             current_guard=lambda: self.repo.job_is_current(job),
+            originating_job=job,
         )
         try:
             decision = self.engine.process(request)

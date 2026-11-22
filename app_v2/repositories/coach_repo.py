@@ -196,10 +196,16 @@ class CoachRepository:
 
     def forget(self, message: ArchiveMessage):
         with self.author_lock(message.author_user_id, require_enabled=False):
+            retained=self.permissions(message.author_user_id).retain_source
             receipt = self.archive.forget_sources(
                 chat_id=self.chat_id,message_thread_id=self.message_thread_id,
                 author_user_id=message.author_user_id,actor_user_id=message.author_user_id,
             )
+            if not retained:
+                # Stage A advances its retention cutoff only when retention is
+                # enabled. Direct-only forgetting also needs a new request epoch,
+                # without changing any of the five independent permission flags.
+                self.change_permissions(message)
             self._cancel_author(message.author_user_id)
             self.conn.execute(
                 "UPDATE coach_episodes SET summary=NULL,source_proofs='[]'::jsonb,is_active=FALSE "
@@ -269,7 +275,22 @@ class CoachRepository:
                 "SELECT revision_at,telegram_update_id,checksum FROM coach_message_versions "
                 "WHERE chat_id=%s AND message_thread_id=%s AND author_user_id=%s AND telegram_message_id=%s FOR UPDATE", key,
             ).fetchone()
-            if not current or (message.revision_at,message.telegram_update_id) <= tuple(current[:2]):
+            if not current:
+                permission=self.permissions(message.author_user_id)
+                if not message.is_edited or not (permission.direct_request_group_reply or
+                        (permission.retain_source and permission.historical_inference)):
+                    return False
+                # An edit can arrive before its original. Keep only its ordering
+                # watermark, never text or a checksum, to reject that later old
+                # original. Maintenance clears hashes but preserves watermarks.
+                self.conn.execute(
+                    "INSERT INTO coach_message_versions(chat_id,message_thread_id,author_user_id,telegram_message_id,"
+                    "telegram_update_id,revision_at,checksum,expires_at) VALUES(%s,%s,%s,%s,%s,%s,NULL,%s)",
+                    (*key,message.telegram_update_id,message.revision_at,
+                     _now(now)+timedelta(seconds=self.transient_ttl_seconds)),
+                )
+                return True
+            if (message.revision_at,message.telegram_update_id) <= tuple(current[:2]):
                 return False
             self.conn.execute(
                 "UPDATE coach_message_versions SET revision_at=%s,telegram_update_id=%s,checksum=NULL,expires_at=%s "
@@ -307,6 +328,10 @@ class CoachRepository:
             permissions = self.permissions(message.author_user_id)
             if not self._mode_allowed(permissions,mode):
                 return None
+            # Only short-lived AI work has a bounded arrival age. Independent
+            # source capture happens before this method and is not restricted.
+            if message.occurred_at <= now-timedelta(seconds=self.transient_ttl_seconds):
+                return None
             granted_at=self.conn.execute(
                 "SELECT updated_at FROM source_archive_consents WHERE chat_id=%s AND message_thread_id=%s AND author_user_id=%s",
                 self._key(message.author_user_id),
@@ -314,6 +339,12 @@ class CoachRepository:
             boundary=granted_at.replace(microsecond=0)+(timedelta(seconds=1) if granted_at.microsecond else timedelta())
             if message.occurred_at<boundary:
                 return None  # A later opt-in never authorizes a delayed earlier request.
+            if self.conn.execute(
+                "SELECT 1 FROM source_archive_deletions WHERE chat_id=%s AND message_thread_id=%s "
+                "AND author_user_id=%s AND telegram_message_id=%s",
+                (*self._key(message.author_user_id),message.telegram_message_id),
+            ).fetchone():
+                return None
             expiry = now + timedelta(seconds=self.transient_ttl_seconds)
             key = (*self._key(message.author_user_id),message.telegram_message_id)
             self.invalidate_message(message, now=now)
@@ -364,7 +395,9 @@ class CoachRepository:
             ).fetchone()
             return CoachJob(*row) if row else None
 
-    def _job_current(self, job: CoachJob, *, now=None) -> bool:
+    def _job_current(self, job: CoachJob, *, now=None, lock_job: bool = False) -> bool:
+        if not isinstance(job,CoachJob):
+            return False
         if (job.chat_id,job.message_thread_id) != (self.chat_id,self.message_thread_id):
             return False
         permission = self.permissions(job.author_user_id)
@@ -373,8 +406,14 @@ class CoachRepository:
         row = self.conn.execute(
             """SELECT 1 FROM coach_jobs j JOIN coach_message_versions v USING(chat_id,message_thread_id,author_user_id,telegram_message_id)
                WHERE j.id=%s AND j.status='processing' AND j.lease_token=%s AND j.expires_at>%s
-                 AND j.lease_until>%s AND v.checksum=%s""",
-            (job.id,job.lease_token,_now(now),_now(now),job.source_checksum),
+                 AND j.lease_until>%s AND v.checksum=%s AND j.source_checksum=%s
+                 AND j.chat_id=%s AND j.message_thread_id=%s AND j.author_user_id=%s
+                 AND j.telegram_update_id=%s AND j.telegram_message_id=%s AND j.mode=%s
+                 AND j.current_text=%s AND j.consent_version=%s
+                 AND j.source_id IS NOT DISTINCT FROM %s""" + (" FOR UPDATE OF j" if lock_job else ""),
+            (job.id,job.lease_token,_now(now),_now(now),job.source_checksum,job.source_checksum,
+             job.chat_id,job.message_thread_id,job.author_user_id,job.telegram_update_id,
+             job.telegram_message_id,job.mode,job.current_text,job.consent_version,job.source_id),
         ).fetchone()
         return row is not None
 
@@ -608,7 +647,11 @@ class CoachRepository:
 
     def save_episode(self, *, author_user_id: int, episode_type: str, summary: str,
                      source_proofs: Sequence[SourceProof], dedupe_key: str | None = None,
-                     status: str | None = None) -> str | None:
+                     status: str | None = None, originating_job: CoachJob | None = None) -> str | None:
+        # An engine-side check is only a snapshot. The originating lease must
+        # still be current under the exact lock used by delete/revoke/feedback.
+        if not isinstance(originating_job,CoachJob) or originating_job.author_user_id!=author_user_id:
+            return None
         if not isinstance(summary,str) or not summary.strip() or len(summary)>2000:
             raise ValueError("A bounded source-backed episode summary is required")
         if episode_type not in {"goal","plan","attempt","action","result","experiment","observation","commitment","decision"}:
@@ -616,7 +659,9 @@ class CoachRepository:
         status={"proposed":"prepared","completed":"tried_self_reported","abandoned":"retired"}.get(status,status)
         if status is not None and status not in {"prepared","offered","accepted","declined","tried_self_reported","not_tried_self_reported","retired"}:
             raise ValueError("Unknown experiment status")
-        with self.author_lock(author_user_id):
+        with self.author_lock(author_user_id,require_enabled=False):
+            if not self.scope_enabled() or not self._job_current(originating_job,lock_job=True):
+                return None
             if not self._proofs_valid(author_user_id,source_proofs):
                 return None
             proof_json = _proof_json(source_proofs)
@@ -690,9 +735,10 @@ class CoachRepository:
         current=tuple(SourceProof(p.source_id,p.checksum,version) for p in proofs)
         return current if self._proofs_valid(author_user_id,current) else ()
 
-    def save_experiment(self, *, author_user_id: int, proposal: str, source_proofs: Sequence[SourceProof], status="prepared"):
+    def save_experiment(self, *, author_user_id: int, proposal: str, source_proofs: Sequence[SourceProof],
+                        status="prepared", originating_job: CoachJob | None = None):
         return self.save_episode(author_user_id=author_user_id,episode_type="experiment",summary=proposal,
-                                 source_proofs=source_proofs,status=status)
+                                 source_proofs=source_proofs,status=status,originating_job=originating_job)
 
     def list_experiments(self, *, author_user_id: int, limit: int = 20, since=None, until=None):
         episodes=self.list_episodes(author_user_id=author_user_id,limit=limit,since=since,until=until,episode_type="experiment")

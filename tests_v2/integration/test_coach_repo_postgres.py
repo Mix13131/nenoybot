@@ -79,9 +79,9 @@ class Sandbox:
         return message,job
 
     def offer(self,message,proof,proposal="Synthetic optional experiment"):
-        identifier=self.repo.save_experiment(author_user_id=self.author,proposal=proposal,source_proofs=[proof])
         assert self.repo.enqueue_job(message,"direct",source_id=proof.source_id)
         job=self.repo.claim_job()
+        identifier=self.repo.save_experiment(author_user_id=self.author,proposal=proposal,source_proofs=[proof],originating_job=job)
         assert self.repo.enqueue_output(job,proposal,source_proofs=[proof],experiment_id=identifier)
         self.repo.complete_job(job)
         assert self.repo.deliver_output(self.repo.claim_output(),lambda item:{"message_id":98})=="sent"
@@ -237,8 +237,8 @@ def test_edit_of_direct_only_request_scrubs_jobs_and_prepared_answer(coach):
 def test_historical_source_edit_invalidates_derived_episode_and_queued_answer(coach):
     coach.grant(retain_source=True,historical_inference=True,direct_request_group_reply=True)
     source,proof=coach.source()
-    episode=coach.repo.save_episode(author_user_id=coach.author,episode_type="action",summary="Synthetic action",source_proofs=[proof])
     _,job=coach.direct_job(2)
+    episode=coach.repo.save_episode(author_user_id=coach.author,episode_type="action",summary="Synthetic action",source_proofs=[proof],originating_job=job)
     assert coach.repo.enqueue_output(job,"Synthetic historical answer",source_proofs=[proof])
     output=coach.repo.claim_output()
     coach.archive.capture(coach.message(3,"corrected source",message_id=1,at=source.envelope.occurred_at,edit=True))
@@ -400,7 +400,8 @@ def test_experiment_controls_use_own_authenticated_feedback_source(coach):
     assert len(items)==1 and items[0]["status"]=="tried_self_reported"
     assert len(items[0]["source_proofs"])==2
     # A repeated proposal cannot reset the self-report or drop its feedback proof.
-    assert coach.repo.save_experiment(author_user_id=coach.author,proposal="Synthetic optional experiment",source_proofs=[proof])==identifier
+    _,job=coach.direct_job(3)
+    assert coach.repo.save_experiment(author_user_id=coach.author,proposal="Synthetic optional experiment",source_proofs=[proof],originating_job=job)==identifier
     assert coach.repo.list_experiments(author_user_id=coach.author)[0]["status"]=="tried_self_reported"
     assert len(coach.repo.list_experiments(author_user_id=coach.author)[0]["source_proofs"])==2
 
@@ -408,7 +409,8 @@ def test_experiment_controls_use_own_authenticated_feedback_source(coach):
 def test_unrelated_output_permission_changes_keep_authorized_memory(coach):
     coach.grant(retain_source=True,historical_inference=True,direct_request_group_reply=True)
     _,proof=coach.source()
-    coach.repo.save_episode(author_user_id=coach.author,episode_type="goal",summary="Synthetic sourced goal",source_proofs=[proof])
+    _,job=coach.direct_job(2)
+    coach.repo.save_episode(author_user_id=coach.author,episode_type="goal",summary="Synthetic sourced goal",source_proofs=[proof],originating_job=job)
     coach.archive.set_permissions(chat_id=coach.chat,message_thread_id=TOPIC,author_user_id=coach.author,
                                   actor_user_id=coach.author,retain_source=True,historical_inference=True,direct_request_group_reply=False)
     episodes=coach.repo.list_episodes(author_user_id=coach.author)
@@ -446,10 +448,10 @@ def test_track_delete_preserves_sources_and_grants_but_removes_derived_track(coa
     coach.grant(retain_source=True,historical_inference=True,direct_request_group_reply=True)
     coach.repo.set_track_status(coach.author,"active")
     message,proof=coach.source()
-    coach.repo.save_episode(author_user_id=coach.author,episode_type="goal",summary="Own synthetic goal",source_proofs=[proof])
-    coach.repo.save_experiment(author_user_id=coach.author,proposal="Unsent synthetic experiment",source_proofs=[proof])
     assert coach.repo.enqueue_job(message,"track",source_id=proof.source_id,public_confirmed=True)
     track=coach.repo.claim_job()
+    coach.repo.save_episode(author_user_id=coach.author,episode_type="goal",summary="Own synthetic goal",source_proofs=[proof],originating_job=track)
+    coach.repo.save_experiment(author_user_id=coach.author,proposal="Unsent synthetic experiment",source_proofs=[proof],originating_job=track)
     coach.repo.enqueue_output(track,"Synthetic track",source_proofs=[proof])
     output=coach.repo.claim_output()
     other,other_proof=coach.source(2,"Another own source")
@@ -479,14 +481,14 @@ def test_track_delete_preserves_sources_and_grants_but_removes_derived_track(coa
 def test_prepared_experiment_is_hidden_until_successful_send(coach,send_ok):
     coach.grant(retain_source=True,historical_inference=True,direct_request_group_reply=True)
     message,proof=coach.source()
-    identifier=coach.repo.save_experiment(author_user_id=coach.author,proposal="Synthetic prepared proposal",source_proofs=[proof])
+    coach.repo.enqueue_job(message,"direct",source_id=proof.source_id)
+    job=coach.repo.claim_job()
+    identifier=coach.repo.save_experiment(author_user_id=coach.author,proposal="Synthetic prepared proposal",source_proofs=[proof],originating_job=job)
     assert coach.repo.list_experiments(author_user_id=coach.author)==[]
     assert coach.repo.list_episodes(author_user_id=coach.author)==[]
     _,feedback=coach.source(2,"Synthetic feedback before the offer was sent")
     assert not coach.repo.set_experiment_status(author_user_id=coach.author,experiment_id=identifier,
                                                 status="accepted",source_proofs=[feedback])
-    coach.repo.enqueue_job(message,"direct",source_id=proof.source_id)
-    job=coach.repo.claim_job()
     assert coach.repo.enqueue_output(job,"Synthetic prepared proposal",source_proofs=[proof],experiment_id=identifier)
     output=coach.repo.claim_output()
     assert output.experiment_id==identifier
@@ -531,3 +533,88 @@ def test_maintenance_scrubs_removed_topic_payloads_in_same_bound_bot_database(co
     assert coach.conn.execute("SELECT status,current_text FROM coach_jobs WHERE id=%s",(job.id,)).fetchone()==("expired",None)
     assert coach.conn.execute("SELECT status,text FROM coaching_outputs WHERE job_id=%s",(job.id,)).fetchone()==("expired",None)
     assert coach.conn.execute("SELECT checksum FROM coach_message_versions WHERE chat_id=%s AND message_thread_id=%s",(coach.chat,other_topic)).fetchone()==(None,)
+
+
+def test_derived_writes_require_current_bound_job_and_lease(coach):
+    coach.grant(retain_source=True,historical_inference=True,direct_request_group_reply=True)
+    message,proof=coach.source()
+    fields=dict(author_user_id=coach.author,episode_type="goal",summary="Lease-backed goal",source_proofs=[proof])
+    assert coach.repo.save_episode(**fields) is None
+    assert coach.repo.save_experiment(author_user_id=coach.author,proposal="Unguarded experiment",source_proofs=[proof]) is None
+    at=datetime.now(timezone.utc)
+    assert coach.repo.enqueue_job(message,"direct",source_id=proof.source_id,now=at)
+    original=coach.repo.claim_job(lease_seconds=1,now=at)
+    identifier=coach.repo.save_episode(**fields,originating_job=original)
+    assert identifier
+    reclaimed=coach.repo.claim_job(now=at+timedelta(seconds=2))
+    assert reclaimed.id==original.id and reclaimed.lease_token!=original.lease_token
+    assert coach.repo.save_episode(**fields,originating_job=original) is None
+    assert coach.repo.save_episode(**fields,originating_job=replace(reclaimed,author_user_id=coach.author+1)) is None
+    assert coach.repo.save_episode(**fields,originating_job=reclaimed)==identifier
+    coach.repo.complete_job(reclaimed)
+    assert coach.repo.save_episode(**fields,originating_job=reclaimed) is None
+
+
+def test_cancelled_origin_cannot_reactivate_deleted_card_or_create_experiment(coach):
+    coach.grant(retain_source=True,historical_inference=True,direct_request_group_reply=True)
+    message,proof=coach.source()
+    assert coach.repo.enqueue_job(message,"index",source_id=proof.source_id)
+    job=coach.repo.claim_job()
+    fields=dict(author_user_id=coach.author,episode_type="goal",summary="Deleted source-backed goal",source_proofs=[proof],originating_job=job)
+    identifier=coach.repo.save_episode(**fields)
+    assert identifier
+    coach.repo.delete_track(archive_message_from_update(coach.message(2,"/track_delete")))
+    assert coach.repo.save_episode(**fields) is None
+    assert coach.repo.save_experiment(author_user_id=coach.author,proposal="Late prepared experiment",source_proofs=[proof],originating_job=job) is None
+    assert coach.conn.execute("SELECT summary,is_active FROM coach_episodes WHERE id=%s",(identifier,)).fetchone()==(None,False)
+
+
+def test_edit_first_keeps_only_watermark_and_blocks_original_after_ttl_and_restart(coach):
+    coach.grant(direct_request_group_reply=True)
+    original=coach.message(1,"Old direct-only original")
+    edit=coach.message(2,"New direct-only edit",message_id=1,edit=True,at=original.envelope.occurred_at)
+    at=datetime.now(timezone.utc)
+    assert coach.repo.invalidate_message(archive_message_from_update(edit),now=at)
+    assert coach.conn.execute("SELECT checksum,telegram_update_id FROM coach_message_versions WHERE chat_id=%s",(coach.chat,)).fetchone()==(None,edit.telegram_update_id)
+    assert coach.repo.enqueue_job(original,"direct",now=at) is None
+    later=at+timedelta(seconds=coach.repo.transient_ttl_seconds+10)
+    coach.repo.maintenance(now=later)
+    restarted=CoachRepository(coach.conn,chat_id=coach.chat,message_thread_id=TOPIC,bot_user_id=BOT)
+    assert restarted.enqueue_job(original,"direct",now=later) is None
+    assert coach.conn.execute("SELECT count(*) FROM coach_jobs WHERE chat_id=%s",(coach.chat,)).fetchone()==(0,)
+    assert coach.conn.execute("SELECT count(*) FROM source_archive_revisions WHERE chat_id=%s",(coach.chat,)).fetchone()==(0,)
+
+
+def test_unconsented_edit_does_not_create_a_tracking_watermark(coach):
+    edit=coach.message(2,"Unconsented edit",message_id=1,edit=True)
+    assert not coach.repo.invalidate_message(archive_message_from_update(edit))
+    assert coach.conn.execute("SELECT count(*) FROM coach_message_versions WHERE chat_id=%s",(coach.chat,)).fetchone()==(0,)
+
+
+def test_direct_only_forget_blocks_unseen_delayed_requests_and_keeps_flags(coach):
+    coach.grant(direct_request_group_reply=True)
+    before=coach.repo.permissions(coach.author)
+    delayed=coach.message(1,"Pre-forget direct-only request",at=datetime.now(timezone.utc)-timedelta(seconds=30))
+    result=coach.controls.handle(coach.message(2,"/forget"))
+    assert result.handled
+    after=coach.repo.permissions(coach.author)
+    assert after.version>before.version
+    assert replace(after,version=before.version)==before
+    assert coach.repo.enqueue_job(delayed,"direct") is None
+    assert coach.repo.enqueue_job(coach.message(3,"New permitted direct request"),"direct")
+
+
+def test_specific_deletion_marker_blocks_direct_only_job_for_unseen_message(coach):
+    coach.grant(direct_request_group_reply=True)
+    delayed=coach.message(1,"Unseen targeted deletion")
+    coach.archive.forget_sources(chat_id=coach.chat,message_thread_id=TOPIC,author_user_id=coach.author,
+                                 actor_user_id=coach.author,telegram_message_id=1)
+    assert coach.repo.enqueue_job(delayed,"direct") is None
+
+
+def test_old_arrival_stays_in_authorized_archive_but_never_starts_transient_ai_job(coach):
+    coach.grant(retain_source=True,historical_inference=True,direct_request_group_reply=True)
+    message,proof=coach.source()
+    later=message.envelope.occurred_at+timedelta(seconds=coach.repo.transient_ttl_seconds+1)
+    assert coach.repo.enqueue_job(message,"direct",source_id=proof.source_id,now=later) is None
+    assert coach.conn.execute("SELECT available_text FROM source_archive_revisions WHERE source_id=%s",(proof.source_id,)).fetchone()==("synthetic source",)

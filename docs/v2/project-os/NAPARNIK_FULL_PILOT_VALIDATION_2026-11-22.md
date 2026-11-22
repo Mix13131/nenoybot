@@ -27,10 +27,11 @@ DSN/переменные окружения. Он не входит в runtime d
 | `$PY -m pytest tests_v2/unit/test_coach_config.py -q` | 23 passed. |
 | `$PY $PG_RUNNER $PY -m pytest tests_v2/integration/test_coach_budget_postgres.py tests_v2/unit/test_coach_ai.py tests_v2/unit/test_coach_transport.py -q` | 95 passed, без skips; 15 PG, 44 AI unit и тогдашние 36 transport. |
 | `$PY -m pytest tests_v2/unit/test_coach_transport.py -q` | 41 passed после добавления проверки чужого webhook. |
-| `$PY $PG_RUNNER $PY -m pytest tests_v2/unit/test_coach_controls.py tests_v2/integration/test_coach_repo_postgres.py -q` | 50 passed, 2.00 s, после всех исправлений repo/controls. |
-| `$PY $PG_RUNNER $PY -m pytest tests_v2/unit/test_coach_engine.py -q` | 63 passed, включая реальный SQL, prepared/offered E2E и решение после памяти. |
+| `$PY $PG_RUNNER $PY -m pytest tests_v2/unit/test_coach_controls.py tests_v2/integration/test_coach_repo_postgres.py -q` | Сначала 50 passed; после замечаний внешнего ревью **57 passed, 2.38 s**. |
+| `$PY $PG_RUNNER $PY -m pytest tests_v2/unit/test_coach_engine.py -q` | Сначала 63 passed; после передачи задания в запись памяти **67 passed, 0.83 s**. |
 | `$PY $PG_RUNNER $PY -m pytest tests_v2/integration/test_coach_lifecycle_postgres.py -q` | Промежуточные 11 passed / 2 failed, затем 13 passed / 1 failed; замечания закрыты и этот файл включён в общий успешный прогон. |
-| `$PY $PG_RUNNER $PY -m pytest tests_v2 -q` | Первоначальный общий freeze: 1138 passed, 31.75 s. **Окончательный runtime после проверки memory-first: 1140 passed, 0 failed, 0 skipped, 32.69 s.** |
+| `$PY $PG_RUNNER $PY -m pytest tests_v2 -q` | Промежуточные успешные freeze: 1138 и 1140 passed. **Окончательный runtime после исправлений внешнего ревью: 1159 passed, 0 failed, 0 skipped, 35.32 s.** |
+| `$PY $PG_RUNNER $PY -m pytest tests_v2/integration/test_coach_external_review_postgres.py -q` | Один и тот же файл: **7 expected failures** на точном исходном `643efef89af8b630a41ee35aeef21078ba5a3862`, затем **7 passed, 3.23 s** на исправлениях. |
 | `$PY -c "import app_v2; import app_v2.coach_main; import app_v2.coach_worker; import app_v2.coach_admin"` | PASS; импорт не мигрирует БД и не вызывает Telegram/AI. |
 | `git diff --check`, `git diff --cached --check` | PASS. |
 | `git diff --cached --name-only`, `git diff --cached --stat` | Только согласованные новые v2-модули, тесты, env example и документация; legacy и CI не менялись. |
@@ -56,6 +57,38 @@ guards. После согласования контрактов выполне�
 разрешённой памяти. Добавлены два regression-сценария: сохранение молчания и
 появление полезного вопроса после истории. После исправления выполнен финальный
 общий прогон **1140 passed**. Режим одной фазы `index` сохранён.
+
+Повторный preflight отдельных проверяющих предупреждал об отсутствии глобального
+`pytest`. Это ограничение PATH среды, а не пропуск тестов: все указанные запуски
+выполнены модулем из подготовленного venv, с настоящим PostgreSQL.
+
+## Внешнее ревью и проверка исправлений
+
+GitHub CI на первом опубликованном HEAD `643efef89af8b630a41ee35aeef21078ba5a3862`
+завершился успешно: [run 514](https://github.com/Mix13131/nenoybot/actions/runs/45034678754),
+1140 passed in 33.25s. Затем внешнее Codex review этого же commit выявило две ошибки:
+
+1. [P1: старое задание могло восстановить удалённый трек](https://github.com/Mix13131/nenoybot/pull/171#discussion_r4658574788).
+   Запись эпизода/эксперимента теперь требует фактическое исходное задание и проверяет
+   его автора, scope, состояние, lease, checksum и версию разрешений под общей
+   блокировкой участника. Строка задания удерживается до записи. Без задания запись
+   отклоняется. Удаление, завершившееся раньше записи, больше не отменяется старым worker.
+2. [P2: правка до оригинала без архива не оставляла отметку](https://github.com/Mix13131/nenoybot/pull/171#discussion_r4658574794).
+   Ранняя правка теперь оставляет разрешённую техническую отметку порядка без текста
+   и checksum. Старый оригинал блокируется сразу и после очистки/перезапуска. Проверяются
+   возраст временного задания и намерение удаления; `/forget` без архива также создаёт
+   новую границу запросов, сохраняя все пять выбранных флагов разрешений.
+
+Независимый проверяющий скопировал один неизменный regression-файл в detached worktree
+точного исходного commit и повторил его на исправлениях. На исходнике пять сценариев
+фактически восстанавливали action/experiment после отдельного committed `/track_delete`,
+а два сценария фактически вызывали fake AI на устаревшем тексте. Это были ошибки
+поведения, а не импортов или совместимости fixture. После исправлений все семь проходят.
+SHA-256 одинакового файла в обоих деревьях:
+`5ba15c68ec963e729bcd353dcd6fa38ca18dfd85351a2f744ef924bc61b10437`.
+
+После этих исправлений полностью повторена общая регрессия: **1159 passed, 0 skipped**.
+Повторный CI и внешнее ревью нового опубликованного SHA фиксируются в PR #171.
 
 Независимое чтение кода также выявило и помогло исправить:
 

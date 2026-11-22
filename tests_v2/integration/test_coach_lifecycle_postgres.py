@@ -322,3 +322,18 @@ def test_disabled_scope_stops_jobs_but_accepts_revocation_controls(pilot):
     pilot.intake("/forget")
     assert "Удалены" in pilot.sender.sent[-1].text
     assert pilot.conn.execute("SELECT count(*) FROM source_archive_revisions WHERE available_text IS NOT NULL").fetchone()[0] == 0
+
+
+def test_direct_only_edit_before_original_never_reaches_ai(pilot):
+    pilot.grants("/direct_on")
+    original = pilot.update("/ask устаревший вариант запроса")
+    edit = pilot.update("исправленный вариант", edit=True, message_id=original["message"]["message_id"])
+    edit["edited_message"]["date"] = original["message"]["date"]
+    first = ingest_coach_update(edit, conn=pilot.conn, config=pilot.config)
+    later = ingest_coach_update(original, conn=pilot.conn, config=pilot.config)
+    pilot.drain()
+    assert not first.queued and not later.queued
+    assert pilot.provider.calls == []
+    assert pilot.conn.execute("SELECT count(*) FROM coach_jobs").fetchone()[0] == 0
+    assert pilot.conn.execute("SELECT count(*) FROM source_archive_revisions").fetchone()[0] == 0
+    assert pilot.conn.execute("SELECT checksum FROM coach_message_versions").fetchone() == (None,)
