@@ -47,6 +47,7 @@ class State:
         self.grants = permissions(**kwargs)
         self.enabled = True
         self.saved, self.offers, self.cards, self.experiments = [], [], [], []
+        self.conversation, self.conversation_calls = [], []
 
     def scope_enabled(self):
         return self.enabled
@@ -61,7 +62,12 @@ class State:
 
     def save_experiment(self, **kwargs):
         self.offers.append(kwargs)
-        return 'f'*32
+        return 'f'*32 if len(self.offers)==1 else f'{len(self.offers):032x}'
+
+    def conversation_context(self, author_user_id, **kwargs):
+        assert author_user_id == AUTHOR
+        self.conversation_calls.append(kwargs)
+        return self.conversation
 
     def list_episodes(self, **kwargs):
         return self.cards
@@ -99,28 +105,38 @@ class Selector:
             kwargs['since'], kwargs['until'], 'synthetic_selected_from_entire_window')
 
 
-def assessment(payload, *, action='ONE_QUESTION', facts=True, **changes):
+def assessment(payload, *, action='RESPOND', facts=True, experiment=None,
+               experiments=None, messages=None, question=None, **changes):
     first = payload['sources'][0] if payload['sources'] else None
-    return {**dict(action=action, eligible_report=True,
+    base=dict(
         facts=(facts if isinstance(facts,list) else [{'kind':'action','quote':first['text'][:100],
                 'source_id':first['source_id'],'checksum':first['checksum']}] if facts and first else []),
-        hypotheses=[], risk_flags=[], first_time_claim=False, recurring_claim=False,
-        search_terms=['задач'], question='Что помогло закончить именно эту задачу?' if action=='ONE_QUESTION' else None,
-        experiment=None), **changes}
+        hypotheses=[], risk_flags=[], first_time_claim=False, recurring_claim=False)
+    if payload['phase'] in {'assessment','index'}:
+        return {**base,'search_terms':['задач'],**changes}
+    proposals=experiments if experiments is not None else [experiment] if experiment else []
+    refs=[{key:first[key] for key in ('source_id','checksum')}] if first else []
+    text=question or 'Что помогло закончить именно эту задачу?'
+    if proposals:
+        text='\n'.join(p['instruction']+' '+p['observation'] for p in proposals)+' Отказаться можно.'
+    if changes.get('hypotheses'):
+        text+='\n'+'\n'.join('Гипотеза: '+h['text'] for h in changes['hypotheses'])
+    return {**base,'action':action,'messages':([] if action=='SILENCE' else
+        messages if messages is not None else [{'text':text,'source_refs':refs}]),
+        'experiments':proposals,'gaps':[],**changes}
 
 
 def experiment(payload, **changes):
     ref = {key:payload['sources'][0][key] for key in ('source_id','checksum')}
     return {**dict(instruction='Начни следующую учебную задачу с двухминутного черновика.',
         observation='Заметь, стало ли проще начать после черновика.',minutes=2,reversible=True,
-        voluntary=True,risk_level='low',source_refs=[ref]), **changes}
+        voluntary=True,risk_level='low',source_refs=[ref],message_index=0), **changes}
 
 
 def track(payload, **changes):
     base=assessment(payload)
-    return {**{key:base[key] for key in ('facts','hypotheses','risk_flags','first_time_claim','recurring_claim')},
-            'action':'TRACK' if payload['mode']=='track' else 'REVIEW',
-            'gaps':['limited_selection'], 'next_experiment':None, **changes}
+    base['messages'][0]['text']='Персональный трек по источникам: '+base['facts'][0]['quote']
+    return {**base,'gaps':['limited_selection'],**changes}
 
 
 class AI:
@@ -161,10 +177,10 @@ def setup(sources=None, state=None, ai=None, mode='auto_report', **request_chang
     return CoachEngine(archive=archive,state=state,ai=ai,selector=selector),request,state,ai,selector,archive
 
 
-def test_current_report_is_assessed_then_one_question_without_count_caps():
+def test_current_report_is_assessed_then_dialogue_uses_history():
     engine,req,state,ai,selector,_=setup()
     result=engine.process(req)
-    assert result.action=='ONE_QUESTION' and result.text.count('?')==1
+    assert result.action=='RESPOND' and result.messages
     assert [c['purpose'] for c in ai.calls]==['assessment','generation']
     assert selector.calls[0]['since']==datetime(1970,1,1,tzinfo=timezone.utc)
     assert len(result.dependencies)==1
@@ -175,19 +191,24 @@ def test_current_report_is_assessed_then_one_question_without_count_caps():
 def test_all_context_not_only_cited_fact_is_carried_to_send_and_derived_memory():
     engine,req,state,ai,_,_=setup([source(1),source(2,'Я попробовал другой подход')])
     result=engine.process(req)
-    assert result.action=='ONE_QUESTION'
+    assert result.action=='RESPOND'
     assert {p.source_id for p in result.dependencies}=={source(1).source_id,source(2).source_id}
     assert len(state.saved[-1]['source_proofs'])==2
 
 
 @pytest.mark.parametrize('changed',[
     {'retain_source':False},{'historical_inference':False},{'auto_report_analysis':False},
-    {'unsolicited_group_reply':False},{'disclosure_delivered':False},
+    {'unsolicited_group_reply':False},
 ])
 def test_automatic_denial_never_calls_ai(changed):
     engine,req,_,ai,_,_=setup(state=State(**changed))
     assert engine.process(req).reason=='permission_denied'
     assert ai.calls==[]
+
+
+def test_group_defaults_do_not_require_personal_disclosure_activation():
+    engine,req,_,ai,_,_=setup(state=State(disclosure_delivered=False))
+    assert engine.process(req).action=='RESPOND' and len(ai.calls)==2
 
 
 def test_direct_current_only_works_without_archive_analysis_or_automatic_rights():
@@ -196,9 +217,9 @@ def test_direct_current_only_works_without_archive_analysis_or_automatic_rights(
     engine,req,state,ai,selector,_=setup([],state=state,mode='direct',
         current_text='Помоги начать учебную задачу',source_checksum='a'*64)
     result=engine.process(req)
-    assert result.action=='ONE_QUESTION' and result.dependencies==()
+    assert result.action=='RESPOND' and result.dependencies==()
     assert selector.calls==[] and state.saved==[] and state.offers==[]
-    assert 'только текущий запрос' in result.text
+    assert state.conversation_calls==[]
     assert len(ai.calls)==2
 
 
@@ -262,19 +283,19 @@ def test_automatic_processing_requires_a_retained_current_source(mode):
 
 
 @pytest.mark.parametrize('mode',['track','weekly_review'])
-def test_public_confirmation_precedes_ai_or_history_read(mode):
+def test_track_and_review_do_not_require_public_confirmation(mode):
     engine,req,_,ai,selector,_=setup(mode=mode,ai=AI([track]))
     result=engine.process(req)
-    assert result.action=='CONFIRM_PUBLIC' and 'общей теме' in result.text
-    assert ai.calls==[] and selector.calls==[]
+    assert result.action=='RESPOND' and result.messages
+    assert len(ai.calls)==1 and selector.calls
 
 
-@pytest.mark.parametrize('mode,action',[('track','TRACK'),('weekly_review','REVIEW')])
-def test_confirmed_track_and_review_show_real_source_provenance_and_coverage(mode,action):
+@pytest.mark.parametrize('mode',['track','weekly_review'])
+def test_track_and_review_show_real_source_provenance_and_coverage(mode):
     engine,req,_,ai,selector,_=setup(mode=mode,ai=AI([track]),public_confirmed=True)
     selector.total=100000
     result=engine.process(req)
-    assert result.action==action and 'сообщение №1' in result.text
+    assert result.action=='RESPOND' and 'сообщение №1' in result.text
     assert 'из 100000' in result.text and 'ограниченная выборка' in result.text
     assert result.structured['coverage']['complete_telegram_history'] is False
     assert result.structured['coverage']['omitted_eligible_sources']==99999
@@ -310,7 +331,7 @@ def test_unconsented_scope_in_selector_output_is_not_provided_to_model():
     external=source(3,'FORWARDED_THIRD_PARTY',contains_external_content=True)
     engine,req,_,ai,_,_=setup([source(),foreign,external])
     result=engine.process(req)
-    assert result.action=='ONE_QUESTION'
+    assert result.action=='RESPOND'
     packet=ai.calls[-1]['messages'][-1]['content']
     assert 'PRIVATE_OTHER_AUTHOR' not in packet and 'FORWARDED_THIRD_PARTY' not in packet
 
@@ -347,14 +368,15 @@ def test_gateway_failure_has_no_retry_or_public_content(exception):
     assert result.reason==type(exception).__name__ and len(ai.calls)==1
 
 
-def test_ineligible_conversation_stops_before_history_and_generation():
-    engine,req,state,ai,selector,_=setup(ai=AI([lambda p:assessment(p,
-        action='SILENCE',eligible_report=False,facts=False)]))
-    assert engine.process(req).reason=='assessed_silence'
-    assert state.saved==[] and len(ai.calls)==1 and selector.calls==[]
+def test_ordinary_conversation_can_remain_silent_after_contextual_decision():
+    engine,req,state,ai,selector,_=setup([source(text='Понятно, спасибо')],
+        ai=AI([lambda p:assessment(p,facts=False),
+               lambda p:assessment(p,action='SILENCE',facts=False)]))
+    assert engine.process(req).reason=='generated_silence'
+    assert state.saved==[] and len(ai.calls)==2 and selector.calls
 
 
-@pytest.mark.parametrize('final_action',['SILENCE','ONE_QUESTION'])
+@pytest.mark.parametrize('final_action',['SILENCE','RESPOND'])
 def test_eligible_quiet_report_reaches_history_before_final_decision(final_action):
     current=source(1,'Сегодня отложил письмо на завтра')
     historical=source(2,'На прошлой неделе не отправил другое письмо')
@@ -368,7 +390,7 @@ def test_eligible_quiet_report_reaches_history_before_final_decision(final_actio
         refs=[{key:s[key] for key in ('source_id','checksum')} for s in payload['sources']]
         return assessment(payload,action=final_action,facts=facts,recurring_claim=True,
             hypotheses=[{'text':'Возможно, отправку писем стоит разбирать отдельно.','source_refs':refs}]
-                if final_action=='ONE_QUESTION' else [])
+                if final_action=='RESPOND' else [])
     engine,req,state,ai,selector,_=setup([current,historical],ai=AI([preliminary,contextual]))
     result=engine.process(req)
     assert result.action==final_action
@@ -386,7 +408,7 @@ def test_eligible_quiet_report_reaches_history_before_final_decision(final_actio
     (lambda d:d['facts'][0].update(quote='У автора хроническая проблема'),'fact_is_not_an_exact_source_quote'),
     (lambda d:d.update(first_time_claim=True),'first_time_requires_explicit_self_report'),
     (lambda d:d.update(recurring_claim=True),'recurrence_requires_independent_episodes'),
-    (lambda d:d.update(question='Что? Почему?'),'one_question_required'),
+    (lambda d:d['search_terms'].append('x'),'invalid_search_terms'),
     (lambda d:d.update(extra='unknown'),'invalid_response_shape'),
     (lambda d:d.update(hypotheses=[{'text':'Ты всегда ленивый','source_refs':[]}]),'unsafe_or_unsupported_output'),
     (lambda d:d['facts'][0].update(kind=[]),'invalid_response_value_type'),
@@ -404,7 +426,7 @@ def test_invalid_or_ungrounded_model_responses_are_not_sent(mutation,reason):
 def test_explicit_first_time_self_report_is_permitted_without_invention():
     engine,req,_,_,_,_=setup([source(text='Я впервые сделал черновик до основной задачи')],
         ai=AI([assessment,lambda p:assessment(p,first_time_claim=True)]))
-    assert engine.process(req).action=='ONE_QUESTION'
+    assert engine.process(req).action=='RESPOND'
 
 
 @pytest.mark.parametrize('same_message,same_body',[(True,False),(False,True)])
@@ -429,30 +451,180 @@ def test_two_distinct_sourced_episodes_can_support_labelled_pattern_hypothesis()
             hypotheses=[{'text':'Возможно, короткий черновик помогает начать.','source_refs':refs}])
     engine,req,_,_,_,_=setup([source(1),source(2,'Я начал с короткого черновика')],ai=AI([assessment,recurrent]))
     result=engine.process(req)
-    assert result.action=='ONE_QUESTION' and 'Гипотеза' in result.text and len(result.dependencies)==2
+    assert result.action=='RESPOND' and 'Гипотеза' in result.text and len(result.dependencies)==2
 
 
-def test_one_voluntary_experiment_is_prepared_with_visible_feedback_id_not_claimed_sent():
+def test_experiment_is_prepared_with_internal_delivery_link_and_natural_text():
     engine,req,state,_,_,_=setup(ai=AI([assessment,lambda p:assessment(p,
-        action='ONE_EXPERIMENT',question=None,experiment=experiment(p))]))
+        action='RESPOND',question=None,experiment=experiment(p))]))
     result=engine.process(req)
-    assert result.action=='ONE_EXPERIMENT' and result.experiment_id=='f'*32
+    assert result.action=='RESPOND' and result.experiment_id=='f'*32
     assert state.offers[0]['status']=='prepared' and 'Отказаться' in result.text
     assert state.offers[0]['originating_job'] is req.originating_job
-    assert '/accept ' + 'f'*32 in result.text and '/tried ' + 'f'*32 in result.text
+    assert result.experiment_links==(('f'*32,0),)
+    assert 'f'*32 not in result.text and '/accept' not in result.text
     assert len(result.text)<4096
+
+
+@pytest.mark.parametrize('count',[2,17])
+def test_dialogue_has_no_question_or_message_count_quota(count):
+    def dialogue(payload):
+        return assessment(payload,messages=[{'text':f'Реплика {n}. Что получилось? Что мешало?',
+                                             'source_refs':[]} for n in range(count)])
+    engine,req,_,_,_,_=setup(ai=AI([assessment,dialogue]))
+    result=engine.process(req)
+    assert result.action=='RESPOND' and len(result.messages)==count
+    assert result.text.count('?')==count*2
+
+
+def test_multiple_experiments_keep_individual_delivery_parts():
+    def dialogue(payload):
+        first=experiment(payload)
+        second=experiment(payload,message_index=1,instruction='Запиши одну строку плана.',
+                          observation='Отметь, стало ли понятнее первое действие.')
+        messages=[{'text':p['instruction']+' '+p['observation'],'source_refs':p['source_refs']}
+                  for p in (first,second)]
+        return assessment(payload,experiments=[first,second],messages=messages)
+    engine,req,state,_,_,_=setup(ai=AI([assessment,dialogue]))
+    result=engine.process(req)
+    assert result.action=='RESPOND' and len(result.messages)==2 and len(state.offers)==2
+    assert result.experiment_links==( ('f'*32,0), (f'{2:032x}',1) )
+    assert all(item['source_proofs']==result.dependencies for item in state.offers)
+
+
+def test_repository_deduplicated_proposals_have_one_link_to_the_last_part():
+    def dialogue(payload):
+        proposals=[experiment(payload,message_index=n) for n in range(2)]
+        return assessment(payload,experiments=proposals,messages=[
+            {'text':p['instruction']+' '+p['observation'],'source_refs':p['source_refs']} for p in proposals])
+    state=State()
+    state.save_experiment=lambda **kwargs:'f'*32
+    engine,req,_,_,_,_=setup(state=state,ai=AI([assessment,dialogue]))
+    result=engine.process(req)
+    assert result.experiment_links==( ('f'*32,1), ) and len(result.messages)==2
+
+
+def test_telegram_utf16_boundary_splits_text_without_a_message_quota():
+    long_text='🙂'*3000+'Что получилось? Что дальше?'
+    engine,req,_,_,_,_=setup(ai=AI([assessment,lambda p:assessment(p,
+        messages=[{'text':long_text,'source_refs':[]}])]))
+    result=engine.process(req)
+    assert len(result.messages)==2 and ''.join(result.messages)==long_text
+    assert all(len(text.encode('utf-16-le'))//2<=4096 for text in result.messages)
+
+
+def test_split_proposal_is_linked_to_its_last_required_telegram_part():
+    def dialogue(payload):
+        proposal=experiment(payload)
+        text='🙂'*2200+proposal['instruction']+' '+proposal['observation']
+        return assessment(payload,experiments=[proposal],
+                          messages=[{'text':text,'source_refs':proposal['source_refs']}])
+    engine,req,_,_,_,_=setup(ai=AI([assessment,dialogue]))
+    result=engine.process(req)
+    assert len(result.messages)==2 and result.experiment_links==( ('f'*32,1), )
+
+
+def test_total_response_bytes_remain_bounded_without_a_count_cap():
+    engine,req,state,_,_,_=setup(ai=AI([assessment,lambda p:assessment(p,
+        messages=[{'text':'а'*40000,'source_refs':[]}])]))
+    result=engine.process(req)
+    assert result.action=='SILENCE' and result.reason=='response_byte_budget_exceeded'
+    assert state.offers==[]
+
+
+def conversation_turn(role,text,source_,message_id=800):
+    return dict(role=role,text=text,telegram_message_id=message_id,occurred_at=NOW-timedelta(hours=1),
+        source_proofs=(SourceProof(source_.source_id,source_.checksum,source_.access_version),))
+
+
+def test_followup_sees_delivered_bot_turns_and_carries_all_their_proofs():
+    prior=source(1,'Не могу начать учебную задачу')
+    current=source(2,'Да, получилось')
+    state=State()
+    state.conversation=[conversation_turn('user',prior.available_text,prior,1),
+                        conversation_turn('assistant','Что изменится, если начать с черновика?',prior)]
+    engine,req,state,ai,selector,_=setup([current],state=state)
+    selector.current_sources[prior.source_id]=prior
+    result=engine.process(req)
+    assert result.action=='RESPOND' and result.structured['conversation_turns']==2
+    for call in ai.calls:
+        context=json.loads(call['messages'][-1]['content'])
+        assert [item['role'] for item in context['conversation']]==['user','assistant']
+        assert context['current_source_id']==current.source_id
+        assert 'черновика' in context['conversation'][-1]['text']
+    assert {proof.source_id for proof in result.dependencies}=={current.source_id,prior.source_id}
+    assert all({p.source_id for p in saved['source_proofs']}=={current.source_id,prior.source_id}
+               for saved in state.saved)
+
+
+def test_conversation_metadata_budget_preserves_the_newest_bot_turn():
+    first=source()
+    state=State()
+    state.conversation=[conversation_turn('assistant','OLDER_CONTEXT '+'a'*380,first,800),
+                        conversation_turn('assistant','NEWEST_CONTEXT '+'b'*380,first,801)]
+    assert sum(len(item['text'].encode('utf-8')) for item in state.conversation)<1000
+    engine,req,_,ai,_,_=setup([first],state=state)
+    engine.conversation_max_bytes=1000
+    result=engine.process(req)
+    assert result.action=='RESPOND'
+    for call in ai.calls:
+        turns=json.loads(call['messages'][-1]['content'])['conversation']
+        assert len(turns)==1 and turns[0]['text'].startswith('NEWEST_CONTEXT')
+
+
+def test_previous_bot_text_cannot_be_used_as_a_user_fact_quote():
+    prior=source(1,'Не могу начать учебную задачу')
+    current=source(2,'Да')
+    state=State()
+    state.conversation=[conversation_turn('assistant','Ты уже успешно завершил весь проект.',prior)]
+    def invent_fact(payload):
+        data=assessment(payload)
+        data['facts'][0].update(quote=payload['conversation'][0]['text'])
+        return data
+    engine,req,state,ai,selector,_=setup([current],state=state,ai=AI([invent_fact]))
+    selector.current_sources[prior.source_id]=prior
+    assert engine.process(req).reason=='fact_is_not_an_exact_source_quote'
+    assert len(ai.calls)==1 and state.saved==[]
+
+
+@pytest.mark.parametrize('invalid',['missing_proof','other_author','stale_checksum','external'])
+def test_untrusted_or_revoked_conversation_turn_is_not_provided_to_model(invalid):
+    prior=source(2,'Контекст источника',author_user_id=AUTHOR+1 if invalid=='other_author' else AUTHOR,
+                 contains_external_content=invalid=='external')
+    record=conversation_turn('assistant','PRIVATE_CONTEXT_MUST_NOT_PASS',prior)
+    if invalid=='missing_proof':
+        record['source_proofs']=()
+    elif invalid=='stale_checksum':
+        record['source_proofs']=(SourceProof(prior.source_id,'0'*64,prior.access_version),)
+    state=State()
+    state.conversation=[record]
+    engine,req,_,ai,selector,_=setup(state=state)
+    selector.current_sources[prior.source_id]=prior
+    result=engine.process(req)
+    assert result.action=='RESPOND' and result.structured['conversation_turns']==0
+    assert all('PRIVATE_CONTEXT_MUST_NOT_PASS' not in call['messages'][-1]['content'] for call in ai.calls)
+
+
+def test_conversation_dependency_is_reauthorized_before_first_paid_phase():
+    prior=source(2,'Ранее обсуждённый план')
+    state=State()
+    state.conversation=[conversation_turn('assistant','Продолжим обсуждение плана?',prior)]
+    engine,req,_,ai,selector,archive=setup(state=state)
+    selector.current_sources[prior.source_id]=prior
+    archive.denied.add(prior.source_id)
+    assert engine.process(req).reason=='permission_or_source_changed' and ai.calls==[]
 
 
 @pytest.mark.parametrize('mode',['index','auto_report','direct'])
 def test_no_derived_memory_is_written_without_an_originating_job(mode):
     engine,req,state,_,_,_=setup(mode=mode,originating_job=None,
-        ai=AI([assessment,lambda p:assessment(p,action='ONE_EXPERIMENT',experiment=experiment(p))]))
+        ai=AI([assessment,lambda p:assessment(p,action='RESPOND',experiment=experiment(p))]))
     result=engine.process(req)
     assert state.saved==[] and state.offers==[] and result.experiment_id is None
     if mode=='index':
         assert result.structured['facts_indexed']==0
     else:
-        assert result.action=='ONE_EXPERIMENT'
+        assert result.action=='RESPOND'
 
 
 def test_an_unrelated_originating_job_cannot_authorize_derived_writes():
@@ -466,9 +638,9 @@ def test_an_unrelated_originating_job_cannot_authorize_derived_writes():
 def test_transient_current_cannot_be_laundered_into_a_durable_experiment_by_history():
     engine,req,state,_,_,_=setup([source(2,'Я раньше делал набросок')],mode='direct',
         source_id=None,source_checksum='a'*64,current_text='Проверим новый план',
-        ai=AI([assessment,lambda p:assessment(p,action='ONE_EXPERIMENT',question=None,experiment=experiment(p))]))
+        ai=AI([assessment,lambda p:assessment(p,action='RESPOND',question=None,experiment=experiment(p))]))
     result=engine.process(req)
-    assert result.action=='ONE_EXPERIMENT' and result.experiment_id is None
+    assert result.action=='RESPOND' and result.experiment_id is None
     assert state.saved==[] and state.offers==[]
 
 
@@ -476,7 +648,7 @@ def test_transient_current_cannot_be_laundered_into_a_durable_experiment_by_hist
                                    {'risk_level':'high'},{'instruction':'Возьми кредит для мотивации'}])
 def test_unsafe_experiment_is_rejected(change):
     engine,req,state,_,_,_=setup(ai=AI([assessment,lambda p:assessment(p,
-        action='ONE_EXPERIMENT',question=None,experiment=experiment(p,**change))]))
+        action='RESPOND',question=None,experiment=experiment(p,**change))]))
     assert engine.process(req).action=='SILENCE' and state.offers==[]
 
 
@@ -511,7 +683,7 @@ def test_already_declined_exact_experiment_is_not_reoffered():
         summary='Начни следующую учебную задачу с двухминутного черновика.',
         source_proofs=(SourceProof(first.source_id,first.checksum,first.access_version),),status='declined')]
     engine,req,state,_,_,_=setup([first],state=state,ai=AI([assessment,lambda p:assessment(p,
-        action='ONE_EXPERIMENT',question=None,experiment=experiment(p))]))
+        action='RESPOND',question=None,experiment=experiment(p))]))
     assert engine.process(req).reason=='known_experiment_must_not_be_reoffered' and state.offers==[]
 
 
@@ -601,22 +773,22 @@ def test_engine_real_postgres_experiment_is_offered_only_after_confirmed_send(de
         assert repo.enqueue_job(normalized,'auto_report',source_id=capture.source_id,now=at)
         job=repo.claim_job(now=at)
         assert job is not None
-        propose=lambda payload: assessment(payload,action='ONE_EXPERIMENT',experiment=experiment(payload))
+        propose=lambda payload: assessment(payload,action='RESPOND',experiment=experiment(payload))
         engine=CoachEngine(archive=archive,state=repo,ai=AI([propose,propose]))
         decision=engine.process(CoachRequest(operation_id=job.id,mode=job.mode,chat_id=chat,
             message_thread_id=topic,author_user_id=author,current_text=job.current_text,
             source_id=job.source_id,source_checksum=job.source_checksum,
             consent_version=job.consent_version,now=at,originating_job=job))
-        assert decision.action=='ONE_EXPERIMENT' and decision.experiment_id
+        assert decision.action=='RESPOND' and decision.experiment_id
         identifier=decision.experiment_id
-        assert f'/accept {identifier}' in decision.text and f'/tried {identifier}' in decision.text
+        assert decision.experiment_links==((identifier,0),) and identifier not in decision.text
         assert conn.execute('SELECT status FROM coach_episodes WHERE id=%s',(identifier,)).fetchone()==('prepared',)
         assert repo.list_experiments(author_user_id=author)==[]
-        assert repo.enqueue_output(job,decision.text,source_proofs=decision.dependencies,
-                                   experiment_id=identifier,now=at)
+        assert repo.enqueue_outputs(job,decision.messages,source_proofs=decision.dependencies,
+                                    experiment_links=decision.experiment_links,now=at)
         repo.complete_job(job)
         output=repo.claim_output(now=at)
-        assert output is not None and output.experiment_id==identifier
+        assert output is not None and identifier in output.experiment_ids
         sent=[]
         def sender(item):
             sent.append(item)

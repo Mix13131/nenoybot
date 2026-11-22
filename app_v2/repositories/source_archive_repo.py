@@ -182,7 +182,8 @@ class SourceArchiveRepository:
             self.conn.execute(
                 '''UPDATE source_archive_consents SET version=%s, retain_source=%s,
                        historical_inference=%s, auto_report_analysis=%s, unsolicited_group_reply=%s,
-                       direct_request_group_reply=%s, retain_since=%s, updated_at=%s, actor_user_id=%s
+                       direct_request_group_reply=%s, retain_since=%s, updated_at=%s, actor_user_id=%s,
+                       grant_basis='self'
                    WHERE chat_id=%s AND message_thread_id=%s AND author_user_id=%s''',
                 (version, *values, retain_since, at, actor_user_id, *key),
             )
@@ -190,13 +191,52 @@ class SourceArchiveRepository:
                 '''INSERT INTO source_archive_consent_versions(
                        chat_id, message_thread_id, author_user_id, version, retain_source,
                        historical_inference, auto_report_analysis, unsolicited_group_reply,
-                       direct_request_group_reply, retain_since, recorded_at)
-                   VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)''',
-                (*key, version, *values, retain_since, at),
+                       direct_request_group_reply, retain_since, recorded_at,grant_basis,actor_user_id)
+                   VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,'self',%s)''',
+                (*key, version, *values, retain_since, at,actor_user_id),
             )
             if not retain_source:
                 self._purge(key)
             return int(version)
+
+    def bootstrap_group_default(self, normalized: NormalizedTelegramUpdate, *, now=None) -> bool:
+        """Apply the operator's group policy to a first authenticated human only.
+
+        This separate internal entry point records a system policy, never a
+        personal opt-in or an impersonated participant. The coach caller must
+        first restrict the update to its explicitly configured group/topic.
+        Existing personal state, including any opt-out, is left untouched.
+        """
+        message=archive_message_from_update(normalized)
+        if message is None:
+            return False
+        key=(message.chat_id,message.message_thread_id,message.author_user_id)
+        at=_time(now)
+        with self.conn.transaction():
+            scope=self.conn.execute(
+                "SELECT activated_at FROM source_archive_scopes WHERE chat_id=%s AND message_thread_id=%s "
+                "AND enabled FOR SHARE",key[:2],
+            ).fetchone()
+            if not scope:
+                return False
+            inserted=self.conn.execute(
+                """INSERT INTO source_archive_consents(chat_id,message_thread_id,author_user_id,version,
+                    retain_source,historical_inference,auto_report_analysis,unsolicited_group_reply,
+                    direct_request_group_reply,retain_since,updated_at,actor_user_id,grant_basis)
+                    VALUES(%s,%s,%s,1,TRUE,TRUE,TRUE,TRUE,TRUE,%s,%s,NULL,'group_default')
+                    ON CONFLICT(chat_id,message_thread_id,author_user_id) DO NOTHING RETURNING version""",
+                (*key,scope[0],at),
+            ).fetchone()
+            if not inserted:
+                return False
+            self.conn.execute(
+                """INSERT INTO source_archive_consent_versions(chat_id,message_thread_id,author_user_id,version,
+                    retain_source,historical_inference,auto_report_analysis,unsolicited_group_reply,
+                    direct_request_group_reply,retain_since,recorded_at,grant_basis,actor_user_id)
+                    VALUES(%s,%s,%s,1,TRUE,TRUE,TRUE,TRUE,TRUE,%s,%s,'group_default',NULL)""",
+                (*key,scope[0],at),
+            )
+            return True
 
     def capture(self, normalized: NormalizedTelegramUpdate) -> ArchiveCapture:
         message = archive_message_from_update(normalized)
@@ -342,7 +382,8 @@ class SourceArchiveRepository:
                 # Future messages remain enabled under the same five grants.
                 self.conn.execute(
                     '''UPDATE source_archive_consents
-                       SET version=version+1, retain_since=%s, updated_at=%s
+                       SET version=version+1, retain_since=%s, updated_at=%s,
+                           grant_basis='self',actor_user_id=author_user_id
                        WHERE chat_id=%s AND message_thread_id=%s AND author_user_id=%s''',
                     (_eligible_time(at), at, *key),
                 )
@@ -350,10 +391,10 @@ class SourceArchiveRepository:
                     '''INSERT INTO source_archive_consent_versions(
                            chat_id, message_thread_id, author_user_id, version, retain_source,
                            historical_inference, auto_report_analysis, unsolicited_group_reply,
-                           direct_request_group_reply, retain_since, recorded_at)
+                           direct_request_group_reply, retain_since, recorded_at,grant_basis,actor_user_id)
                        SELECT chat_id, message_thread_id, author_user_id, version, retain_source,
                            historical_inference, auto_report_analysis, unsolicited_group_reply,
-                           direct_request_group_reply, retain_since, updated_at
+                           direct_request_group_reply, retain_since, updated_at,grant_basis,actor_user_id
                        FROM source_archive_consents
                        WHERE chat_id=%s AND message_thread_id=%s AND author_user_id=%s''', key,
                 )

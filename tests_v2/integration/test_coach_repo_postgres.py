@@ -111,20 +111,20 @@ def coach():
                     conn.execute(f"DELETE FROM {table} WHERE chat_id=%s",(state.chat,))
 
 
-def test_positive_grant_requires_actually_delivered_notice(coach):
-    first=coach.message(1,"/archive_on")
-    result=coach.controls.handle(first)
-    assert result.disclosure and not coach.repo.permissions(coach.author).retain_source
-    coach.repo.enqueue_control_output(first,result.reply_text,disclosure=True)
-    still=coach.controls.handle(coach.message(2,"/archive_on"))
-    assert still.disclosure and not coach.repo.permissions(coach.author).retain_source
-    output=coach.repo.claim_output()
-    assert coach.repo.deliver_output(output,lambda output:{"message_id":80})=="sent"
-    coach.controls.handle(coach.message(3,"/archive_on"))
+def test_first_authenticated_report_uses_group_default_without_faking_personal_consent(coach):
+    first=coach.message(1,"First own report",at=datetime.now(timezone.utc)-timedelta(seconds=10))
+    assert coach.repo.bootstrap_group_default(first)
     permission=coach.repo.permissions(coach.author)
-    assert permission.retain_source
-    assert not any((permission.historical_inference,permission.auto_report_analysis,
-                    permission.unsolicited_group_reply,permission.direct_request_group_reply))
+    assert permission.automatic_allowed and permission.direct_request_group_reply
+    assert permission.track_status=="active" and not permission.disclosure_delivered
+    assert permission.grant_basis=="group_default"
+    for table in ("source_archive_consents","source_archive_consent_versions"):
+        assert coach.conn.execute(f"SELECT grant_basis,actor_user_id FROM {table} WHERE chat_id=%s",(coach.chat,)).fetchone()==("group_default",None)
+    captured=coach.archive.capture(first)
+    assert captured.status=="archived"
+    assert coach.repo.enqueue_job(first,"auto_report",source_id=captured.source_id)
+    assert not coach.repo.bootstrap_group_default(first)
+    assert coach.repo.permissions(coach.author).version==permission.version
 
 
 def test_direct_only_is_usable_without_retention_or_history(coach):
@@ -145,7 +145,7 @@ def test_direct_only_is_usable_without_retention_or_history(coach):
 def test_auto_requirements_and_pause_preserve_independent_grants(coach):
     coach.notice()
     result=coach.controls.handle(coach.message(2,"/auto_on"))
-    assert "сначала" in result.reply_text
+    assert "выключена" in result.reply_text
     assert not coach.repo.permissions(coach.author).retain_source
     for n,command in enumerate(("/archive_on","/history_on","/direct_on","/auto_on","/track_start"),3):
         coach.controls.handle(coach.message(n,command))
@@ -191,17 +191,17 @@ def test_disabled_scope_still_allows_self_forget_and_control_receipt(coach):
     coach.repo.enqueue_control_output(update,result.reply_text)
     assert coach.repo.deliver_output(coach.repo.claim_output(),lambda out:{"message_id":82})=="sent"
     result=coach.controls.handle(coach.message(3,"/archive_on"))
-    assert "временно отключена" in result.reply_text
+    assert "сейчас отключена" in result.reply_text
 
 
-def test_public_track_confirmation_is_an_explicit_separate_request(coach):
-    coach.notice()
-    for n,command in enumerate(("/archive_on","/history_on","/direct_on","/track_start"),2):
-        coach.controls.handle(coach.message(n,command))
-    draft=coach.controls.handle(coach.message(6,"/track 30"))
-    assert draft.job_mode is None and not draft.public_confirmed and "/track 30 confirm" in draft.reply_text
-    confirmed=coach.controls.handle(coach.message(7,"/track 30 confirm"))
-    assert (confirmed.job_mode,confirmed.window_days,confirmed.public_confirmed)==("track",30,True)
+def test_track_and_review_need_no_extra_public_confirmation(coach):
+    assert coach.repo.bootstrap_group_default(coach.message(1))
+    track=coach.controls.handle(coach.message(2,"/track 30"))
+    assert (track.job_mode,track.window_days,track.reply_text)==("track",30,None)
+    natural=coach.controls.handle(coach.message(3,"@synthetic_bot подведи итоги за неделю"))
+    assert (natural.job_mode,natural.window_days,natural.reply_text)==("weekly_review",7,None)
+    compat=coach.controls.handle(coach.message(4,"/track 30 confirm"))
+    assert compat.job_mode=="track"
 
 
 def test_intake_transaction_rolls_back_receipts_grants_and_replies(coach):
@@ -359,13 +359,12 @@ def test_database_identity_cannot_be_silently_rebound(coach):
     with pytest.raises(CoachConfigurationError):foreign.bind_identity()
 
 
-def test_public_review_reply_requires_confirm_but_deterministic_notice_does_not(coach):
+def test_authorized_review_sends_without_deprecated_confirmation_flag(coach):
     coach.grant(retain_source=True,historical_inference=True,direct_request_group_reply=True)
     message,proof=coach.source()
     coach.repo.enqueue_job(message,"weekly_review",source_id=proof.source_id,public_confirmed=False)
     job=coach.repo.claim_job()
-    assert coach.repo.enqueue_output(job,"Private review prematurely",source_proofs=[proof]) is None
-    assert coach.repo.enqueue_output(job,"Synthetic explicit publication confirmation notice",kind="notice")
+    assert coach.repo.enqueue_output(job,"Authorized group review",source_proofs=[proof])
     assert coach.repo.deliver_output(coach.repo.claim_output(),lambda out:{"message_id":92})=="sent"
 
 
@@ -380,7 +379,7 @@ def test_index_mode_never_creates_a_public_reply(coach):
 
 def test_ask_command_is_direct_and_requires_only_its_separate_grant(coach):
     unavailable=coach.controls.handle(coach.message(1,"/ask my request"))
-    assert unavailable.disclosure and unavailable.job_mode is None
+    assert not unavailable.disclosure and unavailable.job_mode is None
     coach.notice(2)
     coach.controls.handle(coach.message(3,"/direct_on"))
     direct=coach.controls.handle(coach.message(4,"/ask@synthetic_bot my request"))
@@ -395,7 +394,7 @@ def test_experiment_controls_use_own_authenticated_feedback_source(coach):
     feedback=coach.message(2,"/tried "+identifier)
     assert coach.archive.capture(feedback).status=="archived"
     result=coach.controls.handle(feedback)
-    assert "сообщил, что попробовал" in result.reply_text
+    assert "по твоим словам" in result.reply_text
     items=coach.repo.list_experiments(author_user_id=coach.author,since=feedback.envelope.occurred_at)
     assert len(items)==1 and items[0]["status"]=="tried_self_reported"
     assert len(items[0]["source_proofs"])==2
@@ -511,7 +510,7 @@ def test_experiment_feedback_cancels_prepared_answers_without_changing_sources_o
     assert coach.archive.capture(feedback).status=="archived"
     before=coach.repo.permissions(coach.author)
     result=coach.controls.handle(feedback)
-    assert "отказываюсь" in result.reply_text
+    assert "отказываешься" in result.reply_text
     assert coach.repo.permissions(coach.author)==before
     assert not coach.repo.job_is_current(job)
     assert coach.repo.deliver_output(output,lambda item:pytest.fail("obsolete experiment state sent"))=="cancelled"
@@ -618,3 +617,136 @@ def test_old_arrival_stays_in_authorized_archive_but_never_starts_transient_ai_j
     later=message.envelope.occurred_at+timedelta(seconds=coach.repo.transient_ttl_seconds+1)
     assert coach.repo.enqueue_job(message,"direct",source_id=proof.source_id,now=later) is None
     assert coach.conn.execute("SELECT available_text FROM source_archive_revisions WHERE source_id=%s",(proof.source_id,)).fetchone()==("synthetic source",)
+
+
+def test_natural_stop_needs_address_and_survives_default_bootstrap(coach):
+    assert coach.repo.bootstrap_group_default(coach.message(1))
+    assert not coach.controls.handle(coach.message(2,"пока не комментируй")).handled
+    assert coach.repo.permissions(coach.author).automatic_allowed
+    stopped=coach.controls.handle(coach.message(3,"@synthetic_bot пока не комментируй"))
+    assert stopped.handled
+    permission=coach.repo.permissions(coach.author)
+    assert not permission.automatic_allowed and permission.track_status=="paused"
+    assert permission.retain_source and permission.historical_inference and permission.direct_request_group_reply
+    assert permission.grant_basis=="self"
+    assert coach.conn.execute("SELECT actor_user_id FROM source_archive_consents WHERE chat_id=%s",(coach.chat,)).fetchone()==(coach.author,)
+    following=coach.message(4,"Next ordinary own report")
+    assert not coach.repo.bootstrap_group_default(following)
+    assert coach.archive.capture(following).status=="archived"
+    assert coach.repo.enqueue_job(following,"auto_report") is None
+    resumed=coach.controls.handle(coach.message(5,"продолжай"),addressed=True)
+    assert resumed.handled and coach.repo.permissions(coach.author).automatic_allowed
+    assert coach.repo.permissions(coach.author).track_status=="active"
+
+
+def test_natural_storage_stop_and_forget_require_explicit_memory_resume(coach):
+    assert coach.repo.bootstrap_group_default(coach.message(1))
+    coach.source(2)
+    stopped=coach.controls.handle(coach.message(3,"не храни мои сообщения"),addressed=True)
+    assert stopped.handled
+    permission=coach.repo.permissions(coach.author)
+    assert not permission.retain_source and not permission.historical_inference
+    assert not coach.repo.bootstrap_group_default(coach.message(4))
+    assert coach.archive.capture(coach.message(4)).status=="ignored"
+    coach.controls.handle(coach.message(5,"продолжай"),addressed=True)
+    assert not coach.repo.permissions(coach.author).automatic_allowed
+    coach.controls.handle(coach.message(6,"снова запоминай и разбирай"),addressed=True)
+    assert coach.repo.permissions(coach.author).automatic_allowed
+    coach.source(7)
+    before_epoch=coach.conn.execute("SELECT memory_epoch FROM coach_participant_state WHERE chat_id=%s",(coach.chat,)).fetchone()[0]
+    forgotten=coach.controls.handle(coach.message(8,"забудь мои сообщения"),addressed=True)
+    assert "сообщений" in forgotten.reply_text
+    permission=coach.repo.permissions(coach.author)
+    assert not permission.retain_source and not permission.historical_inference and not permission.auto_report_analysis
+    assert permission.direct_request_group_reply and permission.track_status=="off"
+    assert not coach.repo.bootstrap_group_default(coach.message(9))
+    assert coach.archive.capture(coach.message(9)).status=="ignored"
+    assert coach.conn.execute("SELECT memory_epoch FROM coach_participant_state WHERE chat_id=%s",(coach.chat,)).fetchone()[0]>before_epoch
+
+
+def test_default_bootstrap_rejects_other_scope_and_preserves_existing_personal_state(coach):
+    assert not coach.repo.bootstrap_group_default(coach.message(1,topic=TOPIC+1))
+    assert not coach.repo.bootstrap_group_default(coach.message(2,chat=coach.chat-1))
+    coach.grant(direct_request_group_reply=True)
+    before=coach.repo.permissions(coach.author)
+    assert not coach.repo.bootstrap_group_default(coach.message(3))
+    assert coach.repo.permissions(coach.author)==before
+
+
+def test_answer_bundle_has_no_message_count_quota_and_preserves_order(coach):
+    coach.grant(direct_request_group_reply=True)
+    _,job=coach.direct_job()
+    texts=tuple(f"Synthetic ordered part {n}" for n in range(11))
+    identifiers=coach.repo.enqueue_outputs(job,texts)
+    assert len(identifiers)==11
+    assert coach.repo.enqueue_outputs(job,texts)==()
+    coach.repo.complete_job(job)
+    delivered=[]
+    for index in range(11):
+        output=coach.repo.claim_output()
+        assert output.part_index==index and output.id==identifiers[index]
+        assert coach.repo.claim_output() is None  # The next part cannot overtake an in-flight send.
+        assert coach.repo.deliver_output(output,lambda item:delivered.append(item.text) or {"message_id":200+index})=="sent"
+    assert tuple(delivered)==texts and coach.repo.claim_output() is None
+
+
+@pytest.mark.parametrize("failure",["timeout","revoke","edit"])
+def test_bundle_reauthorizes_every_part_and_cancels_unsent_remainder(coach,failure):
+    coach.grant(retain_source=True,historical_inference=True,direct_request_group_reply=True)
+    source,proof=coach.source()
+    _,job=coach.direct_job(2)
+    identifiers=coach.repo.enqueue_outputs(job,("first","second","third"),source_proofs=[proof])
+    first=coach.repo.claim_output()
+    assert coach.repo.deliver_output(first,lambda item:{"message_id":210})=="sent"
+    second=coach.repo.claim_output()
+    if failure=="revoke":
+        coach.archive.set_permissions(chat_id=coach.chat,message_thread_id=TOPIC,author_user_id=coach.author,
+            actor_user_id=coach.author,direct_request_group_reply=True)
+    elif failure=="edit":
+        coach.archive.capture(coach.message(3,"Changed source",message_id=1,edit=True,at=source.envelope.occurred_at))
+    def sender(item):
+        if failure=="timeout":raise TimeoutError("Synthetic unknown second-part delivery")
+        pytest.fail("A revoked or edited source reached Telegram")
+    assert coach.repo.deliver_output(second,sender)==("uncertain" if failure=="timeout" else "cancelled")
+    assert coach.repo.claim_output() is None
+    assert coach.conn.execute("SELECT status,text FROM coaching_outputs WHERE id=%s",(identifiers[2],)).fetchone()==("cancelled",None)
+
+
+def test_multiple_experiments_are_offered_only_after_their_linked_part(coach):
+    coach.grant(retain_source=True,historical_inference=True,direct_request_group_reply=True)
+    message,proof=coach.source()
+    coach.repo.enqueue_job(message,"direct",source_id=proof.source_id)
+    job=coach.repo.claim_job()
+    ids=tuple(coach.repo.save_experiment(author_user_id=coach.author,proposal=f"Optional variant {n}",
+        source_proofs=[proof],originating_job=job) for n in range(3))
+    assert coach.repo.enqueue_outputs(job,("Two variants","Another variant"),source_proofs=[proof],
+        experiment_links=((ids[0],0),(ids[1],0),(ids[2],1)))
+    first=coach.repo.claim_output()
+    assert set(first.experiment_ids)==set(ids[:2])
+    assert coach.repo.deliver_output(first,lambda item:{"message_id":220})=="sent"
+    assert {x["id"] for x in coach.repo.list_experiments(author_user_id=coach.author)}==set(ids[:2])
+    second=coach.repo.claim_output()
+    assert coach.repo.deliver_output(second,lambda item:{"message_id":221})=="sent"
+    assert {x["id"] for x in coach.repo.list_experiments(author_user_id=coach.author)}==set(ids)
+    feedback=coach.message(2,"попробую",reply_to_message={"message_id":221,"from":{"id":BOT,"is_bot":True}})
+    assert coach.archive.capture(feedback).status=="archived"
+    result=coach.controls.handle(feedback,addressed=True)
+    assert result.handled and "хочешь попробовать" in result.reply_text
+    assert coach.conn.execute("SELECT status FROM coach_episodes WHERE id=%s",(ids[2],)).fetchone()==("accepted",)
+    ambiguous=coach.message(3,"попробую")
+    coach.archive.capture(ambiguous)
+    assert "Про какой" in coach.controls.handle(ambiguous,addressed=True).reply_text
+
+
+def test_delivery_context_callback_failure_never_repeats_confirmed_send(coach):
+    coach.grant(direct_request_group_reply=True)
+    _,job=coach.direct_job()
+    coach.repo.enqueue_outputs(job,("first","second"))
+    first=coach.repo.claim_output()
+    sent=[]
+    def record(item,response):
+        assert item.text=="first" and response["message_id"]==230
+        raise RuntimeError("Synthetic context-record failure after confirmed send")
+    assert coach.repo.deliver_output(first,lambda item:sent.append(item.id) or {"message_id":230},on_sent=record)=="sent"
+    assert len(sent)==1
+    assert coach.repo.claim_output().part_index==1

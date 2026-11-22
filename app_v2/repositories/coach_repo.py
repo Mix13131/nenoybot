@@ -11,6 +11,7 @@ from dataclasses import asdict
 from datetime import datetime, timedelta, timezone
 import hashlib
 import json
+import logging
 import re
 from typing import Callable, Sequence
 from uuid import uuid4
@@ -19,6 +20,9 @@ from app_v2.adapters.telegram_archive import archive_message_from_update
 from app_v2.domain.coach import CoachJob, CoachOutput, CoachPermissions, GRANT_FIELDS, SourceProof
 from app_v2.domain.source_archive import ArchiveMessage
 from app_v2.repositories.source_archive_repo import ArchivePermissionError, SourceArchiveRepository
+
+
+logger=logging.getLogger(__name__)
 
 
 class CoachConfigurationError(RuntimeError):
@@ -120,18 +124,41 @@ class CoachRepository:
                 "ON CONFLICT DO NOTHING", self._key(author),
             )
 
+    def bootstrap_group_default(self, normalized, *, now=None) -> bool:
+        """Initialize a first human under this configured group's default policy."""
+        message=self.authenticated_message(normalized)
+        if message is None:
+            return False
+        self.assert_identity()
+        with self.author_lock(message.author_user_id,require_enabled=False):
+            if not self.scope_enabled():
+                return False
+            created=self.archive.bootstrap_group_default(normalized,now=now)
+            if created:
+                self.conn.execute(
+                    "INSERT INTO coach_participant_state(chat_id,message_thread_id,author_user_id,track_status) "
+                    "VALUES(%s,%s,%s,'active') ON CONFLICT DO NOTHING",self._key(message.author_user_id),
+                )
+            return created
+
     def permissions(self, author_user_id: int) -> CoachPermissions:
         row = self.conn.execute(
             """SELECT c.version,c.retain_source,c.historical_inference,c.auto_report_analysis,
                       c.unsolicited_group_reply,c.direct_request_group_reply,
                       COALESCE(s.track_status,'off'),COALESCE(s.disclosure_version=1 AND
-                          s.disclosure_delivered_at IS NOT NULL,FALSE)
+                          s.disclosure_delivered_at IS NOT NULL,FALSE),c.grant_basis
                FROM source_archive_consents c LEFT JOIN coach_participant_state s
                  USING(chat_id,message_thread_id,author_user_id)
                WHERE c.chat_id=%s AND c.message_thread_id=%s AND c.author_user_id=%s""",
             self._key(author_user_id),
         ).fetchone()
         return CoachPermissions(*row) if row else CoachPermissions()
+
+    def conversation_context(self, author_user_id: int, *, max_bytes=12000, before=None):
+        from app_v2.repositories.coach_dialogue_repo import CoachDialogueRepository
+        return CoachDialogueRepository(self.conn,chat_id=self.chat_id,message_thread_id=self.message_thread_id,
+            bot_user_id=self.bot_user_id,transient_ttl_seconds=self.transient_ttl_seconds).context(
+                author_user_id,max_bytes=max_bytes,before=before)
 
     def claim_ingest(self, telegram_update_id: int) -> bool:
         if type(telegram_update_id) is not int or telegram_update_id < 0:
@@ -196,6 +223,8 @@ class CoachRepository:
 
     def forget(self, message: ArchiveMessage):
         with self.author_lock(message.author_user_id, require_enabled=False):
+            self.conn.execute("UPDATE coach_participant_state SET memory_epoch=memory_epoch+1 "
+                "WHERE chat_id=%s AND message_thread_id=%s AND author_user_id=%s",self._key(message.author_user_id))
             retained=self.permissions(message.author_user_id).retain_source
             receipt = self.archive.forget_sources(
                 chat_id=self.chat_id,message_thread_id=self.message_thread_id,
@@ -220,6 +249,8 @@ class CoachRepository:
             raise ArchivePermissionError("Wrong coach topic")
         with self.author_lock(message.author_user_id,require_enabled=False):
             key=self._key(message.author_user_id)
+            self.conn.execute("UPDATE coach_participant_state SET memory_epoch=memory_epoch+1 "
+                "WHERE chat_id=%s AND message_thread_id=%s AND author_user_id=%s",key)
             count=self.conn.execute(
                 "UPDATE coach_episodes SET summary=NULL,source_proofs='[]'::jsonb,is_active=FALSE "
                 "WHERE chat_id=%s AND message_thread_id=%s AND author_user_id=%s AND is_active",key,
@@ -332,10 +363,11 @@ class CoachRepository:
             # source capture happens before this method and is not restricted.
             if message.occurred_at <= now-timedelta(seconds=self.transient_ttl_seconds):
                 return None
-            granted_at=self.conn.execute(
-                "SELECT updated_at FROM source_archive_consents WHERE chat_id=%s AND message_thread_id=%s AND author_user_id=%s",
+            grant=self.conn.execute(
+                "SELECT updated_at,retain_since,grant_basis FROM source_archive_consents WHERE chat_id=%s AND message_thread_id=%s AND author_user_id=%s",
                 self._key(message.author_user_id),
-            ).fetchone()[0]
+            ).fetchone()
+            granted_at=grant[1] if grant[2]=="group_default" else grant[0]
             boundary=granted_at.replace(microsecond=0)+(timedelta(seconds=1) if granted_at.microsecond else timedelta())
             if message.occurred_at<boundary:
                 return None  # A later opt-in never authorizes a delayed earlier request.
@@ -466,36 +498,62 @@ class CoachRepository:
 
     def enqueue_output(self, job: CoachJob, text: str, *, source_proofs: Sequence[SourceProof] = (),
                        kind: str = "reply", experiment_id: str | None = None, now=None) -> str | None:
-        if not isinstance(text,str) or not text.strip() or len(text)>4096:
-            raise ValueError("A nonempty Telegram-sized output is required")
+        identifiers=self.enqueue_outputs(job,(text,),source_proofs=source_proofs,kind=kind,
+                                         experiment_id=experiment_id,now=now)
+        return identifiers[0] if identifiers else None
+
+    def enqueue_outputs(self, job: CoachJob, texts: Sequence[str], *, source_proofs: Sequence[SourceProof] = (),
+                        kind: str = "reply", experiment_links: Sequence[tuple[str,int]] = (),
+                        experiment_id: str | None = None, now=None) -> tuple[str,...]:
+        """Queue an atomic ordered answer, with no fixed message-count quota."""
+        if isinstance(texts,(str,bytes)):
+            raise ValueError("An ordered sequence of Telegram messages is required")
+        texts=tuple(texts)
+        if not texts or any(not isinstance(t,str) or not t.strip() or len(t)>4096 for t in texts):
+            raise ValueError("Every output must be nonempty and fit one Telegram message")
+        links=tuple(experiment_links)+(((experiment_id,len(texts)-1),) if experiment_id else ())
+        if any(not isinstance(p,(tuple,list)) or len(p)!=2 or not isinstance(p[0],str)
+               or type(p[1]) is not int or not 0<=p[1]<len(texts) for p in links):
+            raise ValueError("Experiment links require a valid zero-based message index")
+        if len({p[0] for p in links})!=len(links):
+            raise ValueError("An experiment belongs to exactly one delivered answer part")
         with self.author_lock(job.author_user_id,require_enabled=False):
-            if not self.scope_enabled() or not self._job_current(job,now=now):
-                return None
+            if not self.scope_enabled() or not self._job_current(job,now=now,lock_job=True):
+                return ()
             if source_proofs and not self._proofs_valid(job.author_user_id,source_proofs,
                     current_source_id=job.source_id,allow_current_only=job.mode=="direct"):
-                return None
+                return ()
             # History-backed modes cannot silently strip their evidence.
             if job.mode == "index":
-                return None
-            if job.mode in {"weekly_review","track"} and not job.public_confirmed and kind != "notice":
-                return None
+                return ()
             if job.mode in {"auto_report","weekly_review","track"} and not source_proofs and kind != "notice":
-                return None
-            if experiment_id is not None and (kind!="reply" or not self._prepared_experiment_valid(
-                    job.author_user_id,experiment_id,source_proofs)):
-                return None
+                return ()
+            if links and (kind!="reply" or any(not self._prepared_experiment_valid(
+                    job.author_user_id,identifier,source_proofs) for identifier,_ in links)):
+                return ()
+            if self.conn.execute("SELECT 1 FROM coaching_outputs WHERE job_id=%s LIMIT 1",(job.id,)).fetchone():
+                return ()
             at = _now(now)
             job_expiry=self.conn.execute("SELECT expires_at FROM coach_jobs WHERE id=%s",(job.id,)).fetchone()[0]
-            row = self.conn.execute(
-                """INSERT INTO coaching_outputs(id,dedupe_key,job_id,chat_id,message_thread_id,author_user_id,
-                    request_message_id,request_checksum,source_id,consent_version,mode,kind,text,source_proofs,created_at,expires_at,experiment_id)
-                    VALUES(%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s::jsonb,%s,%s,%s)
-                    ON CONFLICT(dedupe_key) DO NOTHING RETURNING id""",
-                (uuid4().hex,"job:"+job.id,job.id,*self._key(job.author_user_id),job.telegram_message_id,
-                 job.source_checksum,job.source_id,job.consent_version,job.mode,kind,text,_proof_json(source_proofs),
-                 at,min(job_expiry,at+timedelta(seconds=self.transient_ttl_seconds)),experiment_id),
-            ).fetchone()
-            return row[0] if row else None
+            identifiers=[]
+            for index,text in enumerate(texts):
+                identifier=uuid4().hex
+                part_experiments=tuple(item for item,part in links if part==index)
+                self.conn.execute(
+                    """INSERT INTO coaching_outputs(id,dedupe_key,job_id,chat_id,message_thread_id,author_user_id,
+                        request_message_id,request_checksum,source_id,consent_version,mode,kind,text,source_proofs,
+                        created_at,expires_at,experiment_id,bundle_id,part_index)
+                        VALUES(%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s::jsonb,%s,%s,%s,%s,%s)""",
+                    (identifier,f"job:{job.id}:{index}",job.id,*self._key(job.author_user_id),job.telegram_message_id,
+                     job.source_checksum,job.source_id,job.consent_version,job.mode,kind,text,_proof_json(source_proofs),
+                     at,min(job_expiry,at+timedelta(seconds=self.transient_ttl_seconds)),
+                     part_experiments[0] if part_experiments else None,"job:"+job.id,index),
+                )
+                for experiment in part_experiments:
+                    self.conn.execute("INSERT INTO coaching_output_experiments(output_id,experiment_id) VALUES(%s,%s)",
+                                      (identifier,experiment))
+                identifiers.append(identifier)
+            return tuple(identifiers)
 
     def enqueue_control_output(self, normalized, text: str, *, disclosure=False, now=None) -> str | None:
         message = self.authenticated_message(normalized)
@@ -506,13 +564,14 @@ class CoachRepository:
         with self.author_lock(message.author_user_id, require_enabled=False):
             self.ensure_participant(message)
             at = _now(now)
+            identifier=uuid4().hex
             row = self.conn.execute(
                 """INSERT INTO coaching_outputs(id,dedupe_key,chat_id,message_thread_id,author_user_id,
-                       request_message_id,mode,kind,text,disclosure,created_at,expires_at)
-                   VALUES(%s,%s,%s,%s,%s,%s,'control','control',%s,%s,%s,%s)
+                       request_message_id,mode,kind,text,disclosure,created_at,expires_at,bundle_id)
+                   VALUES(%s,%s,%s,%s,%s,%s,'control','control',%s,%s,%s,%s,%s)
                    ON CONFLICT(dedupe_key) DO NOTHING RETURNING id""",
-                (uuid4().hex,f"control:{message.telegram_update_id}",*self._key(message.author_user_id),
-                 message.telegram_message_id,text,disclosure,at,at+timedelta(seconds=self.transient_ttl_seconds)),
+                (identifier,f"control:{message.telegram_update_id}",*self._key(message.author_user_id),
+                 message.telegram_message_id,text,disclosure,at,at+timedelta(seconds=self.transient_ttl_seconds),identifier),
             ).fetchone()
             return row[0] if row else None
 
@@ -524,23 +583,30 @@ class CoachRepository:
                 "WHERE chat_id=%s AND message_thread_id=%s AND status='sending' AND lease_until<%s",
                 (self.chat_id,self.message_thread_id,at),
             )
+            self._cancel_failed_bundle_tails(scope=(self.chat_id,self.message_thread_id))
             row = self.conn.execute(
-                """WITH candidate AS (SELECT id FROM coaching_outputs WHERE chat_id=%s AND message_thread_id=%s
-                   AND status='pending' AND expires_at>%s ORDER BY created_at,id FOR UPDATE SKIP LOCKED LIMIT 1)
+                """WITH candidate AS (SELECT pending.id FROM coaching_outputs pending WHERE chat_id=%s AND message_thread_id=%s
+                   AND status='pending' AND expires_at>%s AND NOT EXISTS (
+                     SELECT 1 FROM coaching_outputs earlier WHERE earlier.bundle_id=pending.bundle_id
+                       AND earlier.part_index<pending.part_index AND earlier.status<>'sent')
+                   ORDER BY created_at,bundle_id,part_index FOR UPDATE SKIP LOCKED LIMIT 1)
                    UPDATE coaching_outputs o SET status='sending',lease_token=%s,lease_until=%s
                    FROM candidate WHERE o.id=candidate.id
                    RETURNING o.id,o.chat_id,o.message_thread_id,o.author_user_id,o.text,o.kind,o.mode,
                      o.source_proofs,o.consent_version,o.lease_token,o.job_id,o.request_message_id,
-                     o.request_checksum,o.source_id,o.disclosure,o.experiment_id""",
+                     o.request_checksum,o.source_id,o.disclosure,o.experiment_id,o.bundle_id,o.part_index,
+                     ARRAY(SELECT e.experiment_id FROM coaching_output_experiments e WHERE e.output_id=o.id ORDER BY e.experiment_id)""",
                 (self.chat_id,self.message_thread_id,at,uuid4().hex,at+timedelta(seconds=lease_seconds)),
             ).fetchone()
             if not row:
                 return None
             data = list(row)
             data[7] = tuple(SourceProof(**item) for item in data[7])
+            data[-1]=tuple(data[-1])
             return CoachOutput(*data)
 
-    def deliver_output(self, output: CoachOutput, sender_callback: Callable[[CoachOutput],dict], *, now=None) -> str:
+    def deliver_output(self, output: CoachOutput, sender_callback: Callable[[CoachOutput],dict], *,
+                       now=None, on_sent: Callable[[CoachOutput,dict],None] | None = None) -> str:
         """Lock permission + exact sources through the short synchronous send.
 
         A revoke waits for an already-in-flight HTTP send, and blocks all future
@@ -553,7 +619,7 @@ class CoachRepository:
             with self.author_lock(output.author_user_id, require_enabled=output.mode != "control"):
                 row = self.conn.execute(
                     "SELECT text,source_proofs,status,lease_token,expires_at,lease_until,chat_id,message_thread_id,author_user_id,"
-                    "mode,kind,consent_version,request_message_id,request_checksum,source_id,job_id,disclosure,experiment_id "
+                    "mode,kind,consent_version,request_message_id,request_checksum,source_id,job_id,disclosure,experiment_id,bundle_id,part_index "
                     "FROM coaching_outputs WHERE id=%s FOR UPDATE",
                     (output.id,),
                 ).fetchone()
@@ -561,9 +627,17 @@ class CoachRepository:
                     return "cancelled"
                 bound = (output.chat_id,output.message_thread_id,output.author_user_id,output.mode,output.kind,
                          output.consent_version,output.request_message_id,output.request_checksum,output.source_id,
-                         output.job_id,output.disclosure,output.experiment_id)
+                         output.job_id,output.disclosure,output.experiment_id,output.bundle_id,output.part_index)
                 allowed = (row[4]>_now(now) and row[5]>_now(now) and row[0]==output.text
                            and tuple(row[6:])==bound and row[1]==json.loads(_proof_json(output.source_proofs)))
+                experiments=tuple(r[0] for r in self.conn.execute(
+                    "SELECT experiment_id FROM coaching_output_experiments WHERE output_id=%s ORDER BY experiment_id",(output.id,),
+                ).fetchall())
+                allowed=allowed and experiments==output.experiment_ids
+                allowed=allowed and not self.conn.execute(
+                    "SELECT 1 FROM coaching_outputs WHERE bundle_id=%s AND part_index<%s AND status<>'sent' LIMIT 1",
+                    (output.bundle_id,output.part_index),
+                ).fetchone()
                 if output.mode!="control":
                     permission = self.permissions(output.author_user_id)
                     current = self.conn.execute(
@@ -578,12 +652,8 @@ class CoachRepository:
                             current_source_id=output.source_id,allow_current_only=output.mode=="direct")
                     elif output.mode!="direct" and output.kind!="notice":
                         allowed = False
-                    if output.mode in {"weekly_review","track"} and output.kind!="notice":
-                        confirmed=self.conn.execute("SELECT public_confirmed FROM coach_jobs WHERE id=%s",(output.job_id,)).fetchone()
-                        allowed=allowed and bool(confirmed and confirmed[0])
-                    if output.experiment_id is not None:
-                        allowed=allowed and self._prepared_experiment_valid(
-                            output.author_user_id,output.experiment_id,output.source_proofs)
+                    allowed=allowed and all(self._prepared_experiment_valid(
+                        output.author_user_id,identifier,output.source_proofs) for identifier in experiments)
                 if not allowed:
                     self._finish_output(output.id,"cancelled")
                     return "cancelled"
@@ -593,12 +663,18 @@ class CoachRepository:
                     self._finish_output(output.id,"uncertain")
                     return "uncertain"
                 telegram_id = sent.get("message_id") if isinstance(sent,dict) else None
+                if on_sent is not None:
+                    try:
+                        with self.conn.transaction():
+                            on_sent(output,sent if isinstance(sent,dict) else {})
+                    except Exception as exc:
+                        logger.warning("Coach delivered-context recording failed: %s",type(exc).__name__)
                 self._finish_output(output.id,"sent",telegram_id if type(telegram_id) is int else None)
-                if output.experiment_id is not None:
+                for identifier in experiments:
                     self.conn.execute(
                         "UPDATE coach_episodes SET status='offered' WHERE id=%s AND chat_id=%s "
                         "AND message_thread_id=%s AND author_user_id=%s AND status='prepared' AND is_active",
-                        (output.experiment_id,*self._key(output.author_user_id)),
+                        (identifier,*self._key(output.author_user_id)),
                     )
                 if output.disclosure:
                     self.conn.execute(
@@ -613,22 +689,41 @@ class CoachRepository:
             return "cancelled"
 
     def _finish_output(self, identifier, status, telegram_id=None):
-        self.conn.execute(
+        row=self.conn.execute(
             "UPDATE coaching_outputs SET status=%s,text=NULL,source_proofs='[]'::jsonb,request_checksum=NULL,source_id=NULL,"
-            "lease_token=NULL,lease_until=NULL,telegram_message_id=%s WHERE id=%s AND status IN ('pending','sending')",
+            "lease_token=NULL,lease_until=NULL,telegram_message_id=%s WHERE id=%s AND status IN ('pending','sending') RETURNING bundle_id",
             (status,telegram_id,identifier),
+        ).fetchone()
+        if status!="sent" and row:
+            self._cancel_failed_bundle_tails(bundle_id=row[0])
+
+    def _cancel_failed_bundle_tails(self, *, bundle_id=None, scope=None):
+        restriction,params="",()
+        if bundle_id is not None:
+            restriction=" AND pending.bundle_id=%s";params=(bundle_id,)
+        elif scope is not None:
+            restriction=" AND pending.chat_id=%s AND pending.message_thread_id=%s";params=tuple(scope)
+        self.conn.execute(
+            """UPDATE coaching_outputs pending SET status='cancelled',text=NULL,source_proofs='[]'::jsonb,
+               request_checksum=NULL,source_id=NULL,lease_token=NULL,lease_until=NULL
+               WHERE pending.status IN ('pending','sending') AND EXISTS (
+                 SELECT 1 FROM coaching_outputs failed WHERE failed.bundle_id=pending.bundle_id
+                   AND failed.part_index<pending.part_index AND failed.status IN ('cancelled','uncertain','expired'))"""+restriction,params,
         )
 
     def cancel_output(self, output: CoachOutput, reason: str = "feature_disabled") -> bool:
         if (output.chat_id,output.message_thread_id)!=(self.chat_id,self.message_thread_id):
             return False
         with self.conn.transaction():
-            return self.conn.execute(
+            row=self.conn.execute(
                 "UPDATE coaching_outputs SET status='cancelled',text=NULL,source_proofs='[]'::jsonb,"
                 "request_checksum=NULL,source_id=NULL,lease_token=NULL,lease_until=NULL "
-                "WHERE id=%s AND lease_token=%s AND status='sending'",
+                "WHERE id=%s AND lease_token=%s AND status='sending' RETURNING bundle_id",
                 (output.id,output.lease_token),
-            ).rowcount==1
+            ).fetchone()
+            if row:
+                self._cancel_failed_bundle_tails(bundle_id=row[0])
+            return row is not None
 
     def _prepared_experiment_valid(self, author_user_id: int, experiment_id: str,
                                    output_proofs: Sequence[SourceProof]) -> bool:
@@ -793,6 +888,28 @@ class CoachRepository:
             return self.set_experiment_status(author_user_id=message.author_user_id,experiment_id=experiment_id,
                                                status=status,source_proofs=[proof])
 
+    def feedback_candidates(self, message: ArchiveMessage) -> tuple[str,...]:
+        """Resolve only this participant's delivered experiments, never another person's reply."""
+        with self.author_lock(message.author_user_id):
+            params=self._key(message.author_user_id)
+            rows=[]
+            if message.reply_to_message_id is not None:
+                rows=self.conn.execute(
+                    "SELECT e.id,e.source_proofs FROM coach_episodes e JOIN coaching_output_experiments l ON l.experiment_id=e.id "
+                    "JOIN coaching_outputs o ON o.id=l.output_id WHERE e.chat_id=%s AND e.message_thread_id=%s "
+                    "AND e.author_user_id=%s AND e.is_active AND e.status NOT IN ('prepared','retired') "
+                    "AND o.status='sent' AND o.telegram_message_id=%s ORDER BY e.id",
+                    (*params,message.reply_to_message_id),
+                ).fetchall()
+            if not rows:
+                rows=self.conn.execute(
+                    "SELECT id,source_proofs FROM coach_episodes WHERE chat_id=%s AND message_thread_id=%s "
+                    "AND author_user_id=%s AND episode_type='experiment' AND is_active "
+                    "AND status IN ('offered','accepted') ORDER BY observed_at DESC,id",params,
+                ).fetchall()
+            return tuple(row[0] for row in rows if self._refresh_episode_proofs(
+                message.author_user_id,tuple(SourceProof(**p) for p in row[1])))
+
     def maintenance(self, *, now=None) -> dict[str,int]:
         """Scrub all expired transient payloads in this explicitly bound bot DB.
 
@@ -812,6 +929,7 @@ class CoachRepository:
                 "WHERE (expires_at<=%s AND status IN ('pending','sending')) "
                 "OR (status='sending' AND lease_until<%s)",(at,at),
             ).rowcount
+            self._cancel_failed_bundle_tails()
             self.conn.execute("UPDATE coach_message_versions SET checksum=NULL WHERE expires_at<=%s",(at,))
             self.conn.execute("DELETE FROM coach_ingest_receipts WHERE received_at<%s",(at-timedelta(days=30),))
             self.conn.execute(

@@ -64,13 +64,19 @@ class SyntheticProvider:
                 "source_id": source["source_id"], "checksum": source["checksum"]}
         result = {"facts": [fact], "hypotheses": [], "risk_flags": [],
                   "first_time_claim": False, "recurring_claim": False}
-        if context["mode"] in {"track", "weekly_review"}:
-            result.update(action="TRACK" if context["mode"] == "track" else "REVIEW",
-                          gaps=["limited_selection"], next_experiment=None)
+        if context["phase"] in {"assessment", "index"}:
+            result.update(search_terms=[])
         else:
-            result.update(action="SILENCE" if self.silent else "ONE_QUESTION", eligible_report=True,
-                          search_terms=[], question=None if self.silent else "Какой результат ты заметил?",
-                          experiment=None)
+            if context["mode"] in {"track", "weekly_review"}:
+                text = "Персональный трек: " + source["text"]
+            elif source.get("is_current_only"):
+                text = "Разберём только текущий запрос. Какой результат ты заметил?"
+            else:
+                text = "Какой результат ты заметил?"
+            refs = [{"source_id": source["source_id"], "checksum": source["checksum"]}]
+            result.update(action="SILENCE" if self.silent else "RESPOND",
+                          messages=[] if self.silent else [{"text": text, "source_refs": refs}],
+                          experiments=[], gaps=[])
         return ProviderResponse(json.dumps(result, ensure_ascii=False), 100, 80, "synthetic-model")
 
 
@@ -138,7 +144,6 @@ def pilot(dedicated_database, monkeypatch):
 
         def grants(*commands):
             intake("/privacy")
-            assert repo.permissions(AUTHOR).disclosure_delivered
             for command in commands:
                 intake(command)
 
@@ -147,14 +152,12 @@ def pilot(dedicated_database, monkeypatch):
                               drain=drain, intake=intake, grants=grants, at=at)
 
 
-def test_complete_opt_in_archive_auto_direct_track_and_deletion(pilot):
-    first, result = pilot.intake("Отчёт: ещё не разрешал хранение")
-    assert not result.archived and not result.queued and pilot.provider.calls == []
-    assert pilot.conn.execute("SELECT count(*) FROM source_archive_revisions").fetchone()[0] == 0
-    pilot.grants("/archive_on", "/history_on", "/direct_on", "/auto_on", "/track_start")
-    assert pilot.repo.permissions(AUTHOR).automatic_allowed
+def test_complete_group_default_archive_auto_direct_track_and_deletion(pilot):
     report, result = pilot.intake("Отчёт: проверил договорённость коротким звонком.")
     assert result.archived and result.queued
+    assert pilot.repo.permissions(AUTHOR).automatic_allowed
+    assert pilot.repo.permissions(AUTHOR).track_status == "active"
+    assert pilot.conn.execute("SELECT grant_basis,actor_user_id FROM source_archive_consents").fetchone() == ("group_default", None)
     assert "Какой результат" in pilot.sender.sent[-1].text
     assert pilot.sender.sent[-1].source_proofs
     assert len(pilot.provider.calls) == 2
@@ -164,29 +167,30 @@ def test_complete_opt_in_archive_auto_direct_track_and_deletion(pilot):
     _, result = pilot.intake("/ask помоги разобрать мой следующий шаг")
     assert result.queued and pilot.sender.sent[-1].mode == "direct"
     before = len(pilot.provider.calls)
-    pilot.intake("/track 30")
-    assert len(pilot.provider.calls) == before and "/track 30 confirm" in pilot.sender.sent[-1].text
-    pilot.intake("/track 30 confirm")
+    pilot.intake("Напарник, покажи мой трек за 30 дней")
     assert len(pilot.provider.calls) == before + 1
     assert pilot.sender.sent[-1].mode == "track"
-    assert "Персональный трек" in pilot.sender.sent[-1].text
-    assert "договорённость" in pilot.sender.sent[-1].text
+    track_text = "\n".join(item.text for item in pilot.sender.sent if item.mode == "track")
+    assert "Персональный трек" in track_text
+    assert "договорённость" in track_text
 
-    pilot.intake("/forget")
+    pilot.intake("Напарник, забудь мои сообщения")
     assert pilot.conn.execute("SELECT count(*) FROM source_archive_revisions WHERE available_text IS NOT NULL").fetchone()[0] == 0
     assert pilot.repo.list_episodes(author_user_id=AUTHOR) == []
     assert pilot.repo.permissions(AUTHOR).track_status == "off"
+    assert not pilot.repo.permissions(AUTHOR).retain_source
+    assert pilot.conn.execute("SELECT count(*) FROM coach_dialogue_turns WHERE text IS NOT NULL").fetchone()[0] == 0
     for table in ("events", "messages", "outbox", "users", "chats"):
         assert pilot.conn.execute(f"SELECT count(*) FROM {table}").fetchone()[0] == 0
 
 
 def test_direct_only_leaves_no_archive_or_durable_episodes(pilot):
-    pilot.grants("/direct_on")
+    pilot.intake("Напарник, не запоминай мои сообщения")
     _, result = pilot.intake("/ask у меня один вопрос о следующем шаге")
     assert result.queued and not result.archived
     assert pilot.sender.sent[-1].mode == "direct"
     assert "только текущий запрос" in pilot.sender.sent[-1].text
-    assert pilot.conn.execute("SELECT count(*) FROM source_archive_revisions").fetchone()[0] == 0
+    assert pilot.conn.execute("SELECT count(*) FROM source_archive_revisions WHERE available_text IS NOT NULL").fetchone()[0] == 0
     assert pilot.conn.execute("SELECT count(*) FROM coach_episodes").fetchone()[0] == 0
     assert pilot.conn.execute("SELECT count(*) FROM coach_jobs WHERE current_text IS NOT NULL").fetchone()[0] == 0
 
@@ -250,7 +254,7 @@ def test_ambiguous_send_has_no_blind_retry(pilot):
 
 
 def test_unconfigured_scopes_and_unconsented_nested_text_are_never_stored(pilot):
-    pilot.grants("/direct_on")
+    pilot.intake("Напарник, не запоминай мои сообщения")
     _, wrong = pilot.intake("PRIVATE_OTHER_TOPIC", topic=18)
     assert wrong.status == "ignored"
     pilot.intake("/ask мой собственный короткий вопрос", reply_to_message={
@@ -258,7 +262,7 @@ def test_unconfigured_scopes_and_unconsented_nested_text_are_never_stored(pilot)
     })
     assert pilot.provider.calls
     assert all("PRIVATE_OTHER" not in json.dumps(call, ensure_ascii=False) for call in pilot.provider.calls)
-    assert pilot.conn.execute("SELECT count(*) FROM source_archive_revisions").fetchone()[0] == 0
+    assert pilot.conn.execute("SELECT count(*) FROM source_archive_revisions WHERE available_text IS NOT NULL").fetchone()[0] == 0
 
 
 def test_webhook_ack_follows_atomic_archive_and_queue_commit(pilot, monkeypatch):
@@ -320,12 +324,12 @@ def test_disabled_scope_stops_jobs_but_accepts_revocation_controls(pilot):
     _, result = pilot.intake("Поправка после отключения.", edit=True, message_id=event["message"]["message_id"])
     assert result.status == "disabled"
     pilot.intake("/forget")
-    assert "Удалены" in pilot.sender.sent[-1].text
+    assert "Удалил твои источники" in pilot.sender.sent[-1].text
     assert pilot.conn.execute("SELECT count(*) FROM source_archive_revisions WHERE available_text IS NOT NULL").fetchone()[0] == 0
 
 
 def test_direct_only_edit_before_original_never_reaches_ai(pilot):
-    pilot.grants("/direct_on")
+    pilot.intake("Напарник, не запоминай мои сообщения")
     original = pilot.update("/ask устаревший вариант запроса")
     edit = pilot.update("исправленный вариант", edit=True, message_id=original["message"]["message_id"])
     edit["edited_message"]["date"] = original["message"]["date"]
@@ -335,5 +339,5 @@ def test_direct_only_edit_before_original_never_reaches_ai(pilot):
     assert not first.queued and not later.queued
     assert pilot.provider.calls == []
     assert pilot.conn.execute("SELECT count(*) FROM coach_jobs").fetchone()[0] == 0
-    assert pilot.conn.execute("SELECT count(*) FROM source_archive_revisions").fetchone()[0] == 0
-    assert pilot.conn.execute("SELECT checksum FROM coach_message_versions").fetchone() == (None,)
+    assert pilot.conn.execute("SELECT count(*) FROM source_archive_revisions WHERE available_text IS NOT NULL").fetchone()[0] == 0
+    assert pilot.conn.execute("SELECT checksum FROM coach_message_versions WHERE telegram_message_id=%s", (original["message"]["message_id"],)).fetchone() == (None,)

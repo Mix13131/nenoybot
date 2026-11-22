@@ -31,7 +31,7 @@ class CoachConfig:
     aliases: tuple[str, ...] = ("напарник",)
     chat_id: int | None = None
     topic_ids: tuple[int, ...] = ()
-    archive_policy: str | None = None
+    archive_policy: str | None = "until_author_deletes"
     transient_ttl_seconds: int = 86400
     public_base_url: str | None = None
     ai_model: str | None = None
@@ -60,8 +60,8 @@ class CoachConfig:
         )
 
 
-def _bool(env: Mapping[str, str], key: str) -> bool:
-    value = env.get(key, "0").strip().lower()
+def _bool(env: Mapping[str, str], key: str, *, default: bool = False) -> bool:
+    value = env.get(key, "1" if default else "0").strip().lower()
     if value not in {"0", "1", "false", "true"}:
         raise CoachConfigurationError(f"{key}: expected 0 or 1")
     return value in {"1", "true"}
@@ -101,7 +101,14 @@ def load_coach_config(env: Mapping[str, str] | None = None) -> CoachConfig:
     environment = get("COACH_ENV") or "development"
     if environment not in {"development", "test", "production"}:
         raise CoachConfigurationError("COACH_ENV: unknown environment")
-    enabled, ai_enabled = _bool(env, "COACH_ENABLED"), _bool(env, "COACH_AI_ENABLED")
+    # A configured dedicated bot serves its purpose immediately. Empty/import
+    # environments stay inactive, and explicit 0 remains the operator kill switch.
+    core_configured = all(get(key) for key in (
+        "COACH_DATABASE_URL", "COACH_TELEGRAM_BOT_TOKEN", "COACH_BOT_USERNAME",
+        "COACH_WEBHOOK_SECRET", "COACH_CHAT_ID", "COACH_TOPIC_IDS",
+    ))
+    enabled = _bool(env, "COACH_ENABLED", default=core_configured)
+    ai_enabled = _bool(env, "COACH_AI_ENABLED", default=enabled)
     token = get("COACH_TELEGRAM_BOT_TOKEN")
     bot_id = _integer(env, "COACH_BOT_USER_ID")
     if token:
@@ -134,8 +141,8 @@ def load_coach_config(env: Mapping[str, str] | None = None) -> CoachConfig:
                     (get("COACH_ALIASES") or display_name).split(",") if item.strip()))
     if len(display_name) > 64 or any(len(x) > 64 for x in aliases) or len(aliases) > 8:
         raise CoachConfigurationError("COACH_DISPLAY_NAME/COACH_ALIASES: too long")
-    policy = get("COACH_ARCHIVE_POLICY")
-    if policy is not None and policy != "until_author_deletes":
+    policy = get("COACH_ARCHIVE_POLICY") or "until_author_deletes"
+    if policy != "until_author_deletes":
         raise CoachConfigurationError("COACH_ARCHIVE_POLICY: unsupported explicit policy")
     secret = get("COACH_WEBHOOK_SECRET")
     if secret and not re.fullmatch(r"[A-Za-z0-9_-]{32,256}", secret):

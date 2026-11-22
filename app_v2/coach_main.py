@@ -46,6 +46,9 @@ def create_app(config: CoachConfig | None = None, *, connection_factory: Callabl
                 repo.assert_identity()
                 conn.execute("SELECT 1 FROM coach_jobs LIMIT 0")
                 conn.execute("SELECT 1 FROM source_archive_revisions LIMIT 0")
+                conn.execute("SELECT 1 FROM coach_dialogue_turns LIMIT 0")
+                conn.execute("SELECT grant_basis FROM source_archive_consents LIMIT 0")
+                conn.execute("SELECT bundle_id,part_index FROM coaching_outputs LIMIT 0")
                 if config.ai_enabled:
                     conn.execute("SELECT 1 FROM coach_budget_days LIMIT 0")
                     conn.execute("SELECT 1 FROM coach_ai_operations LIMIT 0")

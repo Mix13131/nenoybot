@@ -37,24 +37,29 @@ class SyntheticProvider:
         self.calls.append(kwargs)
         payload = json.loads(kwargs['messages'][-1]['content'])
         source = payload['sources'][0]
-        silent = payload['mode'] == 'index'
+        extraction = payload['phase'] in {'assessment', 'index'}
+        refs = [{'source_id': source['source_id'], 'checksum': source['checksum']}]
         experiment = None
-        if self.propose_experiment and len(self.calls) == 2:
+        if self.propose_experiment and not extraction:
             experiment = {
                 'instruction': 'Запиши один небольшой следующий шаг в черновик.',
                 'observation': 'Заметь, стало ли понятнее, с чего начать.',
                 'minutes': 5, 'reversible': True, 'voluntary': True, 'risk_level': 'low',
-                'source_refs': [{'source_id': source['source_id'], 'checksum': source['checksum']}],
+                'source_refs': refs, 'message_index': 0,
             }
         result = {
             'facts': [{'kind': 'action', 'quote': source['text'][:100],
                        'source_id': source['source_id'], 'checksum': source['checksum']}],
             'hypotheses': [], 'risk_flags': [], 'first_time_claim': False,
-            'recurring_claim': False, 'eligible_report': True, 'search_terms': [],
-            'action': 'SILENCE' if silent else 'ONE_EXPERIMENT' if experiment else 'ONE_QUESTION',
-            'question': None if silent or experiment else 'Какой результат ты заметил?',
-            'experiment': experiment,
+            'recurring_claim': False,
         }
+        if extraction:
+            result['search_terms'] = []
+        else:
+            text = (experiment['instruction'] + ' ' + experiment['observation']
+                    if experiment else 'Какой результат ты заметил?')
+            result.update(action='RESPOND', messages=[{'text': text, 'source_refs': refs}],
+                          experiments=[experiment] if experiment else [], gaps=[])
         return ProviderResponse(json.dumps(result, ensure_ascii=False), 100, 80, 'synthetic-review-model')
 
 
@@ -108,6 +113,9 @@ def reviewed_pilot(monkeypatch):
                 archive = SourceArchiveRepository(conn)
 
                 def grant(mode):
+                    # Explicit per-author settings select the original race
+                    # path. No activation/disclosure/publication receipt is
+                    # needed under the configured group's default policy.
                     history = mode != 'direct_only'
                     version = archive.set_permissions(
                         chat_id=CHAT, message_thread_id=TOPIC, author_user_id=AUTHOR,
@@ -118,8 +126,8 @@ def reviewed_pilot(monkeypatch):
                     )
                     conn.execute(
                         'INSERT INTO coach_participant_state(chat_id,message_thread_id,author_user_id,'
-                        'disclosure_version,disclosure_delivered_at,track_status) VALUES(%s,%s,%s,1,%s,%s)',
-                        (CHAT, TOPIC, AUTHOR, at - timedelta(minutes=1), 'active' if history else 'off'),
+                        'track_status) VALUES(%s,%s,%s,%s)',
+                        (CHAT, TOPIC, AUTHOR, 'active' if history else 'off'),
                     )
                     return version
 

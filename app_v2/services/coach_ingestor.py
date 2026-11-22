@@ -59,6 +59,10 @@ def ingest_coach_update(update: dict[str, Any], *, conn, config: CoachConfig) ->
         if not repo.claim_ingest(message.telegram_update_id):
             return CoachIngestResult("duplicate")
         scope_enabled = repo.scope_enabled()
+        if config.enabled and scope_enabled:
+            # The configured group's policy is the default. This is an explicit
+            # system policy record, never a fabricated personal opt-in.
+            repo.bootstrap_group_default(normalized)
         # Any received edit invalidates ephemeral direct responses even when
         # long-lived archival is off; unrelated unconsented text is not stored.
         if message.is_edited:
@@ -70,7 +74,8 @@ def ingest_coach_update(update: dict[str, Any], *, conn, config: CoachConfig) ->
         archived = captured is not None and captured.status in {"archived", "duplicate"}
         if not message.is_edited and not message.contains_external_content:
             control = CoachControls(repo, archive_policy=config.archive_policy,
-                                    bot_username=config.bot_username, aliases=config.aliases).handle(normalized)
+                                    bot_username=config.bot_username, aliases=config.aliases).handle(
+                                        normalized, addressed=is_coach_addressed(normalized, config))
             if control.handled:
                 if control.reply_text:
                     repo.enqueue_control_output(normalized, control.reply_text, disclosure=control.disclosure)

@@ -37,6 +37,8 @@ def test_disclosure_explains_scope_publication_lifetime_and_deletion_limits():
         transient_ttl_seconds=86400
     text=CoachControls(FakeRepo(),archive_policy="until_author_deletes").disclosure_text()
     for phrase in ("только ваши новые сообщения", "этой теме этой группы", "до вашего удаления",
-                   "Ответы по запросу можно включить без архива", "виден участникам", "24 ч",
-                   "не удаляет сообщения Telegram", "прежние резервные копии", "ещё раз"):
+                   "Ответы по запросу могут работать без архива", "виден участникам", "24 ч",
+                   "не удаляет сообщения Telegram", "прежние резервные копии", "включены по умолчанию",
+                   "Мои доставленные ответы тоже сохраняются", "удалении трека или памяти"):
         assert phrase in text
+    assert "confirm" not in text and "отправьте" not in text

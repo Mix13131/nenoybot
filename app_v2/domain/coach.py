@@ -1,4 +1,4 @@
-"""Small contracts for the isolated, individually authorized coach runtime."""
+"""Small contracts for the isolated coach with explicit group-default provenance."""
 from __future__ import annotations
 
 from dataclasses import dataclass
@@ -22,6 +22,7 @@ class CoachPermissions:
     direct_request_group_reply: bool = False
     track_status: str = "off"
     disclosure_delivered: bool = False
+    grant_basis: str = "self"
 
     @property
     def automatic_allowed(self) -> bool:
@@ -66,6 +67,9 @@ class CoachOutput:
     source_id: str | None = None
     disclosure: bool = False
     experiment_id: str | None = None
+    bundle_id: str | None = None
+    part_index: int = 0
+    experiment_ids: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)

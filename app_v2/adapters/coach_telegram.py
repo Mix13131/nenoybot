@@ -42,7 +42,7 @@ class CoachTelegramClient:
 
     def send(self, output):
         text = output.text
-        if not isinstance(text, str) or not text.strip() or len(text) > 4096:
+        if not isinstance(text, str) or not text.strip() or len(text.encode("utf-16-le")) // 2 > 4096:
             raise CoachTelegramError("invalid_output_text")
         if type(output.chat_id) is not int or output.chat_id >= 0:
             raise CoachTelegramError("invalid_output_scope")
@@ -99,16 +99,8 @@ class CoachTelegramClient:
                 "last_error_present": bool(info.get("last_error_message"))}
 
     def configure_commands(self):
-        result = self._call("setMyCommands", {"commands": [
-            {"command": "help", "description": "Возможности и условия личного подключения"},
-            {"command": "settings", "description": "Мои разрешения и управление памятью"},
-            {"command": "ask", "description": "Разобрать мой вопрос или отчёт"},
-            {"command": "track", "description": "Мой трек за 7 или 30 дней"},
-            {"command": "review", "description": "Обзор моих действий за период"},
-            {"command": "status", "description": "Мои разрешения и состояние трека"},
-            {"command": "auto_off", "description": "Остановить самостоятельные комментарии"},
-            {"command": "stop", "description": "Остановить самостоятельные комментарии и трек"},
-            {"command": "forget", "description": "Удалить мой архив и трек в этой теме"},
-        ]})
+        # Natural language is the participant interface. Existing slash aliases
+        # remain compatible, but installation does not present a command form.
+        result = self._call("setMyCommands", {"commands": []})
         if result is not True:
             raise CoachTelegramError("telegram_commands_rejected")

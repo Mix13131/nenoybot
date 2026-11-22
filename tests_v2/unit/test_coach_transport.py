@@ -55,7 +55,7 @@ def test_telegram_send_uses_exact_topic_reply_and_no_parse_mode_or_previews(capl
 
 @pytest.mark.parametrize('changes', [
     {'chat_id': 123}, {'chat_id': True}, {'message_thread_id': 0}, {'message_thread_id': True},
-    {'text': ''}, {'text': 'x' * 4097}, {'request_message_id': -1},
+    {'text': ''}, {'text': 'x' * 4097}, {'text': '🙂' * 2049}, {'request_message_id': -1},
     {'request_message_id': True}, {'request_message_id': '123'},
 ])
 def test_invalid_delivery_parameters_never_reach_http(changes):
@@ -67,6 +67,17 @@ def test_invalid_delivery_parameters_never_reach_http(changes):
         with pytest.raises(CoachTelegramError):
             CoachTelegramClient(TOKEN, client=http).send(output(**changes))
     assert calls == []
+
+
+def test_telegram_setup_does_not_present_a_command_driven_interface():
+    calls = []
+    def handle(request):
+        calls.append(request)
+        return httpx.Response(200, json={'ok': True, 'result': True})
+    with httpx.Client(transport=httpx.MockTransport(handle)) as http:
+        CoachTelegramClient(TOKEN, client=http).configure_commands()
+    assert len(calls) == 1 and calls[0].url.path.endswith('/setMyCommands')
+    assert json.loads(calls[0].content) == {'commands': []}
 
 
 @pytest.mark.parametrize('response', [
