@@ -12,7 +12,7 @@ _ROOT = Path(__file__).resolve().parents[2]
 _SQL = _ROOT / 'app_v2/db/migrations/0010_source_archive.sql'
 _TABLES = (
     'source_archive_scopes', 'source_archive_consents', 'source_archive_consent_versions',
-    'source_archive_messages', 'source_archive_revisions',
+    'source_archive_deletions', 'source_archive_messages', 'source_archive_revisions',
 )
 
 
@@ -63,6 +63,7 @@ def test_archive_explicit_empty_schema_downgrade_preserves_unrelated_tables(isol
         conn.execute('DROP TABLE source_archive_revisions')
         conn.execute('DROP TABLE source_archive_messages')
         conn.execute('DROP TABLE source_archive_consent_versions')
+        conn.execute('DROP TABLE source_archive_deletions')
         conn.execute('DROP TABLE source_archive_consents')
         conn.execute('DROP TABLE source_archive_scopes')
     assert all(conn.execute('SELECT to_regclass(%s)', (table,)).fetchone()[0] is None for table in _TABLES)

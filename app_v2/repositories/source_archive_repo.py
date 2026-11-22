@@ -57,6 +57,7 @@ class DeletionReceipt:
     backups_erased: bool = False
     delivered_messages_erased: bool = False
     legacy_stores_erased: bool = False
+    deletion_intent_recorded: bool = False
 
 
 _SOURCE_COLUMNS = '''r.source_id, r.chat_id, r.message_thread_id, r.author_user_id,
@@ -228,6 +229,14 @@ class SourceArchiveRepository:
                 return ArchiveCapture('duplicate' if existing[3] == 'active' else 'deleted',
                                       existing[0], existing[1], existing[2])
 
+            deleted = self.conn.execute(
+                '''SELECT 1 FROM source_archive_deletions
+                   WHERE chat_id=%s AND message_thread_id=%s AND author_user_id=%s
+                     AND telegram_message_id=%s''', (*key, message.telegram_message_id),
+            ).fetchone()
+            if deleted:
+                return ArchiveCapture('deleted')
+
             self.conn.execute(
                 '''INSERT INTO source_archive_messages(
                        chat_id, message_thread_id, author_user_id, telegram_message_id, occurred_at)
@@ -310,6 +319,19 @@ class SourceArchiveRepository:
                 '''SELECT version, retain_source, updated_at FROM source_archive_consents
                    WHERE chat_id=%s AND message_thread_id=%s AND author_user_id=%s FOR UPDATE''', key,
             ).fetchone()
+            if telegram_message_id is not None:
+                if current is None:
+                    raise ArchivePermissionError('No archive consent record exists for this author/topic')
+                # A delayed webhook may not have a parent row yet. Record the
+                # authenticated author's intent before returning a receipt, so
+                # a future delivery cannot undo a completed forget operation.
+                self.conn.execute(
+                    '''INSERT INTO source_archive_deletions(
+                           chat_id, message_thread_id, author_user_id, telegram_message_id, requested_at)
+                       VALUES (%s, %s, %s, %s, %s)
+                       ON CONFLICT (chat_id, message_thread_id, author_user_id, telegram_message_id)
+                       DO NOTHING''', (*key, telegram_message_id, _time(now)),
+                )
             receipt = self._purge(key, telegram_message_id)
             if telegram_message_id is None and current and current[1]:
                 at = _time(now)
@@ -335,7 +357,10 @@ class SourceArchiveRepository:
                        FROM source_archive_consents
                        WHERE chat_id=%s AND message_thread_id=%s AND author_user_id=%s''', key,
                 )
-            return receipt
+            return DeletionReceipt(
+                receipt.messages, receipt.revisions,
+                deletion_intent_recorded=telegram_message_id is not None,
+            )
 
     @staticmethod
     def _purpose(purpose: str, actor_user_id: int, author_user_id: int) -> str:

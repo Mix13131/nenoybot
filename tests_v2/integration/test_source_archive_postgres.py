@@ -133,6 +133,7 @@ def archive():
             conn.execute("UPDATE source_archive_messages SET latest_source_id=NULL WHERE chat_id=ANY(%s)", (chats,))
             for table in (
                 "source_archive_revisions", "source_archive_messages",
+                "source_archive_deletions",
                 "source_archive_consent_versions", "source_archive_consents", "source_archive_scopes",
             ):
                 conn.execute(f"DELETE FROM {table} WHERE chat_id=ANY(%s)", (chats,))
@@ -609,3 +610,106 @@ def test_reenabled_topic_excludes_messages_received_during_disabled_window(archi
     assert archive.capture(3, at=AT + timedelta(seconds=30)).status == "ignored"
     assert archive.capture(4, at=AT + timedelta(seconds=31)).status == "archived"
     assert {row.telegram_message_id for row in archive.query()} == {1, 4}
+
+
+def test_specific_unseen_forget_records_intent_and_blocks_delayed_capture(archive):
+    archive.scope()
+    archive.grant()
+    receipt = archive.repo.forget_sources(
+        chat_id=archive.chat, message_thread_id=TOPIC, author_user_id=archive.author,
+        actor_user_id=archive.author, telegram_message_id=123,
+        now=AT + timedelta(minutes=1),
+    )
+    assert (receipt.messages, receipt.revisions) == (0, 0)
+    assert receipt.deletion_intent_recorded is True
+    assert not receipt.backups_erased and not receipt.delivered_messages_erased
+    retry = archive.repo.forget_sources(
+        chat_id=archive.chat, message_thread_id=TOPIC, author_user_id=archive.author,
+        actor_user_id=archive.author, telegram_message_id=123,
+        now=AT + timedelta(minutes=2),
+    )
+    assert retry.messages == retry.revisions == 0
+    assert retry.deletion_intent_recorded is True
+    assert archive.conn.execute(
+        "SELECT count(*) FROM source_archive_deletions WHERE chat_id=%s", (archive.chat,),
+    ).fetchone()[0] == 1
+    assert archive.capture(1, message_id=123).status == "deleted"
+    assert archive.capture(1, message_id=123).status == "deleted"
+    assert archive.query(history=True) == []
+    assert archive.capture(2, message_id=124).status == "archived"
+    assert [row.telegram_message_id for row in archive.query()] == [124]
+
+
+def test_specific_unseen_forget_survives_revoke_and_regrant(archive):
+    archive.scope()
+    archive.grant()
+    archive.repo.forget_sources(
+        chat_id=archive.chat, message_thread_id=TOPIC, author_user_id=archive.author,
+        actor_user_id=archive.author, telegram_message_id=123, now=AT,
+    )
+    archive.grant(retain_source=False, now=AT + timedelta(seconds=1))
+    archive.grant(now=AT + timedelta(seconds=2))
+    # Even an adversarial retry claiming a later creation time cannot erase
+    # the durable deletion intent for this exact author/topic/message identity.
+    assert archive.capture(1, message_id=123, at=AT + timedelta(seconds=3)).status == "deleted"
+    assert archive.conn.execute(
+        "SELECT count(*) FROM source_archive_deletions WHERE chat_id=%s", (archive.chat,),
+    ).fetchone()[0] == 1
+    assert archive.query(history=True) == []
+
+
+@pytest.mark.parametrize("other_scope", ["author", "topic", "chat"])
+def test_specific_unseen_forget_does_not_block_other_scope(archive, other_scope):
+    archive.scope()
+    archive.grant()
+    archive.forget(message_id=123)
+    if other_scope == "author":
+        kwargs = {"author": archive.author + 1}
+        archive.grant(**kwargs)
+    elif other_scope == "topic":
+        kwargs = {"topic": TOPIC + 1}
+        archive.scope(**kwargs)
+        archive.grant(**kwargs)
+    else:
+        kwargs = {"chat": archive.chat - 1}
+        archive.scope(**kwargs)
+        archive.grant(**kwargs)
+    assert archive.capture(1, message_id=123, **kwargs).status == "archived"
+    assert archive.query() == []
+    assert [row.telegram_message_id for row in archive.query(**kwargs)] == [123]
+
+
+def test_specific_unseen_forget_requires_existing_participant_consent(archive):
+    archive.scope()
+    with pytest.raises(ArchivePermissionError):
+        archive.forget(message_id=123)
+    assert archive.conn.execute(
+        "SELECT count(*) FROM source_archive_deletions WHERE chat_id=%s", (archive.chat,),
+    ).fetchone()[0] == 0
+
+
+def test_specific_unseen_forget_serializes_before_in_flight_capture(archive):
+    archive.scope()
+    archive.grant()
+    archive.conn.commit()
+    started = Event()
+
+    def capture_other_connection():
+        with archive.psycopg.connect(archive.url) as conn:
+            started.set()
+            return SourceArchiveRepository(conn).capture(normalize_update(archive.update(message_id=123)))
+
+    with ThreadPoolExecutor(max_workers=1) as pool:
+        with archive.conn.transaction():
+            archive.conn.execute(
+                """SELECT 1 FROM source_archive_consents
+                   WHERE chat_id=%s AND message_thread_id=%s AND author_user_id=%s FOR UPDATE""",
+                (archive.chat, TOPIC, archive.author),
+            )
+            future = pool.submit(capture_other_connection)
+            assert started.wait(5)
+            receipt = archive.forget(message_id=123)
+            assert receipt.messages == receipt.revisions == 0
+            assert receipt.deletion_intent_recorded is True
+        assert future.result(timeout=10).status == "deleted"
+    assert archive.query(history=True) == []

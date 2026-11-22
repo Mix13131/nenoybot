@@ -119,6 +119,7 @@ def main(argv: list[str] | None = None) -> int:
 
     first = normalized_message(1, "SYNTHETIC_DELETED_SOURCE_V1")
     second = normalized_message(2, "SYNTHETIC_PRESERVED_SOURCE_V1")
+    unseen = normalized_message(4, "SYNTHETIC_DELAYED_DELETED_SOURCE")
     target = "nenoy_archive_restore_test_" + uuid4().hex
     target_created = False
     result: dict[str, object] = {"status": "PASS", "backup_taken_after_deletion": True,
@@ -151,6 +152,13 @@ def main(argv: list[str] | None = None) -> int:
                                           actor_user_id=author, telegram_message_id=1)
             _check(receipt.messages == receipt.revisions == 1 and not receipt.backups_erased,
                    "Scoped deletion receipt is incorrect")
+            unseen_receipt = repo.forget_sources(
+                chat_id=chat, message_thread_id=topic, author_user_id=author,
+                actor_user_id=author, telegram_message_id=4,
+            )
+            _check(unseen_receipt.messages == unseen_receipt.revisions == 0
+                   and unseen_receipt.deletion_intent_recorded,
+                   "Deletion of an unseen message did not preserve intent")
 
         try:
             admin.execute(sql.SQL("CREATE DATABASE {}").format(sql.Identifier(target)))
@@ -199,14 +207,17 @@ def main(argv: list[str] | None = None) -> int:
                     _check(parent == (True, None), "Restored deleted parent is not tombstoned")
                     replay = repo.capture(first)
                     late_edit = repo.capture(normalized_message(3, "SYNTHETIC_LATE_EDIT", edited=True))
-                    _check(replay.status == late_edit.status == "deleted", "Replay resurrected a deleted source")
+                    delayed = repo.capture(unseen)
+                    _check(replay.status == late_edit.status == delayed.status == "deleted",
+                           "Replay or delayed delivery resurrected a deleted source")
                     _check(restored.execute(
                         "SELECT count(*) FROM source_archive_revisions WHERE chat_id=%s AND source_status='active'",
                         (chat,),
                     ).fetchone()[0] == 1, "Replay changed the active-source count")
                     result.update({"restored_active_sources": 1, "active_text_and_checksum_preserved": True,
                                    "scrubbed_tombstone_preserved": True, "replay_status": replay.status,
-                                   "late_edit_status": late_edit.status})
+                                   "late_edit_status": late_edit.status,
+                                   "unseen_deletion_marker_preserved": delayed.status == 'deleted'})
             result["temporary_dump_removed"] = not directory.exists()
         finally:
             if target_created:

@@ -45,6 +45,19 @@ CREATE TABLE source_archive_consent_versions (
         REFERENCES source_archive_consents(chat_id, message_thread_id, author_user_id)
 );
 
+-- Preserve a participant's deletion request even when the delayed source has
+-- never been received. No source body or inferred author identity is stored.
+CREATE TABLE source_archive_deletions (
+    chat_id BIGINT NOT NULL,
+    message_thread_id BIGINT NOT NULL,
+    author_user_id BIGINT NOT NULL,
+    telegram_message_id BIGINT NOT NULL CHECK (telegram_message_id > 0),
+    requested_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    PRIMARY KEY (chat_id, message_thread_id, author_user_id, telegram_message_id),
+    FOREIGN KEY (chat_id, message_thread_id, author_user_id)
+        REFERENCES source_archive_consents(chat_id, message_thread_id, author_user_id)
+);
+
 CREATE TABLE source_archive_messages (
     chat_id BIGINT NOT NULL,
     message_thread_id BIGINT NOT NULL,
