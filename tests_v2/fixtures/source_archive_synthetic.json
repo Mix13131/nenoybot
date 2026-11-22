@@ -1,0 +1,137 @@
+{
+  "fixture_kind": "synthetic_only",
+  "description": "Invented forum messages. No Telegram account, chat or file reference is real.",
+  "updates": [
+    {
+      "update_id": 990001,
+      "message": {
+        "message_id": 101,
+        "date": 1793491200,
+        "from": {
+          "id": 990101,
+          "is_bot": false,
+          "first_name": "Synthetic A"
+        },
+        "chat": {
+          "id": -990001,
+          "type": "supergroup",
+          "is_forum": true,
+          "title": "Synthetic archive sandbox"
+        },
+        "is_topic_message": true,
+        "message_thread_id": 17,
+        "text": "Учебный отчёт: закончил вымышленную задачу А."
+      }
+    },
+    {
+      "update_id": 990002,
+      "message": {
+        "message_id": 102,
+        "date": 1793491260,
+        "from": {
+          "id": 990101,
+          "is_bot": false,
+          "first_name": "Synthetic A"
+        },
+        "chat": {
+          "id": -990001,
+          "type": "supergroup",
+          "is_forum": true,
+          "title": "Synthetic archive sandbox"
+        },
+        "is_topic_message": true,
+        "message_thread_id": 17,
+        "text": "Обычная учебная беседа, не отчёт."
+      }
+    },
+    {
+      "update_id": 990003,
+      "edited_message": {
+        "message_id": 101,
+        "date": 1793491200,
+        "edit_date": 1793491320,
+        "from": {
+          "id": 990101,
+          "is_bot": false,
+          "first_name": "Synthetic A"
+        },
+        "chat": {
+          "id": -990001,
+          "type": "supergroup",
+          "is_forum": true,
+          "title": "Synthetic archive sandbox"
+        },
+        "is_topic_message": true,
+        "message_thread_id": 17,
+        "text": "Исправление: закончил вымышленную задачу Б."
+      }
+    },
+    {
+      "update_id": 990004,
+      "message": {
+        "message_id": 103,
+        "date": 1793491380,
+        "from": {
+          "id": 990101,
+          "is_bot": false,
+          "first_name": "Synthetic A"
+        },
+        "chat": {
+          "id": -990001,
+          "type": "supergroup",
+          "is_forum": true,
+          "title": "Synthetic archive sandbox"
+        },
+        "is_topic_message": true,
+        "message_thread_id": 17,
+        "caption": "Подпись к синтетической картинке",
+        "photo": [
+          {
+            "file_id": "synthetic-photo-reference",
+            "file_unique_id": "synthetic-photo-unique",
+            "file_size": 1234
+          }
+        ]
+      }
+    },
+    {
+      "update_id": 990005,
+      "message": {
+        "message_id": 104,
+        "date": 1793491440,
+        "from": {
+          "id": 990101,
+          "is_bot": false,
+          "first_name": "Synthetic A"
+        },
+        "chat": {
+          "id": -990001,
+          "type": "supergroup",
+          "is_forum": true,
+          "title": "Synthetic archive sandbox"
+        },
+        "is_topic_message": true,
+        "message_thread_id": 17,
+        "text": "Слова вымышленного третьего лица",
+        "entities": [
+          {
+            "type": "blockquote",
+            "offset": 0,
+            "length": 35
+          }
+        ],
+        "quote": {
+          "text": "DO_NOT_COPY_UNCONSENTED_QUOTE"
+        },
+        "reply_to_message": {
+          "message_id": 999,
+          "from": {
+            "id": 990202,
+            "is_bot": false
+          },
+          "text": "DO_NOT_COPY_UNCONSENTED_REPLY"
+        }
+      }
+    }
+  ]
+}
