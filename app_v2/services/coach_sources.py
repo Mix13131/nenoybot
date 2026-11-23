@@ -37,6 +37,7 @@ class CoachSourceSelection:
             'complete_telegram_history': False,
             'unknown_delivery_gaps': True,
             'media_bytes_analyzed': False,
+            'selected_imported_snapshots': sum(s.source_origin == 'historical_import' for s in self.sources),
         }
 
 
@@ -46,8 +47,9 @@ _NAMES = (
     'occurred_at', 'revision_at', 'captured_at', 'is_edited', 'reply_to_message_id',
     'content_kind', 'available_text', 'body_coverage', 'media_reference',
     'contains_external_content', 'consent_version', 'checksum', 'access_version',
+    'source_origin', 'import_batch_id',
 )
-_COLUMNS = ', '.join('r.' + name for name in _NAMES[:-1]) + ', c.version AS access_version'
+_COLUMNS = ', '.join('c.version AS access_version' if name == 'access_version' else 'r.' + name for name in _NAMES)
 _JOIN = '''FROM source_archive_revisions r
     JOIN source_archive_messages m ON m.chat_id=r.chat_id
       AND m.telegram_message_id=r.telegram_message_id AND m.latest_source_id=r.source_id

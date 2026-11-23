@@ -9,6 +9,7 @@ import argparse
 from datetime import datetime
 import json
 import os
+from pathlib import Path
 import re
 from typing import Any
 from uuid import uuid4
@@ -22,6 +23,7 @@ from app_v2.repositories.coach_scope_repo import CoachScopeRepository
 from app_v2.repositories.coach_budget_repo import CoachBudgetRepository
 from app_v2.repositories.source_archive_repo import SourceArchiveRepository
 from app_v2.services.coach_ai import CoachAI, CoachAIError, OpenAIResponsesProvider
+from app_v2.services.coach_history_import import import_history
 
 
 class CoachPreparationError(RuntimeError):
@@ -204,15 +206,26 @@ def _timestamp(value: str) -> datetime:
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Prepare only the separately configured coach")
-    parser.add_argument("command", choices=("bootstrap-database", "prepare", "smoke-ai", "setup-telegram", "status", "stats"))
+    parser.add_argument("command", choices=("bootstrap-database", "prepare", "smoke-ai", "setup-telegram", "status", "stats", "import-history"))
     parser.add_argument("--since", type=_timestamp, help="Inclusive usage interval start (stats only)")
     parser.add_argument("--until", type=_timestamp, help="Exclusive usage interval end (stats only)")
+    parser.add_argument("--file", help="Private Telegram Desktop JSON path (import-history only)")
+    parser.add_argument("--chat-id", type=int, help="Expected Telegram group identity (import-history only)")
+    parser.add_argument("--apply", action="store_true", help="Commit history import; omitted means rollback preview")
     args = parser.parse_args(argv)
     if args.command != "stats" and (args.since is not None or args.until is not None):
         parser.error("--since/--until apply only to stats")
+    if args.command != "import-history" and (args.file is not None or args.chat_id is not None or args.apply):
+        parser.error("--file/--chat-id/--apply apply only to import-history")
+    if args.command == "import-history" and (not args.file or args.chat_id is None):
+        parser.error("import-history requires --file and --chat-id")
     try:
         config = load_coach_config()
-        if args.command == "stats":
+        if args.command == "import-history":
+            with Path(args.file).open("rb") as source:
+                payload = source.read(8 * 1024 * 1024 + 1)
+            result = import_history(config, payload, expected_chat_id=args.chat_id, dry_run=not args.apply)
+        elif args.command == "stats":
             result = inspect_statistics(config, since=args.since, until=args.until)
         else:
             action = {"bootstrap-database": bootstrap_database, "prepare": prepare,

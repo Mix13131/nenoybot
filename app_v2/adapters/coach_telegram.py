@@ -122,6 +122,15 @@ class CoachTelegramClient:
         return {"verified": True, "pending_update_count": info.get("pending_update_count", 0),
                 "last_error_present": bool(info.get("last_error_message"))}
 
+    def history_author_is_human(self, *, chat_id: int, user_id: int) -> bool:
+        """Desktop exports omit is_bot; verify identity instead of guessing names."""
+        member = self._call("getChatMember", {"chat_id": chat_id, "user_id": user_id})
+        user = member.get("user") if isinstance(member, dict) else None
+        if (not isinstance(user, dict) or type(user.get("id")) is not int
+                or user["id"] != user_id or type(user.get("is_bot")) is not bool):
+            raise CoachTelegramError("history_author_identity_unverified")
+        return not user["is_bot"]
+
     def configure_commands(self):
         # Natural language is the participant interface. Existing slash aliases
         # remain compatible, but installation does not present a command form.

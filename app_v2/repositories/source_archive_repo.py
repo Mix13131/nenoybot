@@ -32,7 +32,7 @@ class ArchiveSource:
     message_thread_id: int
     author_user_id: int
     telegram_message_id: int
-    telegram_update_id: int
+    telegram_update_id: int | None
     message_revision: int
     occurred_at: datetime
     revision_at: datetime
@@ -47,6 +47,8 @@ class ArchiveSource:
     consent_version: int
     checksum: str
     access_version: int
+    source_origin: str = 'telegram_update'
+    import_batch_id: str | None = None
 
 
 @dataclass(frozen=True)
@@ -65,7 +67,7 @@ _SOURCE_COLUMNS = '''r.source_id, r.chat_id, r.message_thread_id, r.author_user_
     r.occurred_at, r.revision_at, r.captured_at, r.is_edited,
     r.reply_to_message_id, r.content_kind, r.available_text, r.body_coverage,
     r.media_reference, r.contains_external_content, r.consent_version,
-    r.checksum, c.version'''
+    r.checksum, c.version, r.source_origin, r.import_batch_id'''
 
 
 def _scope(chat_id: int, message_thread_id: int, author_user_id: int | None = None) -> None:
@@ -250,15 +252,33 @@ class SourceArchiveRepository:
             # Consent lock is shared with revoke/forget. No insert can race past
             # a completed revocation. Scope disabling waits for this transaction.
             grant = self.conn.execute(
-                '''SELECT c.version, c.retain_since, s.activated_at
+                '''SELECT c.version, c.retain_since, s.activated_at, c.grant_basis
                    FROM source_archive_consents c JOIN source_archive_scopes s
                      USING (chat_id, message_thread_id)
                    WHERE c.chat_id=%s AND c.message_thread_id=%s AND c.author_user_id=%s
                      AND c.retain_source AND s.enabled
                    FOR SHARE OF s FOR UPDATE OF c''', key,
             ).fetchone()
-            if grant is None or message.occurred_at < max(grant[1], grant[2]):
+            if grant is None:
                 return ArchiveCapture('ignored')
+            if message.occurred_at < max(grant[1], grant[2]):
+                # A known imported original can predate the bot's join. Its
+                # later live edit must invalidate the snapshot, while an unseen
+                # old edit and the personal forget boundary remain excluded.
+                known_import = message.is_edited and (
+                    grant[3] == 'group_default' or message.occurred_at >= grant[1]
+                ) and self.conn.execute(
+                    '''SELECT 1 FROM source_archive_messages m
+                       JOIN coach_group_memberships g ON g.chat_id=m.chat_id AND g.active
+                       WHERE m.chat_id=%s AND m.message_thread_id=%s AND m.author_user_id=%s
+                         AND m.telegram_message_id=%s AND m.occurred_at=%s AND NOT m.is_deleted
+                         AND EXISTS(SELECT 1 FROM source_archive_revisions r
+                           WHERE r.chat_id=m.chat_id AND r.telegram_message_id=m.telegram_message_id
+                             AND r.source_origin='historical_import' AND r.source_status='active')''',
+                    (*key, message.telegram_message_id, message.occurred_at),
+                ).fetchone()
+                if not known_import:
+                    return ArchiveCapture('ignored')
             existing = self.conn.execute(
                 '''SELECT source_id, checksum, message_revision, source_status
                    FROM source_archive_revisions WHERE telegram_update_id=%s''',
@@ -322,7 +342,7 @@ class SourceArchiveRepository:
                      AND (latest_source_id IS NULL OR EXISTS (
                          SELECT 1 FROM source_archive_revisions r
                          WHERE r.source_id=latest_source_id
-                           AND (r.revision_at, r.telegram_update_id) < (%s, %s)))''',
+                           AND (r.revision_at, COALESCE(r.telegram_update_id, -1)) < (%s, %s)))''',
                 (message.source_id, message.chat_id, message.telegram_message_id,
                  message.revision_at, message.telegram_update_id),
             )
@@ -442,7 +462,8 @@ class SourceArchiveRepository:
                 # Source IDs identify revisions, but a latest-message scan must
                 # not repeat a previously exported message merely after an edit.
                 parts = after[1].split(':')
-                if len(parts) != 5 or parts[:3] != ['tgsrc', str(chat_id), str(message_thread_id)]:
+                if (len(parts) != 5 or parts[0] not in {'tgsrc', 'tghist'}
+                        or parts[1:3] != [str(chat_id), str(message_thread_id)]):
                     raise ValueError('Cursor does not belong to this source scope')
                 try:
                     message_id = int(parts[3])
@@ -526,13 +547,14 @@ class SourceArchiveRepository:
                       COUNT(DISTINCT telegram_message_id) FILTER (WHERE source_status='active'),
                       COUNT(*) FILTER (WHERE body_coverage <> 'full' AND source_status='active'),
                       MIN(occurred_at) FILTER (WHERE source_status='active'),
-                      MAX(occurred_at) FILTER (WHERE source_status='active')
+                      MAX(occurred_at) FILTER (WHERE source_status='active'),
+                      COUNT(*) FILTER (WHERE source_origin='historical_import')
                FROM source_archive_revisions
                WHERE chat_id=%s AND message_thread_id=%s AND author_user_id=%s
                  AND occurred_at >= %s AND occurred_at < %s''', (*key, since, until),
         ).fetchone()
         return {
-            'basis': 'received_authorized_events_only',
+            'basis': 'received_events_and_explicit_imports' if row[6] else 'received_authorized_events_only',
             'enabled': bool(grant and grant[0] and grant[2]),
             'eligible_since': earliest,
             'has_pre_activation_gap': earliest is None or since < earliest,
@@ -542,10 +564,13 @@ class SourceArchiveRepository:
             'complete_telegram_history': False,
             'missing_delivery_detection': 'unavailable',
             'automatic_telegram_deletion_detection': False,
-            'historical_import_performed': False,
+            'historical_import_performed': bool(row[6]),
+            'historical_import_revisions': row[6],
             'limitations': (
-                'Only received events are known; delivery gaps and disabled periods may be unknown.',
-                'No pre-consent history or media bytes were imported.',
+                'Only received events and explicit snapshots are known; gaps may be unknown.' if row[6]
+                else 'Only received events are known; delivery gaps and disabled periods may be unknown.',
+                'Imported exports contain latest snapshots, not complete edit history or media bytes.' if row[6]
+                else 'No pre-consent history or media bytes were imported.',
                 'Deletion covers live Reflection sources, not legacy stores, sent messages or backups.',
             ),
         }

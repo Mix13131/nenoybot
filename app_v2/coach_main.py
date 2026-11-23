@@ -15,6 +15,7 @@ from starlette.concurrency import run_in_threadpool
 
 from app_v2.adapters.postgres import connect
 from app_v2.coach_config import CoachConfig, load_coach_config
+from app_v2.coach_history_endpoint import register_history_import
 from app_v2.repositories.coach_scope_repo import CoachScopeRepository
 from app_v2.services.coach_ingestor import ingest_coach_update
 
@@ -44,7 +45,8 @@ def create_app(config: CoachConfig | None = None, *, connection_factory: Callabl
                 CoachScopeRepository(conn, bot_user_id=config.bot_user_id).assert_identity()
                 conn.execute("SELECT 1 FROM coach_group_memberships LIMIT 0")
                 conn.execute("SELECT 1 FROM coach_jobs LIMIT 0")
-                conn.execute("SELECT 1 FROM source_archive_revisions LIMIT 0")
+                conn.execute("SELECT source_origin,import_batch_id FROM source_archive_revisions LIMIT 0")
+                conn.execute("SELECT 1 FROM source_archive_imports LIMIT 0")
                 conn.execute("SELECT 1 FROM coach_dialogue_turns LIMIT 0")
                 conn.execute("SELECT grant_basis FROM source_archive_consents LIMIT 0")
                 conn.execute("SELECT bundle_id,part_index FROM coaching_outputs LIMIT 0")
@@ -89,6 +91,7 @@ def create_app(config: CoachConfig | None = None, *, connection_factory: Callabl
             raise HTTPException(503, "Update not committed; retry required") from None
         return {"status": result.status}
 
+    register_history_import(application, config, factory)
     return application
 
 
