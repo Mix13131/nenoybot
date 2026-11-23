@@ -1,9 +1,10 @@
-"""Durable pre-call monetary reservations shared by all coach workers.
+"""Durable pre-call accounting shared by all coach workers.
 
 Every mutation owns a separate connection and commits before returning. Do not
 share a caller's conversation transaction: a rollback after an HTTP call must
 never refund money that may already have been spent. Uncertain/crashed attempts
 retain their entire reservation indefinitely; there is no automatic release.
+Observe mode retains this accounting while omitting a monetary spending cap.
 """
 
 from __future__ import annotations
@@ -85,15 +86,20 @@ class CoachBudgetRepository:
         return now.astimezone(timezone.utc).date()
 
     def reserve(self, *, operation_id: str, purpose: str, model: str, request_hash: str,
-                daily_cap_microusd: int, max_input_tokens: int, max_output_tokens: int,
+                daily_cap_microusd: int | None, max_input_tokens: int, max_output_tokens: int,
                 input_price_microusd_per_million: int, output_price_microusd_per_million: int,
+                budget_mode: str = 'capped',
                 now: datetime | None = None) -> BudgetReservation:
         for value, name, limit in ((operation_id, 'operation_id', 200), (purpose, 'purpose', 80), (model, 'model', 160)):
             if not isinstance(value, str) or not value.strip() or len(value) > limit:
                 raise CoachBudgetConfigurationError(f'A bounded {name} is required')
         if not isinstance(request_hash, str) or re.fullmatch('[0-9a-f]{64}', request_hash) is None:
             raise CoachBudgetConfigurationError('A SHA-256 request hash is required')
-        cap = _positive(daily_cap_microusd, 'daily_cap_microusd')
+        if not isinstance(budget_mode, str) or budget_mode not in {'capped', 'observe'}:
+            raise CoachBudgetConfigurationError('budget_mode must be capped or observe')
+        if budget_mode == 'observe' and daily_cap_microusd is not None:
+            raise CoachBudgetConfigurationError('observe mode requires daily_cap_microusd=None')
+        cap = _positive(daily_cap_microusd, 'daily_cap_microusd') if budget_mode == 'capped' else None
         for value in (max_input_tokens, max_output_tokens):
             if not 0 < _positive(value, 'token bound') <= (1 << 31) - 1:
                 raise CoachBudgetConfigurationError('Token bounds exceed the ledger range')
@@ -106,12 +112,12 @@ class CoachBudgetRepository:
                     raise CoachOperationAlreadyAttempted('This operation was already reserved; it must not call AI again')
                 day = self._day(conn, now)
                 conn.execute(
-                    '''INSERT INTO coach_budget_days(budget_key,budget_day,cap_microusd)
-                       VALUES (%s,%s,%s) ON CONFLICT (budget_key,budget_day) DO NOTHING''',
-                    (self.budget_key, day, cap),
+                    '''INSERT INTO coach_budget_days(budget_key,budget_day,cap_microusd,budget_mode)
+                       VALUES (%s,%s,%s,%s) ON CONFLICT (budget_key,budget_day) DO NOTHING''',
+                    (self.budget_key, day, cap, budget_mode),
                 )
                 row = conn.execute(
-                    '''SELECT cap_microusd,reserved_microusd,spent_microusd,blocked
+                    '''SELECT cap_microusd,reserved_microusd,spent_microusd,blocked,budget_mode
                        FROM coach_budget_days WHERE budget_key=%s AND budget_day=%s FOR UPDATE''',
                     (self.budget_key, day),
                 ).fetchone()
@@ -119,10 +125,14 @@ class CoachBudgetRepository:
                 # we waited for the day lock. Identity wins over a now-full cap.
                 if conn.execute('SELECT 1 FROM coach_ai_operations WHERE operation_id=%s', (operation_id,)).fetchone():
                     raise CoachOperationAlreadyAttempted('This operation was already reserved; it must not call AI again')
-                if row[0] != cap:
-                    raise CoachBudgetConfigurationError('Workers disagree about the daily emergency budget')
-                if row[3] or row[1] + row[2] + reserved > cap:
+                if (row[0], row[4]) != (cap, budget_mode):
+                    raise CoachBudgetConfigurationError('Workers disagree about the daily accounting policy')
+                if row[3]:
+                    raise CoachBudgetExceeded('The AI accounting safety breaker is blocked')
+                if cap is not None and row[1] + row[2] + reserved > cap:
                     raise CoachBudgetExceeded('The daily monetary safety budget is unavailable')
+                if row[1] + reserved > _MAX_BIGINT:
+                    raise CoachBudgetConfigurationError('Reserved accounting amount exceeds the ledger range')
                 inserted = conn.execute(
                     '''INSERT INTO coach_ai_operations(
                            operation_id,budget_key,budget_day,purpose,model,request_hash,
@@ -216,14 +226,72 @@ class CoachBudgetRepository:
         with self._connect() as conn:
             day = self._day(conn, now)
             row = conn.execute(
-                '''SELECT cap_microusd,reserved_microusd,spent_microusd,blocked,blocked_reason
+                '''SELECT cap_microusd,reserved_microusd,spent_microusd,blocked,blocked_reason,budget_mode
                    FROM coach_budget_days WHERE budget_key=%s AND budget_day=%s''', (self.budget_key, day),
             ).fetchone()
         if row is None:
             return {'budget_day': day, 'configured': False}
         return dict(budget_day=day, configured=True, cap_microusd=row[0], reserved_microusd=row[1],
-                    spent_microusd=row[2], remaining_microusd=max(0, row[0] - row[1] - row[2]),
-                    blocked=row[3], blocked_reason=row[4])
+                    spent_microusd=row[2], remaining_microusd=None if row[0] is None else max(0, row[0] - row[1] - row[2]),
+                    blocked=row[3], blocked_reason=row[4], budget_mode=row[5])
+
+    def usage_stats(self, *, since: datetime | None = None, until: datetime | None = None) -> dict:
+        """Read-only aggregate of attempts, without prompts, replies or identities.
+
+        The half-open range selects attempt creation time in UTC. Costs use the
+        explicit configured token tariff; uncertain/reserved exposure is shown
+        separately and is never represented as confirmed spending or refunded.
+        """
+        for value in (since, until):
+            if value is not None and (not isinstance(value, datetime) or value.tzinfo is None
+                                      or value.utcoffset() is None):
+                raise CoachBudgetConfigurationError('Statistics boundaries must be timezone-aware')
+        since = since.astimezone(timezone.utc) if since is not None else None
+        until = until.astimezone(timezone.utc) if until is not None else None
+        if since is not None and until is not None and since >= until:
+            raise CoachBudgetConfigurationError('Statistics require a nonempty date range')
+        conditions, params = ['o.budget_key=%s'], [self.budget_key]
+        if since is not None:
+            conditions.append('o.created_at>=%s')
+            params.append(since)
+        if until is not None:
+            conditions.append('o.created_at<%s')
+            params.append(until)
+        with self._connect() as conn:
+            rows = conn.execute(
+                '''SELECT d.budget_mode,o.purpose,o.model,o.status,o.outcome,count(*),
+                          COALESCE(sum(o.input_tokens),0),COALESCE(sum(o.output_tokens),0),
+                          COALESCE(sum(o.charged_microusd),0),
+                          COALESCE(sum(o.reserved_microusd) FILTER (WHERE o.status<>'settled'),0),
+                          count(o.latency_ms),COALESCE(sum(o.latency_ms),0),max(o.latency_ms)
+                   FROM coach_ai_operations o JOIN coach_budget_days d
+                     ON d.budget_key=o.budget_key AND d.budget_day=o.budget_day
+                   WHERE ''' + ' AND '.join(conditions) +
+                ' GROUP BY d.budget_mode,o.purpose,o.model,o.status,o.outcome '
+                'ORDER BY d.budget_mode,o.purpose,o.model,o.status,o.outcome', params,
+            ).fetchall()
+        metric_names = ('operations', 'input_tokens', 'output_tokens', 'settled_cost_microusd',
+                        'unsettled_reserved_microusd', 'latency_samples', 'total_latency_ms')
+        totals = dict.fromkeys(metric_names, 0)
+        totals.update(settled_operations=0, reserved_operations=0, uncertain_operations=0,
+                      maximum_latency_ms=None)
+        breakdown = []
+        for row in rows:
+            entry = dict(zip(('budget_mode', 'purpose', 'model', 'status', 'outcome'), row[:5]))
+            metrics = dict(zip(metric_names, (int(value) for value in row[5:12])))
+            entry.update(metrics, maximum_latency_ms=row[12])
+            breakdown.append(entry)
+            for name, value in metrics.items():
+                totals[name] += value
+            totals[row[3] + '_operations'] += metrics['operations']
+            if row[12] is not None:
+                totals['maximum_latency_ms'] = max(totals['maximum_latency_ms'] or 0, row[12])
+        average = (round(totals['total_latency_ms'] / totals['latency_samples'], 2)
+                   if totals['latency_samples'] else None)
+        return dict(budget_key=self.budget_key, since=since.isoformat() if since else None,
+                    until=until.isoformat() if until else None,
+                    cost_basis='configured_token_tariffs', average_latency_ms=average,
+                    **totals, breakdown=breakdown)
 
     def operation(self, operation_id: str) -> dict | None:
         with self._connect() as conn:

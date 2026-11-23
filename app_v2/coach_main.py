@@ -49,7 +49,7 @@ def create_app(config: CoachConfig | None = None, *, connection_factory: Callabl
                 conn.execute("SELECT grant_basis FROM source_archive_consents LIMIT 0")
                 conn.execute("SELECT bundle_id,part_index FROM coaching_outputs LIMIT 0")
                 if config.ai_enabled:
-                    conn.execute("SELECT 1 FROM coach_budget_days LIMIT 0")
+                    conn.execute("SELECT budget_mode,cap_microusd FROM coach_budget_days LIMIT 0")
                     conn.execute("SELECT 1 FROM coach_ai_operations LIMIT 0")
         except Exception:
             raise HTTPException(503, "Coach database is not ready") from None

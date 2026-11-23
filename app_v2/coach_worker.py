@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 from datetime import datetime, timezone
+import json
 import logging
 import time
 
@@ -19,7 +20,7 @@ from app_v2.services.coach_engine import CoachEngine, CoachRequest
 
 logger = logging.getLogger(__name__)
 UNAVAILABLE = (
-    "Сейчас разбор недоступен: AI выключен, недоступен или остановлен защитой расходов. "
+    "Сейчас разбор недоступен: не удалось выполнить AI-запрос. "
     "Я не делал выводов по твоему сообщению. Разрешённый архив сохраняется независимо от анализа. "
     "Можно вернуться к этому чуть позже."
 )
@@ -179,13 +180,32 @@ def main() -> int:
     try:
         with connect(config.database_url, autocommit=True, connect_timeout=5) as conn:
             pool = CoachWorkerPool(conn, config, sender=sender)
+            next_statistics = 0.0
             while True:
+                if time.monotonic() >= next_statistics:
+                    _print_statistics(config)
+                    next_statistics = time.monotonic() + 300
                 if not pool.run_once():
                     time.sleep(0.5)
     except KeyboardInterrupt:
         return 0
     finally:
         sender.close()
+
+
+def _print_statistics(config: CoachConfig) -> None:
+    """Bounded aggregate telemetry for operator logs, never conversation text."""
+    from app_v2.coach_admin import inspect_statistics
+
+    since = datetime.now(timezone.utc).replace(hour=0, minute=0, second=0, microsecond=0)
+    try:
+        report = inspect_statistics(config, since=since)
+        print(json.dumps({"event": "coach_statistics", **report}, ensure_ascii=False,
+                         default=str), flush=True)
+    except Exception as exc:
+        # Telemetry failure must not cancel message handling or expose DSNs.
+        print(json.dumps({"event": "coach_statistics_unavailable",
+                          "error_type": type(exc).__name__}), flush=True)
 
 
 if __name__ == "__main__":

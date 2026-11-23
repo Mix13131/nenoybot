@@ -36,6 +36,7 @@ class CoachConfig:
     transient_ttl_seconds: int = 86400
     public_base_url: str | None = None
     ai_model: str | None = None
+    ai_budget_mode: str = "capped"
     daily_cap_microusd: int | None = None
     input_price_microusd_per_million: int | None = None
     output_price_microusd_per_million: int | None = None
@@ -69,6 +70,7 @@ class CoachConfig:
             input_price_microusd_per_million=self.input_price_microusd_per_million,
             output_price_microusd_per_million=self.output_price_microusd_per_million,
             timeout_seconds=self.ai_timeout_seconds,
+            budget_mode=self.ai_budget_mode,
         )
 
 
@@ -107,6 +109,27 @@ def _money(env: Mapping[str, str], key: str) -> int | None:
         raise CoachConfigurationError(f"{key}: positive USD amount with at most 6 decimals required") from None
 
 
+def _database_url(env: Mapping[str, str]) -> str | None:
+    """Resolve an explicit database override without reconstructing a credential URI."""
+    get = lambda key: (env.get(key) or "").strip() or None
+    direct = get("COACH_DATABASE_URL")
+    base, name = get("COACH_DATABASE_BASE_URL"), get("COACH_DATABASE_NAME")
+    if direct and (base is not None or name is not None):
+        raise CoachConfigurationError("COACH_DATABASE_URL cannot be combined with COACH_DATABASE_BASE_URL/COACH_DATABASE_NAME")
+    if base is None and name is None:
+        return direct
+    if base is None or name is None:
+        raise CoachConfigurationError("COACH_DATABASE_BASE_URL and COACH_DATABASE_NAME must be provided together")
+    if len(name) > 63 or re.fullmatch(r"coach_[a-z0-9_]+", name) is None:
+        raise CoachConfigurationError("COACH_DATABASE_NAME: expected coach_[a-z0-9_]+ with at most 63 ASCII characters")
+    try:
+        from psycopg.conninfo import make_conninfo
+        return make_conninfo(base, dbname=name)
+    except Exception:
+        # libpq parsing errors may contain the credential-bearing input.
+        raise CoachConfigurationError("COACH_DATABASE_BASE_URL: invalid PostgreSQL connection information") from None
+
+
 def load_coach_config(env: Mapping[str, str] | None = None) -> CoachConfig:
     env = os.environ if env is None else env
     get = lambda key: (env.get(key) or "").strip() or None
@@ -116,10 +139,16 @@ def load_coach_config(env: Mapping[str, str] | None = None) -> CoachConfig:
     group_mode = get("COACH_GROUP_MODE") or "configured"
     if group_mode not in {"configured", "joined_groups"}:
         raise CoachConfigurationError("COACH_GROUP_MODE: expected configured or joined_groups")
+    budget_mode = get("COACH_AI_BUDGET_MODE") or "capped"
+    if budget_mode not in {"capped", "observe"}:
+        raise CoachConfigurationError("COACH_AI_BUDGET_MODE: expected capped or observe")
+    if budget_mode == "observe" and get("COACH_AI_EMERGENCY_DAILY_USD") is not None:
+        raise CoachConfigurationError("COACH_AI_EMERGENCY_DAILY_USD must be unset in observe mode")
+    database_url = _database_url(env)
     # A configured dedicated bot serves its purpose immediately. Empty/import
     # environments stay inactive, and explicit 0 remains the operator kill switch.
-    core_configured = all(get(key) for key in (
-        "COACH_DATABASE_URL", "COACH_TELEGRAM_BOT_TOKEN", "COACH_BOT_USERNAME",
+    core_configured = bool(database_url) and all(get(key) for key in (
+        "COACH_TELEGRAM_BOT_TOKEN", "COACH_BOT_USERNAME",
         "COACH_WEBHOOK_SECRET",
     )) and (group_mode == "joined_groups" or all(get(key) for key in ("COACH_CHAT_ID", "COACH_TOPIC_IDS")))
     enabled = _bool(env, "COACH_ENABLED", default=core_configured)
@@ -167,12 +196,12 @@ def load_coach_config(env: Mapping[str, str] | None = None) -> CoachConfig:
         raise CoachConfigurationError("COACH_PUBLIC_BASE_URL: public HTTPS origin required")
     config = CoachConfig(
         environment=environment, enabled=enabled, ai_enabled=ai_enabled,
-        database_url=get("COACH_DATABASE_URL"), telegram_bot_token=token,
+        database_url=database_url, telegram_bot_token=token,
         webhook_secret=secret, openai_api_key=get("COACH_OPENAI_API_KEY"),
         bot_user_id=bot_id, bot_username=username, display_name=display_name, aliases=aliases,
         group_mode=group_mode, chat_id=chat_id, topic_ids=topic_ids, archive_policy=policy,
         transient_ttl_seconds=_integer(env, "COACH_TRANSIENT_TTL_SECONDS", minimum=60, maximum=86400, default=86400),
-        public_base_url=base_url, ai_model=get("COACH_AI_MODEL"),
+        public_base_url=base_url, ai_model=get("COACH_AI_MODEL"), ai_budget_mode=budget_mode,
         daily_cap_microusd=_money(env, "COACH_AI_EMERGENCY_DAILY_USD"),
         input_price_microusd_per_million=_money(env, "COACH_AI_INPUT_USD_PER_MILLION"),
         output_price_microusd_per_million=_money(env, "COACH_AI_OUTPUT_USD_PER_MILLION"),
@@ -194,12 +223,13 @@ def load_coach_config(env: Mapping[str, str] | None = None) -> CoachConfig:
     if ai_enabled:
         required = {
             "COACH_OPENAI_API_KEY": config.openai_api_key, "COACH_AI_MODEL": config.ai_model,
-            "COACH_AI_EMERGENCY_DAILY_USD": config.daily_cap_microusd,
             "COACH_AI_INPUT_USD_PER_MILLION": config.input_price_microusd_per_million,
             "COACH_AI_OUTPUT_USD_PER_MILLION": config.output_price_microusd_per_million,
             "COACH_AI_MAX_INPUT_TOKENS": config.max_input_tokens,
             "COACH_AI_MAX_OUTPUT_TOKENS": config.max_output_tokens,
         }
+        if budget_mode == "capped":
+            required["COACH_AI_EMERGENCY_DAILY_USD"] = config.daily_cap_microusd
         missing = [key for key, value in required.items() if not value]
         if missing:
             raise CoachConfigurationError("Missing " + ", ".join(missing))

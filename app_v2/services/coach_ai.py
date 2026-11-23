@@ -1,6 +1,6 @@
 """One pre-reserved JSON gateway for every paid Arni model operation.
 
-Prices/cap/model are explicit deployment inputs, never guessed from a model
+Prices/accounting policy/model are explicit inputs, never guessed from a model
 name. All inputs are bounded plain text; tools, files, images, stored provider
 conversations and implicit retries are unsupported. Output bounds use Responses
 max_output_tokens, including reasoning: https://developers.openai.com/api/docs/guides/token-counting.
@@ -48,17 +48,26 @@ _ENV_FIELDS = {
 @dataclass(frozen=True)
 class CoachAIConfig:
     model: str
-    daily_cap_microusd: int
+    daily_cap_microusd: int | None
     max_input_tokens: int
     max_output_tokens: int
     input_price_microusd_per_million: int
     output_price_microusd_per_million: int
     timeout_seconds: float
+    budget_mode: str = 'capped'
 
     def __post_init__(self) -> None:
         if not isinstance(self.model, str) or not self.model.strip() or len(self.model) > 160:
             raise CoachAIConfigurationError('An explicitly priced model is required')
-        for field in ('daily_cap_microusd', 'max_input_tokens', 'max_output_tokens',
+        if not isinstance(self.budget_mode, str) or self.budget_mode not in {'capped', 'observe'}:
+            raise CoachAIConfigurationError('budget_mode must be capped or observe')
+        if self.budget_mode == 'observe' and self.daily_cap_microusd is not None:
+            raise CoachAIConfigurationError('observe mode requires daily_cap_microusd=None')
+        if self.budget_mode == 'capped' and (
+            type(self.daily_cap_microusd) is not int or not 0 < self.daily_cap_microusd < (1 << 63)
+        ):
+            raise CoachAIConfigurationError('daily_cap_microusd must be an explicit positive integer in capped mode')
+        for field in ('max_input_tokens', 'max_output_tokens',
                       'input_price_microusd_per_million', 'output_price_microusd_per_million'):
             value = getattr(self, field)
             if type(value) is not int or not 0 < value < (1 << 63):
@@ -81,13 +90,20 @@ class CoachAIConfig:
     @classmethod
     def from_env(cls, environ: Mapping[str, str] | None = None) -> 'CoachAIConfig':
         source = os.environ if environ is None else environ
-        missing = [name for name in _ENV_FIELDS.values() if not source.get(name, '').strip()]
+        mode = source.get('NENOY_V2_COACH_AI_BUDGET_MODE', 'capped').strip()
+        if mode not in {'capped', 'observe'}:
+            raise CoachAIConfigurationError('budget_mode must be capped or observe')
+        required = {field: name for field, name in _ENV_FIELDS.items()
+                    if mode != 'observe' or field != 'daily_cap_microusd'}
+        missing = [name for name in required.values() if not source.get(name, '').strip()]
         if missing:
             raise CoachAIConfigurationError('Missing explicit coach AI configuration: ' + ', '.join(missing))
-        values = {}
+        values = {'budget_mode': mode, 'daily_cap_microusd': None}
         try:
             for field, name in _ENV_FIELDS.items():
-                raw = source[name].strip()
+                raw = source.get(name, '').strip()
+                if field == 'daily_cap_microusd' and not raw and mode == 'observe':
+                    continue
                 values[field] = raw if field == 'model' else float(raw) if field == 'timeout_seconds' else int(raw)
         except (ValueError, TypeError):
             raise CoachAIConfigurationError('Coach AI configuration contains an invalid numeric value') from None
@@ -194,6 +210,7 @@ class CoachAI:
             self.budget.reserve(
                 operation_id=operation_id, purpose=purpose, model=cfg.model, request_hash=request_hash,
                 daily_cap_microusd=cfg.daily_cap_microusd, max_input_tokens=cfg.max_input_tokens,
+                budget_mode=cfg.budget_mode,
                 max_output_tokens=cfg.max_output_tokens,
                 input_price_microusd_per_million=cfg.input_price_microusd_per_million,
                 output_price_microusd_per_million=cfg.output_price_microusd_per_million,
@@ -217,7 +234,8 @@ class CoachAI:
             self._uncertain(operation_id, outcome='unknown_model', latency_ms=latency, block_day=True)
             raise CoachAIError('Provider returned an unpriced model; the monetary reservation remains held')
         if any(type(value) is not int or value < 0 for value in (response.input_tokens, response.output_tokens)):
-            self._uncertain(operation_id, outcome='usage_missing', latency_ms=latency)
+            self._uncertain(operation_id, outcome='usage_missing', latency_ms=latency,
+                            block_day=cfg.budget_mode == 'observe')
             raise CoachAIError('Provider usage is unknown; the monetary reservation remains held')
         overrun = response.input_tokens > cfg.max_input_tokens or response.output_tokens > cfg.max_output_tokens
         parsed = None

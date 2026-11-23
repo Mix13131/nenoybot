@@ -6,16 +6,22 @@ cannot grant another participant permission. No command runs at import time.
 from __future__ import annotations
 
 import argparse
+from datetime import datetime
 import json
+import os
 import re
 from typing import Any
+from uuid import uuid4
 
 from app_v2.adapters.coach_telegram import CoachTelegramClient, CoachTelegramError
 from app_v2.adapters.postgres import connect
 from app_v2.coach_config import CoachConfig, CoachConfigurationError, load_coach_config
+from app_v2.coach_database import CoachDatabaseBootstrapError
 from app_v2.db.migrations import discover_migrations, run_migrations
 from app_v2.repositories.coach_scope_repo import CoachScopeRepository
+from app_v2.repositories.coach_budget_repo import CoachBudgetRepository
 from app_v2.repositories.source_archive_repo import SourceArchiveRepository
+from app_v2.services.coach_ai import CoachAI, CoachAIError, OpenAIResponsesProvider
 
 
 class CoachPreparationError(RuntimeError):
@@ -136,16 +142,87 @@ def inspect_status(config: CoachConfig) -> dict:
             "outputs": [{"status": x[0], "count": x[1]} for x in outputs], "available_source_texts": source_count}
 
 
+def inspect_statistics(config: CoachConfig, *, since: datetime | None = None,
+                       until: datetime | None = None) -> dict:
+    """Read-only counters; no conversation text, participant IDs or credentials."""
+    status = inspect_status(config)
+    budget = CoachBudgetRepository(config.database_url)
+    return {"status": "statistics", "runtime": status,
+            "configured_budget_mode": config.ai_budget_mode,
+            "today_utc": budget.snapshot(),
+            "usage": budget.usage_stats(since=since, until=until),
+            "cost_basis": "configured_token_rates_before_cache_discounts"}
+
+
+def bootstrap_database(config: CoachConfig) -> dict:
+    """Explicit deployment action; the server and worker never create databases."""
+    from app_v2.coach_database import bootstrap_dedicated_database
+
+    _configured(config)
+    result = bootstrap_dedicated_database(
+        config.database_url, os.environ.get("COACH_DATABASE_BOOTSTRAP_URL", ""),
+        config.bot_user_id,
+    )
+    return {"status": "database_bootstrapped", **result}
+
+
+def smoke_ai(config: CoachConfig, *, provider=None) -> dict:
+    """One explicitly invoked synthetic request, accounted like a real request.
+
+    Never sends Telegram messages or reads participant history. This command is
+    for deployment verification and is not called by an import or the worker.
+    """
+    _configured(config)
+    if not config.ai_enabled:
+        raise CoachPreparationError("ai_is_not_enabled")
+    with connect(config.database_url, autocommit=True, connect_timeout=5) as conn:
+        CoachScopeRepository(conn, bot_user_id=config.bot_user_id).assert_identity()
+    ai = CoachAI(CoachBudgetRepository(config.database_url),
+                 provider or OpenAIResponsesProvider(config.openai_api_key), config.ai_config())
+    result = ai.request_json(
+        operation_id="operator-smoke:" + str(uuid4()), purpose="operator_smoke",
+        messages=[{"role": "user", "content": 'Synthetic connection test. Return JSON {"ok": true}.'}],
+        schema={"type": "object", "properties": {"ok": {"type": "boolean"}},
+                "required": ["ok"], "additionalProperties": False},
+    )
+    if set(result.parsed) != {"ok"} or result.parsed["ok"] is not True:
+        raise CoachPreparationError("synthetic_ai_response_failed_validation")
+    return {"status": "ai_verified", "model": config.ai_model,
+            "input_tokens": result.input_tokens, "output_tokens": result.output_tokens,
+            "cost_microusd": result.cost_microusd, "telegram_messages_sent": 0}
+
+
+def _timestamp(value: str) -> datetime:
+    try:
+        parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError:
+        raise argparse.ArgumentTypeError("Use an ISO 8601 timestamp with timezone") from None
+    if parsed.tzinfo is None:
+        raise argparse.ArgumentTypeError("A timezone is required")
+    return parsed
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Prepare only the separately configured coach")
-    parser.add_argument("command", choices=("prepare", "setup-telegram", "status"))
+    parser.add_argument("command", choices=("bootstrap-database", "prepare", "smoke-ai", "setup-telegram", "status", "stats"))
+    parser.add_argument("--since", type=_timestamp, help="Inclusive usage interval start (stats only)")
+    parser.add_argument("--until", type=_timestamp, help="Exclusive usage interval end (stats only)")
     args = parser.parse_args(argv)
+    if args.command != "stats" and (args.since is not None or args.until is not None):
+        parser.error("--since/--until apply only to stats")
     try:
         config = load_coach_config()
-        action = {"prepare": prepare, "setup-telegram": configure_telegram, "status": inspect_status}[args.command]
-        print(json.dumps(action(config), ensure_ascii=False))
+        if args.command == "stats":
+            result = inspect_statistics(config, since=args.since, until=args.until)
+        else:
+            action = {"bootstrap-database": bootstrap_database, "prepare": prepare,
+                      "smoke-ai": smoke_ai, "setup-telegram": configure_telegram,
+                      "status": inspect_status}[args.command]
+            result = action(config)
+        print(json.dumps(result, ensure_ascii=False, default=str))
         return 0
-    except (CoachPreparationError, CoachConfigurationError, CoachTelegramError) as exc:
+    except (CoachPreparationError, CoachConfigurationError, CoachTelegramError,
+            CoachDatabaseBootstrapError, CoachAIError) as exc:
         print(json.dumps({"status": "blocked", "reason": str(exc)}, ensure_ascii=False))
     except Exception as exc:
         print(json.dumps({"status": "failed", "error_type": type(exc).__name__}))
