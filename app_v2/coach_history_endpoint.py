@@ -17,6 +17,7 @@ from typing import Callable, Mapping
 from fastapi import FastAPI, HTTPException, Request
 from starlette.concurrency import run_in_threadpool
 
+from app_v2.adapters.coach_telegram import CoachTelegramError
 from app_v2.coach_config import CoachConfig
 
 
@@ -142,6 +143,12 @@ def register_history_import(
         except ValueError as exc:
             logger.warning("Coach history import rejected: %s", type(exc).__name__)
             raise HTTPException(400, "History import rejected") from None
+        except CoachTelegramError as exc:
+            logger.error(
+                "Coach history import failed: %s reason=%s method=%s http_status=%s",
+                type(exc).__name__, exc.reason_code, exc.method, exc.http_status,
+            )
+            raise HTTPException(503, "History import unavailable") from None
         except Exception as exc:
             logger.error("Coach history import failed: %s", type(exc).__name__)
             raise HTTPException(503, "History import unavailable") from None

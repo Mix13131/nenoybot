@@ -346,3 +346,158 @@ def test_author_lookup_provider_failure_is_sanitized_before_database(persistence
                                    client=telegram, connection_factory=factory)
     assert private not in str(error.value) + caplog.text
     assert state["factory_calls"] == 0 and state["exports"] == []
+
+
+@pytest.mark.parametrize("status", [400, 403])
+@pytest.mark.parametrize("is_bot,expected", [(False, True), (True, False)])
+def test_restricted_member_lookup_accepts_only_exact_verified_admin_identity(status, is_bot, expected):
+    calls = []
+    def handle(request):
+        method = request.url.path.rsplit("/", 1)[-1]
+        calls.append((method, json.loads(request.content)))
+        if method == "getChatMember":
+            return httpx.Response(status, json={"ok": False, "description": "PRIVATE"})
+        return httpx.Response(200, json={"ok": True, "result": [
+            {"status": "administrator", "user": {"id": OTHER_AUTHOR, "is_bot": False}},
+            {"status": "creator", "user": {"id": AUTHOR, "is_bot": is_bot}},
+        ]})
+    with httpx.Client(transport=httpx.MockTransport(handle)) as http:
+        actual = CoachTelegramClient(TOKEN, client=http).history_author_is_human(chat_id=CHAT, user_id=AUTHOR)
+    assert actual is expected
+    assert calls == [
+        ("getChatMember", {"chat_id": CHAT, "user_id": AUTHOR}),
+        ("getChatAdministrators", {"chat_id": CHAT, "return_bots": True}),
+    ]
+
+
+@pytest.mark.parametrize("status", [401, 429, 500, 502])
+def test_transport_failures_and_rate_limits_do_not_trigger_admin_fallback(status):
+    calls = []
+    def handle(request):
+        calls.append(request.url.path.rsplit("/", 1)[-1])
+        return httpx.Response(status, json={"ok": False, "description": "PRIVATE"})
+    with httpx.Client(transport=httpx.MockTransport(handle)) as http:
+        with pytest.raises(CoachTelegramError) as error:
+            CoachTelegramClient(TOKEN, client=http).history_author_is_human(chat_id=CHAT, user_id=AUTHOR)
+    assert calls == ["getChatMember"]
+    assert error.value.reason_code == "telegram_http_error"
+    assert error.value.method == "getChatMember" and error.value.http_status == status
+
+
+def test_lookup_timeout_does_not_trigger_another_request():
+    calls = []
+    def handle(request):
+        calls.append(request)
+        raise httpx.ReadTimeout("PRIVATE " + TOKEN, request=request)
+    with httpx.Client(transport=httpx.MockTransport(handle)) as http:
+        with pytest.raises(CoachTelegramError) as error:
+            CoachTelegramClient(TOKEN, client=http).history_author_is_human(chat_id=CHAT, user_id=AUTHOR)
+    assert len(calls) == 1
+    assert error.value.reason_code == "telegram_result_unknown"
+    assert error.value.method == "getChatMember" and error.value.http_status is None
+    assert TOKEN not in str(error.value)
+
+
+@pytest.mark.parametrize("administrators,reason", [
+    ([], "history_author_not_in_verified_administrators"),
+    ([{"status": "creator", "user": {"id": OTHER_AUTHOR, "is_bot": False}}],
+     "history_author_not_in_verified_administrators"),
+    (None, "history_administrators_unverified"),
+    ({}, "history_administrators_unverified"),
+    ([{"status": "member", "user": {"id": AUTHOR, "is_bot": False}}],
+     "history_administrators_unverified"),
+    ([{"status": "creator", "user": {"id": AUTHOR}}], "history_administrators_unverified"),
+    ([{"status": "creator", "user": {"id": str(AUTHOR), "is_bot": False}}],
+     "history_administrators_unverified"),
+    ([{"status": "creator", "user": {"id": AUTHOR, "is_bot": 0}}],
+     "history_administrators_unverified"),
+    ([{"status": "creator", "user": {"id": AUTHOR, "is_bot": False}}, {}],
+     "history_administrators_unverified"),
+    ([{"status": "creator", "user": {"id": AUTHOR, "is_bot": False}},
+      {"status": "administrator", "user": {"id": AUTHOR, "is_bot": True}}],
+     "history_administrators_unverified"),
+])
+def test_admin_fallback_never_infers_an_unknown_or_malformed_identity(administrators, reason):
+    def handle(request):
+        if request.url.path.endswith("/getChatMember"):
+            return httpx.Response(400, json={"ok": False})
+        return httpx.Response(200, json={"ok": True, "result": administrators})
+    with httpx.Client(transport=httpx.MockTransport(handle)) as http:
+        with pytest.raises(CoachTelegramError, match="^" + reason + "$") as error:
+            CoachTelegramClient(TOKEN, client=http).history_author_is_human(chat_id=CHAT, user_id=AUTHOR)
+    assert error.value.method == "getChatAdministrators"
+
+
+def test_contradictory_successful_member_response_cannot_use_admin_fallback():
+    calls = []
+    def handle(request):
+        calls.append(request)
+        return httpx.Response(200, json={"ok": True, "result": {
+            "user": {"id": OTHER_AUTHOR, "is_bot": False},
+        }})
+    with httpx.Client(transport=httpx.MockTransport(handle)) as http:
+        with pytest.raises(CoachTelegramError, match="history_author_identity_unverified"):
+            CoachTelegramClient(TOKEN, client=http).history_author_is_human(chat_id=CHAT, user_id=AUTHOR)
+    assert len(calls) == 1
+
+
+def test_admin_identities_are_cached_per_client_and_exact_chat():
+    calls = []
+    def handle(request):
+        method, body = request.url.path.rsplit("/", 1)[-1], json.loads(request.content)
+        calls.append((method, body))
+        if method == "getChatMember":
+            return httpx.Response(403, json={"ok": False})
+        return httpx.Response(200, json={"ok": True, "result": [
+            {"status": "creator", "user": {"id": AUTHOR, "is_bot": body["chat_id"] != CHAT}},
+            {"status": "administrator", "user": {"id": OTHER_AUTHOR, "is_bot": True}},
+        ]})
+    with httpx.Client(transport=httpx.MockTransport(handle)) as http:
+        telegram = CoachTelegramClient(TOKEN, client=http)
+        assert telegram.history_author_is_human(chat_id=CHAT, user_id=AUTHOR) is True
+        assert telegram.history_author_is_human(chat_id=CHAT, user_id=OTHER_AUTHOR) is False
+        assert telegram.history_author_is_human(chat_id=CHAT - 1, user_id=AUTHOR) is False
+    assert [body["chat_id"] for method, body in calls if method == "getChatAdministrators"] == [CHAT, CHAT - 1]
+
+
+def test_service_diagnostics_identify_failure_stage_without_author_data(persistence, caplog):
+    state, factory, _ = persistence
+    telegram = FakeTelegram(humans={AUTHOR: True, OTHER_AUTHOR: CoachTelegramError(
+        "history_author_not_in_verified_administrators", method="getChatAdministrators",
+    )})
+    with pytest.raises(CoachTelegramError):
+        service.import_history(config(), payload(AUTHOR, OTHER_AUTHOR), expected_chat_id=CHAT,
+                               client=telegram, connection_factory=factory)
+    assert "phase=author_identity" in caplog.text
+    assert "verified_authors=1 total_authors=2" in caplog.text
+    assert "reason=history_author_not_in_verified_administrators" in caplog.text
+    assert "method=getChatAdministrators" in caplog.text
+    assert str(OTHER_AUTHOR) not in caplog.text and TOKEN not in caplog.text
+    assert state["factory_calls"] == 0
+
+
+def test_endpoint_logs_only_allowlisted_telegram_diagnostics(monkeypatch, caplog):
+    from datetime import datetime, timedelta, timezone
+    from fastapi import FastAPI
+    from fastapi.testclient import TestClient
+    import app_v2.coach_history_endpoint as endpoint
+    body = payload()
+    secret = "synthetic_history_endpoint_secret_12345678"
+    for name, value in {
+        "COACH_HISTORY_IMPORT_SECRET": secret,
+        "COACH_HISTORY_IMPORT_SHA256": hashlib.sha256(body).hexdigest(),
+        "COACH_HISTORY_IMPORT_CHAT_ID": str(CHAT),
+        "COACH_HISTORY_IMPORT_EXPIRES_AT": (datetime.now(timezone.utc) + timedelta(hours=1)).isoformat(),
+    }.items():
+        monkeypatch.setenv(name, value)
+    def fail(*args, **kwargs):
+        raise CoachTelegramError("PRIVATE " + TOKEN, method="https://private-token.invalid", http_status="PRIVATE")
+    monkeypatch.setattr(endpoint, "import_history", fail)
+    app = FastAPI()
+    endpoint.register_history_import(app, config(), lambda: None)
+    response = TestClient(app).post("/admin/history-import", content=body,
+                                    headers={"X-Coach-Import-Secret": secret})
+    assert response.status_code == 503
+    assert "reason=telegram_error method=None http_status=None" in caplog.text
+    assert "PRIVATE" not in caplog.text + response.text
+    assert TOKEN not in caplog.text and secret not in caplog.text

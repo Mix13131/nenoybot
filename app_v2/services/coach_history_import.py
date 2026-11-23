@@ -3,11 +3,15 @@ from __future__ import annotations
 
 from dataclasses import replace
 import hashlib
+import logging
 
-from app_v2.adapters.coach_telegram import CoachTelegramClient
+from app_v2.adapters.coach_telegram import CoachTelegramClient, CoachTelegramError
 from app_v2.adapters.postgres import connect
 from app_v2.adapters.telegram_history import parse_telegram_desktop_export
 from app_v2.repositories.source_history_import_repo import SourceHistoryImportRepository
+
+
+logger = logging.getLogger(__name__)
 
 
 class HistoryImportError(ValueError):
@@ -30,15 +34,31 @@ def import_history(config, payload: bytes, *, expected_chat_id: int, dry_run: bo
         raise HistoryImportError("history_scope_not_allowed")
     owns_client = client is None
     client = client or CoachTelegramClient(config.telegram_bot_token)
+    phase = "bot_identity"
+    authors = sorted({m.author_user_id for m in export.messages})
+    verified_authors = 0
     try:
         identity = client.get_me()
         if (identity.get("id") != config.bot_user_id or str(identity.get("username", "")).casefold()
                 != (config.bot_username or "").casefold()):
             raise HistoryImportError("history_bot_identity_mismatch")
+        phase = "group_access"
         client.check_group_access(chat_id=export.chat_id, bot_user_id=config.bot_user_id,
                                   can_read_all_group_messages=identity.get("can_read_all_group_messages") is True)
-        humans = {author for author in sorted({m.author_user_id for m in export.messages})
-                  if client.history_author_is_human(chat_id=export.chat_id, user_id=author)}
+        phase = "author_identity"
+        humans = set()
+        for author in authors:
+            is_human = client.history_author_is_human(chat_id=export.chat_id, user_id=author)
+            verified_authors += 1
+            if is_human:
+                humans.add(author)
+    except CoachTelegramError as exc:
+        logger.error(
+            "Coach history Telegram verification failed: phase=%s verified_authors=%s "
+            "total_authors=%s reason=%s method=%s http_status=%s",
+            phase, verified_authors, len(authors), exc.reason_code, exc.method, exc.http_status,
+        )
+        raise
     finally:
         if owns_client:
             client.close()

@@ -9,8 +9,32 @@ import httpx
 from app_v2.adapters.telegram_archive import group_delivery_matches_thread
 
 
+_SAFE_TELEGRAM_METHODS = frozenset({
+    "sendMessage", "getMe", "setMySettings", "getChat", "getChatMember",
+    "getChatAdministrators", "getWebhookInfo", "setWebhook", "setMyCommands",
+})
+_SAFE_TELEGRAM_REASONS = frozenset({
+    "telegram_token_missing", "telegram_http_error", "telegram_api_rejected",
+    "telegram_result_unknown", "invalid_output_text", "invalid_output_scope",
+    "invalid_output_topic", "invalid_reply_message", "telegram_identity_unknown",
+    "telegram_group_reading_settings_rejected", "telegram_group_reading_settings_not_verified",
+    "configured_chat_is_not_a_group", "bot_not_in_configured_group",
+    "bot_cannot_receive_ordinary_group_messages", "telegram_existing_webhook_unknown",
+    "telegram_webhook_belongs_to_another_deployment", "telegram_webhook_rejected",
+    "telegram_webhook_not_verified", "history_author_identity_unverified",
+    "history_administrators_unverified", "history_author_not_in_verified_administrators",
+    "telegram_commands_rejected",
+})
+
+
 class CoachTelegramError(RuntimeError):
     """No token-bearing URL, provider response or participant text in the error."""
+
+    def __init__(self, reason: str, *, method: str | None = None, http_status: int | None = None):
+        super().__init__(reason)
+        self.reason_code = reason if reason in _SAFE_TELEGRAM_REASONS else "telegram_error"
+        self.method = method if method in _SAFE_TELEGRAM_METHODS else None
+        self.http_status = http_status if type(http_status) is int and 100 <= http_status <= 599 else None
 
 
 class CoachTelegramClient:
@@ -20,6 +44,9 @@ class CoachTelegramClient:
         self._token = token
         self._owns_client = client is None
         self._client = client or httpx.Client(timeout=timeout_seconds, follow_redirects=False)
+        # One import may verify several authors. Store only IDs and bot flags,
+        # never the administrator names or other profile fields.
+        self._history_administrators: dict[int, dict[int, bool]] = {}
         for name in ("httpx", "httpcore"):
             logging.getLogger(name).setLevel(logging.WARNING)
 
@@ -28,19 +55,21 @@ class CoachTelegramClient:
             self._client.close()
 
     def _call(self, method: str, body: dict[str, Any]):
+        http_status = None
         try:
             response = self._client.post(f"https://api.telegram.org/bot{self._token}/{method}", json=body)
+            http_status = response.status_code
             if response.status_code >= 400:
-                raise CoachTelegramError("telegram_http_error")
+                raise CoachTelegramError("telegram_http_error", method=method, http_status=http_status)
             payload = response.json()
             if not isinstance(payload, dict) or payload.get("ok") is not True:
-                raise CoachTelegramError("telegram_api_rejected")
+                raise CoachTelegramError("telegram_api_rejected", method=method, http_status=http_status)
             return payload.get("result")
         except CoachTelegramError:
             raise
         except Exception:
             # Even chaining an httpx exception can reveal its credential-bearing URL.
-            raise CoachTelegramError("telegram_result_unknown") from None
+            raise CoachTelegramError("telegram_result_unknown", method=method, http_status=http_status) from None
 
     def send(self, output):
         text = output.text
@@ -124,12 +153,43 @@ class CoachTelegramClient:
 
     def history_author_is_human(self, *, chat_id: int, user_id: int) -> bool:
         """Desktop exports omit is_bot; verify identity instead of guessing names."""
-        member = self._call("getChatMember", {"chat_id": chat_id, "user_id": user_id})
+        try:
+            member = self._call("getChatMember", {"chat_id": chat_id, "user_id": user_id})
+        except CoachTelegramError as exc:
+            # Telegram guarantees other-user lookup only for bot admins. An
+            # explicitly returned administrator identity is equally concrete
+            # evidence; absence from this list proves nothing about an author.
+            if (exc.method != "getChatMember" or exc.reason_code != "telegram_http_error"
+                    or exc.http_status not in {400, 403}):
+                raise
+            administrators = self._history_administrator_identities(chat_id)
+            if user_id not in administrators:
+                raise CoachTelegramError("history_author_not_in_verified_administrators",
+                                         method="getChatAdministrators") from None
+            return not administrators[user_id]
         user = member.get("user") if isinstance(member, dict) else None
         if (not isinstance(user, dict) or type(user.get("id")) is not int
                 or user["id"] != user_id or type(user.get("is_bot")) is not bool):
-            raise CoachTelegramError("history_author_identity_unverified")
+            raise CoachTelegramError("history_author_identity_unverified", method="getChatMember")
         return not user["is_bot"]
+
+    def _history_administrator_identities(self, chat_id: int) -> dict[int, bool]:
+        if chat_id in self._history_administrators:
+            return self._history_administrators[chat_id]
+        result = self._call("getChatAdministrators", {"chat_id": chat_id, "return_bots": True})
+        if not isinstance(result, list):
+            raise CoachTelegramError("history_administrators_unverified", method="getChatAdministrators")
+        identities: dict[int, bool] = {}
+        for member in result:
+            user = member.get("user") if isinstance(member, dict) else None
+            if (not isinstance(member, dict) or member.get("status") not in {"creator", "administrator"}
+                    or not isinstance(user, dict) or type(user.get("id")) is not int
+                    or not 0 < user["id"] < 2**63 or type(user.get("is_bot")) is not bool
+                    or user["id"] in identities):
+                raise CoachTelegramError("history_administrators_unverified", method="getChatAdministrators")
+            identities[user["id"]] = user["is_bot"]
+        self._history_administrators[chat_id] = identities
+        return identities
 
     def configure_commands(self):
         # Natural language is the participant interface. Existing slash aliases
