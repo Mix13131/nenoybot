@@ -142,6 +142,70 @@ def test_direct_only_is_usable_without_retention_or_history(coach):
     assert coach.conn.execute("SELECT count(*) FROM source_archive_revisions WHERE chat_id=%s",(coach.chat,)).fetchone()[0]==0
 
 
+@pytest.mark.parametrize("reason,expected", [
+    ("fact_is_not_an_exact_source_quote", "fact_is_not_an_exact_source_quote"),
+    ("CoachAIError", "CoachAIError"),
+    ("private_model_text", "unclassified_decision"),
+])
+def test_completed_job_keeps_only_safe_reason_and_scrubs_request(coach, reason, expected):
+    coach.grant(direct_request_group_reply=True)
+    _, job = coach.direct_job()
+    coach.repo.complete_job(job, reason=reason)
+    assert coach.conn.execute(
+        "SELECT status,reason,current_text,source_checksum,source_id,lease_token,lease_until "
+        "FROM coach_jobs WHERE id=%s", (job.id,),
+    ).fetchone() == ("completed", expected, None, None, None, None, None)
+
+
+def test_old_worker_cannot_overwrite_current_completion_reason(coach):
+    coach.grant(direct_request_group_reply=True)
+    at = datetime.now(timezone.utc)
+    assert coach.repo.enqueue_job(coach.message(), "direct", now=at)
+    original = coach.repo.claim_job(lease_seconds=1, now=at)
+    reclaimed = coach.repo.claim_job(now=at + timedelta(seconds=2))
+    coach.repo.complete_job(original, reason="generated_silence")
+    assert coach.conn.execute("SELECT status,reason FROM coach_jobs WHERE id=%s", (original.id,)).fetchone() == ("processing", None)
+    coach.repo.complete_job(reclaimed, reason="source_backed_decision")
+    coach.repo.complete_job(original, reason="invalid_response_shape")
+    assert coach.conn.execute("SELECT status,reason FROM coach_jobs WHERE id=%s", (original.id,)).fetchone() == ("completed", "source_backed_decision")
+
+
+def test_recovery_attempt_is_part_of_job_identity_and_completion_guard(coach):
+    coach.grant(direct_request_group_reply=True)
+    _, original = coach.direct_job()
+    requested_at = datetime.now(timezone.utc)
+    # Simulate the attempt boundary with the same lease to test the independent
+    # attempt check; production recovery always clears and reacquires the lease.
+    coach.conn.execute(
+        "UPDATE coach_jobs SET recovery_attempt=1,recovery_requested_at=%s WHERE id=%s",
+        (requested_at, original.id),
+    )
+    recovered = replace(original, recovery_attempt=1)
+    assert not coach.repo.job_is_current(original)
+    assert coach.repo.job_is_current(recovered)
+    assert not coach.repo.job_is_current(replace(recovered, lease_token="obsolete-lease"))
+    assert coach.repo.enqueue_output(original, "Obsolete attempt must not publish") is None
+    coach.repo.complete_job(original, reason="generated_silence")
+    coach.repo.fail_job(original, "processing_failed")
+    assert coach.conn.execute("SELECT status,reason FROM coach_jobs WHERE id=%s", (original.id,)).fetchone() == ("processing", None)
+    coach.repo.complete_job(recovered, reason="source_backed_decision")
+    assert coach.conn.execute(
+        "SELECT status,reason,recovery_attempt,recovery_requested_at FROM coach_jobs WHERE id=%s",
+        (original.id,),
+    ).fetchone() == ("completed", "source_backed_decision", 1, requested_at)
+
+
+def test_claimed_job_carries_recovery_attempt(coach):
+    coach.grant(direct_request_group_reply=True)
+    identifier = coach.repo.enqueue_job(coach.message(), "direct")
+    coach.conn.execute(
+        "UPDATE coach_jobs SET recovery_attempt=1,recovery_requested_at=CURRENT_TIMESTAMP WHERE id=%s",
+        (identifier,),
+    )
+    job = coach.repo.claim_job()
+    assert job.recovery_attempt == 1 and coach.repo.job_is_current(job)
+
+
 def test_auto_requirements_and_pause_preserve_independent_grants(coach):
     coach.notice()
     result=coach.controls.handle(coach.message(2,"/auto_on"))

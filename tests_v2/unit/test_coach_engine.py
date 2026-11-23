@@ -537,6 +537,73 @@ def conversation_turn(role,text,source_,message_id=800):
         source_proofs=(SourceProof(source_.source_id,source_.checksum,source_.access_version),))
 
 
+@pytest.mark.parametrize('known_from', ['new', 'assistant', 'current'])
+def test_exact_quote_from_full_bounded_user_turn_reaches_generation(known_from):
+    tail = 'Завершил синтетическую проверку учебного проекта.'
+    body = ('Синтетическое наблюдение. ' * (180 if known_from == 'current' else 65)) + tail
+    prior = source(8, body)
+    current = prior if known_from == 'current' else source(9, 'Помоги разобрать мой недавний отчёт')
+    state = State()
+    state.conversation = [conversation_turn('user', body, prior, prior.telegram_message_id)]
+    if known_from == 'assistant':
+        state.conversation.append(conversation_turn('assistant', 'Продолжим обсуждение проекта?', prior))
+
+    def quote_tail(payload):
+        return assessment(payload, facts=[dict(kind='result', quote=tail,
+            source_id=prior.source_id, checksum=prior.checksum)])
+
+    engine, req, state, ai, selector, _ = setup([current], state=state,
+        mode='direct', ai=AI([quote_tail, quote_tail]))
+    selector.current_sources[prior.source_id] = prior
+    result = engine.process(req)
+    assert result.action == 'RESPOND'
+    assert [json.loads(call['messages'][-1]['content'])['phase'] for call in ai.calls] == ['assessment', 'generation']
+    for call in ai.calls:
+        payload = json.loads(call['messages'][-1]['content'])
+        supplied = next(s for s in payload['sources'] if s['source_id'] == prior.source_id)
+        turn = next(t for t in payload['conversation'] if t['role'] == 'user')
+        assert supplied['text'] == turn['text'] == body
+        assert supplied['checksum'] == prior.checksum
+        assert tail in supplied['text']
+    assert state.saved and all(saved['summary'] == tail for saved in state.saved)
+
+
+@pytest.mark.parametrize('mismatch', ['text', 'message_id', 'multiple_proofs'])
+def test_user_conversation_cannot_expand_a_different_archived_source(mismatch):
+    prior = source(8, 'Подлинный синтетический отчёт')
+    other = source(9, 'Другой синтетический источник')
+    record = conversation_turn('user', prior.available_text, prior, prior.telegram_message_id)
+    if mismatch == 'text':
+        record['text'] = 'UNVERIFIED_USER_TURN'
+    elif mismatch == 'message_id':
+        record['telegram_message_id'] += 1
+    else:
+        record['source_proofs'] += (SourceProof(other.source_id, other.checksum, other.access_version),)
+    state = State()
+    state.conversation = [record]
+    engine, req, _, ai, selector, _ = setup(state=state, mode='direct')
+    selector.current_sources.update({prior.source_id: prior, other.source_id: other})
+    result = engine.process(req)
+    assert result.action == 'RESPOND' and result.structured['conversation_turns'] == 0
+    for call in ai.calls:
+        payload = json.loads(call['messages'][-1]['content'])
+        assert not payload['conversation']
+        assert prior.source_id not in {s['source_id'] for s in payload['sources']}
+
+
+def test_oversize_user_turn_does_not_expand_evidence_outside_conversation_budget():
+    prior = source(8, 'Большой синтетический отчёт. ' * 100)
+    state = State()
+    state.conversation = [conversation_turn('user', prior.available_text, prior, prior.telegram_message_id)]
+    engine, req, _, ai, selector, _ = setup(state=state, mode='direct')
+    engine.conversation_max_bytes = 1000
+    selector.current_sources[prior.source_id] = prior
+    result = engine.process(req)
+    assert result.action == 'RESPOND' and result.structured['conversation_turns'] == 0
+    assert all(prior.source_id not in {s['source_id'] for s in json.loads(call['messages'][-1]['content'])['sources']}
+               for call in ai.calls)
+
+
 def test_followup_sees_delivered_bot_turns_and_carries_all_their_proofs():
     prior=source(1,'Не могу начать учебную задачу')
     current=source(2,'Да, получилось')

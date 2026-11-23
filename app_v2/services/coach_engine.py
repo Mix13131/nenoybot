@@ -415,7 +415,7 @@ class CoachEngine:
                     or not isinstance(record.get('text'), str) or not record['text'].strip()
                     or not record.get('source_proofs') or _SENSITIVE.search(record['text'])):
                 continue
-            additions, valid = [], True
+            additions, resolved, valid = [], [], True
             for proof in record['source_proofs']:
                 if not isinstance(proof, SourceProof):
                     valid = False
@@ -429,11 +429,21 @@ class CoachEngine:
                         or _SENSITIVE.search(source.available_text)):
                     valid = False
                     break
+                resolved.append(source)
                 if source.source_id not in known:
                     additions.append(_Evidence(source.source_id, source.checksum, source.available_text[:1200], source))
             if not valid or len(known | {e.source_id for e in additions}) > 40:
                 continue
-            at = record.get('occurred_at')
+            user_source = None
+            if record['role'] == 'user':
+                # The user turn must be the exact archived message. A delivered
+                # assistant turn can refer to several sources, but its wording
+                # must never be promoted into evidence of what the user said.
+                if (len(resolved) != 1 or record.get('telegram_message_id') != resolved[0].telegram_message_id
+                        or record['text'] != resolved[0].available_text):
+                    continue
+                user_source = resolved[0]
+            at = user_source.occurred_at if user_source else record.get('occurred_at')
             item = {'role': record['role'], 'text': record['text'],
                     'telegram_message_id': record.get('telegram_message_id'),
                     'occurred_at': at.isoformat() if isinstance(at, datetime) else None,
@@ -442,6 +452,16 @@ class CoachEngine:
             size = len(json.dumps(item, ensure_ascii=False).encode('utf-8'))
             if used + size > self.conversation_max_bytes:
                 continue
+            if user_source is not None:
+                # This full text already fits the explicit conversation byte
+                # budget. Give quote validation the same text the model sees,
+                # including when an earlier turn introduced a shorter excerpt.
+                expanded = _Evidence(user_source.source_id, user_source.checksum,
+                                     user_source.available_text, user_source)
+                if user_source.source_id in known:
+                    evidence[:] = [expanded if e.source_id == user_source.source_id else e for e in evidence]
+                else:
+                    additions = [expanded if e.source_id == user_source.source_id else e for e in additions]
             for addition in additions:
                 if addition.source_id not in known:
                     evidence.append(addition)

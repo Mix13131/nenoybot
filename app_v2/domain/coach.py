@@ -47,6 +47,7 @@ class CoachJob:
     occurred_at: datetime
     window_days: int = 7
     public_confirmed: bool = False
+    recovery_attempt: int = 0
 
 
 @dataclass(frozen=True)

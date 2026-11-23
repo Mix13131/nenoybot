@@ -18,10 +18,11 @@ import pytest
 from app_v2.coach_admin import CoachPreparationError, assert_dedicated_database, prepare
 from app_v2.coach_config import CoachConfig
 from app_v2.coach_main import create_app
-from app_v2.coach_worker import build_worker
+from app_v2.coach_worker import VALIDATION_UNAVAILABLE, build_worker
 from app_v2.repositories.coach_repo import CoachRepository
 from app_v2.repositories.source_archive_repo import SourceArchiveRepository
 from app_v2.services.coach_ai import ProviderResponse
+from app_v2.services.coach_engine import CoachDecision
 from app_v2.services.coach_ingestor import ingest_coach_update
 
 
@@ -228,6 +229,53 @@ def test_silence_still_archives_and_tracks_without_public_message(pilot):
     assert result.archived and result.queued
     assert len(pilot.sender.sent) == sent
     assert pilot.conn.execute("SELECT mode FROM coach_jobs ORDER BY created_at DESC LIMIT 1").fetchone()[0] == "index"
+
+
+@pytest.mark.parametrize("request_text,mode", [
+    ("/ask synthetic current request", "direct"), ("/review 7", "weekly_review"), ("/track 7", "track"),
+])
+def test_explicit_validation_failure_delivers_notice_and_retains_safe_reason(pilot, request_text, mode):
+    pilot.worker.engine.process = lambda request: CoachDecision("SILENCE", reason="fact_is_not_an_exact_source_quote")
+    _, result = pilot.intake(request_text)
+    assert result.queued and len(pilot.sender.sent) == 1
+    output = pilot.sender.sent[0]
+    assert output.mode == mode and output.kind == "notice" and output.text == VALIDATION_UNAVAILABLE
+    assert len(output.source_proofs) == 1 and output.source_proofs[0].source_id == output.source_id
+    assert pilot.provider.calls == []
+    assert pilot.conn.execute("SELECT status,reason,current_text FROM coach_jobs").fetchone() == (
+        "completed", "fact_is_not_an_exact_source_quote", None,
+    )
+
+
+@pytest.mark.parametrize("withdraw", ["source", "permission"])
+def test_validation_notice_is_cancelled_when_access_changes_before_send(pilot, withdraw):
+    pilot.worker.engine.process = lambda request: CoachDecision("SILENCE", reason="generated_silence")
+    event, result = pilot.intake("/ask synthetic guarded request", process=False)
+    assert result.queued and pilot.worker.run_once()
+    output = pilot.repo.claim_output()
+    assert output.kind == "notice" and output.source_proofs
+    archive = SourceArchiveRepository(pilot.conn)
+    if withdraw == "source":
+        archive.forget_sources(chat_id=CHAT, message_thread_id=TOPIC, author_user_id=AUTHOR,
+                               actor_user_id=AUTHOR, telegram_message_id=event["message"]["message_id"])
+    else:
+        archive.set_permissions(chat_id=CHAT, message_thread_id=TOPIC, author_user_id=AUTHOR,
+                                actor_user_id=AUTHOR, direct_request_group_reply=False)
+    assert pilot.repo.deliver_output(output, pilot.sender.send) == "cancelled"
+    assert pilot.sender.sent == []
+
+
+def test_source_deleted_during_validation_cannot_enqueue_notice(pilot):
+    def deleted_source(request):
+        SourceArchiveRepository(pilot.conn).forget_sources(
+            chat_id=CHAT, message_thread_id=TOPIC, author_user_id=AUTHOR, actor_user_id=AUTHOR,
+            telegram_message_id=request.originating_job.telegram_message_id,
+        )
+        return CoachDecision("SILENCE", reason="invalid_response_shape")
+    pilot.worker.engine.process = deleted_source
+    _, result = pilot.intake("/ask synthetic request deleted during processing")
+    assert result.queued and pilot.sender.sent == []
+    assert pilot.conn.execute("SELECT count(*) FROM coaching_outputs").fetchone()[0] == 0
 
 
 def test_revoke_after_generation_cancels_prepared_historical_reply(pilot):

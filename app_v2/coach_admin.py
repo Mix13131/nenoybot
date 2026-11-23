@@ -24,6 +24,7 @@ from app_v2.repositories.coach_budget_repo import CoachBudgetRepository
 from app_v2.repositories.source_archive_repo import SourceArchiveRepository
 from app_v2.services.coach_ai import CoachAI, CoachAIError, OpenAIResponsesProvider
 from app_v2.services.coach_history_import import import_history
+from app_v2.services.coach_recovery import CoachRecoveryError, recover_completed_direct
 
 
 class CoachPreparationError(RuntimeError):
@@ -206,25 +207,32 @@ def _timestamp(value: str) -> datetime:
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Prepare only the separately configured coach")
-    parser.add_argument("command", choices=("bootstrap-database", "prepare", "smoke-ai", "setup-telegram", "status", "stats", "import-history"))
-    parser.add_argument("--since", type=_timestamp, help="Inclusive usage interval start (stats only)")
-    parser.add_argument("--until", type=_timestamp, help="Exclusive usage interval end (stats only)")
+    parser.add_argument("command", choices=("bootstrap-database", "prepare", "smoke-ai", "setup-telegram", "status", "stats", "import-history", "recover-direct"))
+    parser.add_argument("--since", type=_timestamp, help="Inclusive interval start (stats or recover-direct)")
+    parser.add_argument("--until", type=_timestamp, help="Exclusive interval end (stats or recover-direct)")
     parser.add_argument("--file", help="Private Telegram Desktop JSON path (import-history only)")
-    parser.add_argument("--chat-id", type=int, help="Expected Telegram group identity (import-history only)")
-    parser.add_argument("--apply", action="store_true", help="Commit history import; omitted means rollback preview")
+    parser.add_argument("--chat-id", type=int, help="Expected Telegram group identity (import-history or recover-direct)")
+    parser.add_argument("--apply", action="store_true", help="Apply import/recovery; omitted means a non-writing preview")
     args = parser.parse_args(argv)
-    if args.command != "stats" and (args.since is not None or args.until is not None):
-        parser.error("--since/--until apply only to stats")
-    if args.command != "import-history" and (args.file is not None or args.chat_id is not None or args.apply):
-        parser.error("--file/--chat-id/--apply apply only to import-history")
+    if args.command not in {"stats", "recover-direct"} and (args.since is not None or args.until is not None):
+        parser.error("--since/--until apply only to stats or recover-direct")
+    if args.command != "import-history" and args.file is not None:
+        parser.error("--file applies only to import-history")
+    if args.command not in {"import-history", "recover-direct"} and (args.chat_id is not None or args.apply):
+        parser.error("--chat-id/--apply apply only to import-history or recover-direct")
     if args.command == "import-history" and (not args.file or args.chat_id is None):
         parser.error("import-history requires --file and --chat-id")
+    if args.command == "recover-direct" and (args.since is None or args.until is None or args.chat_id is None):
+        parser.error("recover-direct requires --since, --until and --chat-id")
     try:
         config = load_coach_config()
         if args.command == "import-history":
             with Path(args.file).open("rb") as source:
                 payload = source.read(8 * 1024 * 1024 + 1)
             result = import_history(config, payload, expected_chat_id=args.chat_id, dry_run=not args.apply)
+        elif args.command == "recover-direct":
+            result = recover_completed_direct(config, since=args.since, until=args.until,
+                expected_chat_id=args.chat_id, dry_run=not args.apply)
         elif args.command == "stats":
             result = inspect_statistics(config, since=args.since, until=args.until)
         else:
@@ -233,9 +241,11 @@ def main(argv: list[str] | None = None) -> int:
                       "status": inspect_status}[args.command]
             result = action(config)
         print(json.dumps(result, ensure_ascii=False, default=str))
+        if args.command == "recover-direct" and result["counts"]["blocked"]:
+            return 1
         return 0
     except (CoachPreparationError, CoachConfigurationError, CoachTelegramError,
-            CoachDatabaseBootstrapError, CoachAIError) as exc:
+            CoachDatabaseBootstrapError, CoachAIError, CoachRecoveryError) as exc:
         print(json.dumps({"status": "blocked", "reason": str(exc)}, ensure_ascii=False))
     except Exception as exc:
         print(json.dumps({"status": "failed", "error_type": type(exc).__name__}))

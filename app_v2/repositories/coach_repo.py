@@ -26,6 +26,33 @@ from app_v2.repositories.source_archive_repo import ArchivePermissionError, Sour
 logger=logging.getLogger(__name__)
 
 
+_DECISION_REASONS = frozenset({
+    "completed", "ai_disabled", "source_backed_decision", "no_authorized_evidence",
+    "indexed_without_publication", "generated_silence", "stale_job_current",
+    "permission_denied", "stale_job_consent", "sensitive_or_external_current_source",
+    "current_source_unavailable", "current_source_body_mismatch",
+    "automatic_processing_requires_durable_source", "no_current_text",
+    "permission_or_source_changed", "model_flagged_sensitive_content",
+    "unsafe_or_unsupported_output", "unsafe_experiment", "invalid_output_text",
+    "invalid_response_value_type", "source_refs_required", "invalid_source_ref",
+    "unprovided_source_ref", "invalid_response_shape", "response_byte_budget_exceeded",
+    "invalid_facts", "invalid_claim_flag", "invalid_risk_flags", "invalid_fact",
+    "fact_is_not_an_exact_source_quote", "invalid_hypotheses", "invalid_hypothesis",
+    "first_time_requires_explicit_self_report", "recurrence_requires_independent_episodes",
+    "invalid_search_terms", "invalid_dialogue_action", "invalid_experiments", "invalid_gap",
+    "silence_has_no_publication", "response_text_required", "invalid_dialogue_message",
+    "invalid_experiment", "unbounded_experiment", "experiment_message_required",
+    "experiment_must_be_in_the_linked_message", "known_experiment_must_not_be_reoffered",
+    "CoachAIError", "CoachAIConfigurationError", "CoachBudgetConfigurationError",
+    "CoachBudgetExceeded", "CoachOperationAlreadyAttempted",
+})
+
+
+def safe_decision_reason(reason: object) -> str:
+    """Persist/log only fixed technical outcomes, never model or exception text."""
+    return reason if isinstance(reason, str) and reason in _DECISION_REASONS else "unclassified_decision"
+
+
 def _now(value=None):
     value = value or datetime.now(timezone.utc)
     if not isinstance(value, datetime) or value.utcoffset() is None:
@@ -416,7 +443,7 @@ class CoachRepository:
                    FROM candidate WHERE j.id=candidate.id
                    RETURNING j.id,j.chat_id,j.message_thread_id,j.author_user_id,j.telegram_update_id,
                      j.telegram_message_id,j.mode,j.current_text,j.source_checksum,j.source_id,j.consent_version,
-                     j.lease_token,j.occurred_at,j.window_days,j.public_confirmed""",
+                     j.lease_token,j.occurred_at,j.window_days,j.public_confirmed,j.recovery_attempt""",
                 (self.chat_id,self.message_thread_id,at,token,at+timedelta(seconds=lease_seconds)),
             ).fetchone()
             return CoachJob(*row) if row else None
@@ -436,10 +463,10 @@ class CoachRepository:
                  AND j.chat_id=%s AND j.message_thread_id=%s AND j.author_user_id=%s
                  AND j.telegram_update_id=%s AND j.telegram_message_id=%s AND j.mode=%s
                  AND j.current_text=%s AND j.consent_version=%s
-                 AND j.source_id IS NOT DISTINCT FROM %s""" + (" FOR UPDATE OF j" if lock_job else ""),
+                 AND j.source_id IS NOT DISTINCT FROM %s AND j.recovery_attempt=%s""" + (" FOR UPDATE OF j" if lock_job else ""),
             (job.id,job.lease_token,_now(now),_now(now),job.source_checksum,job.source_checksum,
              job.chat_id,job.message_thread_id,job.author_user_id,job.telegram_update_id,
-             job.telegram_message_id,job.mode,job.current_text,job.consent_version,job.source_id),
+             job.telegram_message_id,job.mode,job.current_text,job.consent_version,job.source_id,job.recovery_attempt),
         ).fetchone()
         return row is not None
 
@@ -450,17 +477,19 @@ class CoachRepository:
         except ArchivePermissionError:
             return False
 
-    def complete_job(self, job: CoachJob):
+    def complete_job(self, job: CoachJob, *, reason: str = "completed"):
         self.conn.execute(
-            "UPDATE coach_jobs SET status='completed',current_text=NULL,source_checksum=NULL,source_id=NULL,lease_token=NULL,lease_until=NULL "
-            "WHERE id=%s AND lease_token=%s AND status='processing'",(job.id,job.lease_token),
+            "UPDATE coach_jobs SET status='completed',current_text=NULL,source_checksum=NULL,source_id=NULL,lease_token=NULL,lease_until=NULL,reason=%s "
+            "WHERE id=%s AND lease_token=%s AND recovery_attempt=%s AND status='processing'",
+            (safe_decision_reason(reason),job.id,job.lease_token,job.recovery_attempt),
         )
 
     def fail_job(self, job: CoachJob, reason: str = "processing_failed"):
         safe_reason = reason if re.fullmatch(r"[a-z_]{1,60}",reason) else "processing_failed"
         self.conn.execute(
             "UPDATE coach_jobs SET status='failed',current_text=NULL,source_checksum=NULL,source_id=NULL,lease_token=NULL,lease_until=NULL,reason=%s "
-            "WHERE id=%s AND lease_token=%s AND status='processing'",(safe_reason,job.id,job.lease_token),
+            "WHERE id=%s AND lease_token=%s AND recovery_attempt=%s AND status='processing'",
+            (safe_reason,job.id,job.lease_token,job.recovery_attempt),
         )
 
     def _proofs_valid(self, author: int, proofs: Sequence[SourceProof], *, current_source_id=None,

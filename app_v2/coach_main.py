@@ -44,7 +44,7 @@ def create_app(config: CoachConfig | None = None, *, connection_factory: Callabl
             with factory() as conn:
                 CoachScopeRepository(conn, bot_user_id=config.bot_user_id).assert_identity()
                 conn.execute("SELECT 1 FROM coach_group_memberships LIMIT 0")
-                conn.execute("SELECT 1 FROM coach_jobs LIMIT 0")
+                conn.execute("SELECT recovery_attempt,recovery_requested_at FROM coach_jobs LIMIT 0")
                 conn.execute("SELECT source_origin,import_batch_id FROM source_archive_revisions LIMIT 0")
                 conn.execute("SELECT 1 FROM source_archive_imports LIMIT 0")
                 conn.execute("SELECT 1 FROM coach_dialogue_turns LIMIT 0")

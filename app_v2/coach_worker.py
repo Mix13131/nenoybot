@@ -9,9 +9,10 @@ import time
 from app_v2.adapters.coach_telegram import CoachTelegramClient
 from app_v2.adapters.postgres import connect
 from app_v2.coach_config import CoachConfig, load_coach_config
+from app_v2.domain.coach import SourceProof
 from app_v2.repositories.coach_budget_repo import CoachBudgetRepository
 from app_v2.repositories.coach_dialogue_repo import CoachDialogueRepository
-from app_v2.repositories.coach_repo import CoachRepository
+from app_v2.repositories.coach_repo import CoachRepository, safe_decision_reason
 from app_v2.repositories.coach_scope_repo import CoachScopeRepository
 from app_v2.repositories.source_archive_repo import ArchivePermissionError, SourceArchiveRepository
 from app_v2.services.coach_ai import CoachAI, OpenAIResponsesProvider
@@ -24,10 +25,37 @@ UNAVAILABLE = (
     "Я не делал выводов по твоему сообщению. Разрешённый архив сохраняется независимо от анализа. "
     "Можно вернуться к этому чуть позже."
 )
+VALIDATION_UNAVAILABLE = (
+    "Запрос получил, но сейчас не получилось подготовить разбор по доступным сообщениям."
+)
 _AI_UNAVAILABLE_REASONS = {
     "CoachAIError", "CoachAIConfigurationError", "CoachBudgetConfigurationError",
     "CoachBudgetExceeded", "CoachOperationAlreadyAttempted",
 }
+_VALIDATION_NOTICE_REASONS = frozenset({
+    "generated_silence", "invalid_output_text", "invalid_response_value_type",
+    "source_refs_required", "invalid_source_ref", "unprovided_source_ref",
+    "invalid_response_shape", "response_byte_budget_exceeded", "invalid_facts",
+    "invalid_claim_flag", "invalid_risk_flags", "invalid_fact",
+    "fact_is_not_an_exact_source_quote", "invalid_hypotheses", "invalid_hypothesis",
+    "first_time_requires_explicit_self_report", "recurrence_requires_independent_episodes",
+    "invalid_search_terms", "invalid_dialogue_action", "invalid_experiments", "invalid_gap",
+    "silence_has_no_publication", "response_text_required", "invalid_dialogue_message",
+    "invalid_experiment", "unbounded_experiment", "experiment_message_required",
+    "experiment_must_be_in_the_linked_message", "known_experiment_must_not_be_reoffered",
+    "unsafe_or_unsupported_output", "unsafe_experiment",
+})
+
+
+def _log_decision(mode: object, action: object, reason: object) -> None:
+    """One bounded outcome counter; no job, person, source or model payload."""
+    modes = {"direct", "weekly_review", "track", "auto_report", "index"}
+    print(json.dumps({
+        "event": "coach_decision", "count": 1,
+        "mode": mode if isinstance(mode, str) and mode in modes else "unknown",
+        "action": action if isinstance(action, str) and action in {"SILENCE", "RESPOND"} else "unknown",
+        "reason": safe_decision_reason(reason),
+    }), flush=True)
 
 
 class CoachWorker:
@@ -39,12 +67,14 @@ class CoachWorker:
         self.maintenance_enabled = maintenance_enabled
         self._next_maintenance = 0.0
 
-    def _unavailable_notice(self, job):
+    def _unavailable_notice(self, job, text=UNAVAILABLE):
         if job.mode not in {"direct", "weekly_review", "track"}:
             return
         try:
             if self.repo.job_is_current(job):
-                self.repo.enqueue_output(job, UNAVAILABLE, kind="notice")
+                proofs = ((SourceProof(job.source_id, job.source_checksum, job.consent_version),)
+                          if job.source_id else ())
+                self.repo.enqueue_output(job, text, kind="notice", source_proofs=proofs)
         except ArchivePermissionError:
             # Removal/withdrawal can complete between the current-job check and
             # enqueue. It cancels this group, not the whole multi-group worker.
@@ -71,10 +101,14 @@ class CoachWorker:
             return True
         if not self.ai_enabled:
             self._unavailable_notice(job)
-            self.repo.complete_job(job)
+            self.repo.complete_job(job, reason="ai_disabled")
+            _log_decision(job.mode, "SILENCE", "ai_disabled")
             return True
+        operation_id = "coach-job:" + job.id
+        if job.recovery_attempt:
+            operation_id += ":recovery:" + str(job.recovery_attempt)
         request = CoachRequest(
-            operation_id="coach-job:" + job.id,
+            operation_id=operation_id,
             mode=job.mode, chat_id=job.chat_id, message_thread_id=job.message_thread_id,
             author_user_id=job.author_user_id, current_text=job.current_text,
             source_id=job.source_id, source_checksum=job.source_checksum,
@@ -92,7 +126,12 @@ class CoachWorker:
             elif (decision.reason in _AI_UNAVAILABLE_REASONS and
                   job.mode in {"direct", "weekly_review", "track"}):
                 self._unavailable_notice(job)
-            self.repo.complete_job(job)
+            elif decision.action == "SILENCE" and decision.reason in _VALIDATION_NOTICE_REASONS:
+                # Privacy/permission/source refusals and unknown reasons are
+                # deliberately absent. Automatic and indexing jobs stay quiet.
+                self._unavailable_notice(job, VALIDATION_UNAVAILABLE)
+            self.repo.complete_job(job, reason=decision.reason)
+            _log_decision(job.mode, decision.action, decision.reason)
         except ArchivePermissionError:
             self.repo.fail_job(job, "group_or_permission_changed")
         except Exception as exc:
