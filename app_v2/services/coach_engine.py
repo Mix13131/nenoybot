@@ -161,11 +161,13 @@ def _text(value: object, limit: int) -> str:
 
 class CoachEngine:
     def __init__(self, *, archive, state, ai, selector=None,
-                 max_response_bytes: int = 65536, conversation_max_bytes: int = 12000) -> None:
+                 max_response_bytes: int = 65536, conversation_max_bytes: int = 12000,
+                 display_name: str | None = None) -> None:
         if (type(max_response_bytes) is not int or not 4096 <= max_response_bytes <= 1048576
                 or type(conversation_max_bytes) is not int or not 0 <= conversation_max_bytes <= 65536):
             raise ValueError('Explicit bounded input/output byte budgets are required')
         self.archive, self.state, self.ai = archive, state, ai
+        self.display_name = display_name
         self.selector = selector or CoachSourceSelector(archive)
         self.max_response_bytes, self.conversation_max_bytes = max_response_bytes, conversation_max_bytes
 
@@ -208,9 +210,12 @@ class CoachEngine:
                    'coverage': coverage, 'requested_window_days': request.days,
                    'source_backed_memory': memory or [], 'conversation': conversation or [],
                    'output_byte_budget': self.max_response_bytes}
+        system_prompt = (_PROMPTS / prompt).read_text()
+        if self.display_name:
+            system_prompt = 'Твоё имя: ' + json.dumps(self.display_name, ensure_ascii=False) + '.\n' + system_prompt
         result = self.ai.request_json(
             operation_id=operation, purpose=phase,
-            messages=[{'role': 'system', 'content': (_PROMPTS / prompt).read_text()},
+            messages=[{'role': 'system', 'content': system_prompt},
                       {'role': 'user', 'content': json.dumps(payload, ensure_ascii=False)}],
             schema=schema,
         )

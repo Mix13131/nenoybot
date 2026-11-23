@@ -44,7 +44,7 @@ def _command_text(text: str | None, *, bot_username=None, aliases=()) -> str | N
     username=(bot_username or "").lstrip("@").casefold()
     names=tuple(aliases)+(("@"+username,) if username else ())
     for alias in sorted(names,key=len,reverse=True):
-        match=re.match(r"^"+re.escape(alias.casefold().strip())+r"[\s,:!—-]+",normalized)
+        match=re.match(r"^"+re.escape(alias.casefold().strip())+r"[\s,:!?.—-]+",normalized)
         if match:
             normalized=normalized[match.end():]
             break

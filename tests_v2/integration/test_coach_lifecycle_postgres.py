@@ -167,14 +167,14 @@ def test_complete_group_default_archive_auto_direct_track_and_deletion(pilot):
     _, result = pilot.intake("/ask помоги разобрать мой следующий шаг")
     assert result.queued and pilot.sender.sent[-1].mode == "direct"
     before = len(pilot.provider.calls)
-    pilot.intake("Напарник, покажи мой трек за 30 дней")
+    pilot.intake("Арни, покажи мой трек за 30 дней")
     assert len(pilot.provider.calls) == before + 1
     assert pilot.sender.sent[-1].mode == "track"
     track_text = "\n".join(item.text for item in pilot.sender.sent if item.mode == "track")
     assert "Персональный трек" in track_text
     assert "договорённость" in track_text
 
-    pilot.intake("Напарник, забудь мои сообщения")
+    pilot.intake("Арни, забудь мои сообщения")
     assert pilot.conn.execute("SELECT count(*) FROM source_archive_revisions WHERE available_text IS NOT NULL").fetchone()[0] == 0
     assert pilot.repo.list_episodes(author_user_id=AUTHOR) == []
     assert pilot.repo.permissions(AUTHOR).track_status == "off"
@@ -185,7 +185,7 @@ def test_complete_group_default_archive_auto_direct_track_and_deletion(pilot):
 
 
 def test_direct_only_leaves_no_archive_or_durable_episodes(pilot):
-    pilot.intake("Напарник, не запоминай мои сообщения")
+    pilot.intake("Арни, не запоминай мои сообщения")
     _, result = pilot.intake("/ask у меня один вопрос о следующем шаге")
     assert result.queued and not result.archived
     assert pilot.sender.sent[-1].mode == "direct"
@@ -254,7 +254,7 @@ def test_ambiguous_send_has_no_blind_retry(pilot):
 
 
 def test_unconfigured_scopes_and_unconsented_nested_text_are_never_stored(pilot):
-    pilot.intake("Напарник, не запоминай мои сообщения")
+    pilot.intake("Арни, не запоминай мои сообщения")
     _, wrong = pilot.intake("PRIVATE_OTHER_TOPIC", topic=18)
     assert wrong.status == "ignored"
     pilot.intake("/ask мой собственный короткий вопрос", reply_to_message={
@@ -329,7 +329,7 @@ def test_disabled_scope_stops_jobs_but_accepts_revocation_controls(pilot):
 
 
 def test_direct_only_edit_before_original_never_reaches_ai(pilot):
-    pilot.intake("Напарник, не запоминай мои сообщения")
+    pilot.intake("Арни, не запоминай мои сообщения")
     original = pilot.update("/ask устаревший вариант запроса")
     edit = pilot.update("исправленный вариант", edit=True, message_id=original["message"]["message_id"])
     edit["edited_message"]["date"] = original["message"]["date"]

@@ -97,7 +97,8 @@ def build_worker(conn, config: CoachConfig, topic: int, *, sender=None, provider
     if config.ai_enabled:
         budget = CoachBudgetRepository(config.database_url)
         ai = CoachAI(budget, provider or OpenAIResponsesProvider(config.openai_api_key), config.ai_config())
-    engine = CoachEngine(archive=SourceArchiveRepository(conn), state=repo, ai=ai)
+    engine = CoachEngine(archive=SourceArchiveRepository(conn), state=repo, ai=ai,
+                         display_name=config.display_name)
     dialogue = CoachDialogueRepository(conn, chat_id=config.chat_id, message_thread_id=topic,
                                        bot_user_id=config.bot_user_id,
                                        transient_ttl_seconds=config.transient_ttl_seconds)

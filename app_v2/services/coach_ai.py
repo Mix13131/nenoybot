@@ -1,4 +1,4 @@
-"""One pre-reserved JSON gateway for every paid Naparnik model operation.
+"""One pre-reserved JSON gateway for every paid Arni model operation.
 
 Prices/cap/model are explicit deployment inputs, never guessed from a model
 name. All inputs are bounded plain text; tools, files, images, stored provider

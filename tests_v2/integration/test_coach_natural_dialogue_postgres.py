@@ -152,7 +152,7 @@ def test_natural_track_request_needs_no_confirmation_round_trip(natural_pilot):
     p = natural_pilot
     p.intake('Отчёт: сделал первый шаг к собственной учебной цели.')
     before = len(p.provider.calls)
-    _, accepted = p.intake('Напарник, покажи мой трек за 7 дней')
+    _, accepted = p.intake('Арни, покажи мой трек за 7 дней')
     assert accepted.queued and len(p.provider.calls) > before
     assert any(call['mode'] == 'track' for call in p.provider.calls[before:])
     assert replies(p)[-1].mode == 'track'
@@ -203,14 +203,14 @@ def test_ordinary_chatter_can_be_silent_while_default_archive_is_kept(natural_pi
 def test_natural_stop_persists_but_does_not_disable_direct_requests_or_other_authors(natural_pilot):
     p = natural_pilot
     p.intake('Отчёт: выполнил собственный синтетический шаг.')
-    p.intake('Напарник, пока не комментируй')
+    p.intake('Арни, пока не комментируй')
     permission = p.repo.permissions(AUTHOR)
     assert not permission.auto_report_analysis and not permission.unsolicited_group_reply
     assert permission.track_status == 'paused' and permission.direct_request_group_reply
     before = len(p.provider.calls)
     _, accepted = p.intake('Отчёт: продолжаю работу самостоятельно.')
     assert accepted.archived and not accepted.queued and len(p.provider.calls) == before
-    p.intake('Напарник, помоги выбрать следующий шаг')
+    p.intake('Арни, помоги выбрать следующий шаг')
     assert len(p.provider.calls) > before and replies(p)[-1].mode == 'direct'
     p.intake('Отчёт: другой синтетический автор сделал свой шаг.', author=AUTHOR + 1)
     assert p.repo.permissions(AUTHOR + 1).automatic_allowed
@@ -222,7 +222,7 @@ def test_natural_storage_optout_excludes_previous_dialogue_from_current_only_rep
     p = natural_pilot
     p.provider.texts = ['ASSISTANT_PREVIOUS_PRIVATE_MARKER']
     p.intake('Отчёт: AUTHOR_PREVIOUS_PRIVATE_MARKER')
-    p.intake('Напарник, не запоминай мои сообщения')
+    p.intake('Арни, не запоминай мои сообщения')
     permission = p.repo.permissions(AUTHOR)
     assert not permission.retain_source and not permission.historical_inference
     assert permission.direct_request_group_reply
@@ -230,7 +230,7 @@ def test_natural_storage_optout_excludes_previous_dialogue_from_current_only_rep
     assert p.conn.execute("SELECT count(*) FROM coach_dialogue_turns WHERE source_proofs<>'[]'::jsonb").fetchone()[0] == 0
     p.provider.texts = ['Разберём только текущее обращение.']
     before = len(p.provider.calls)
-    _, accepted = p.intake('Напарник, какой маленький шаг возможен сейчас?')
+    _, accepted = p.intake('Арни, какой маленький шаг возможен сейчас?')
     assert accepted.queued and len(p.provider.calls) > before
     packets = p.provider.calls[before:]
     serialized = json.dumps(packets, ensure_ascii=False)
@@ -242,7 +242,7 @@ def test_natural_storage_optout_excludes_previous_dialogue_from_current_only_rep
 def test_natural_forget_is_not_undone_by_group_default_bootstrap(natural_pilot):
     p = natural_pilot
     p.intake('Отчёт: SYNTHETIC_DELETE_ME')
-    p.intake('Напарник, забудь мои сообщения')
+    p.intake('Арни, забудь мои сообщения')
     permission = p.repo.permissions(AUTHOR)
     assert not permission.retain_source and not permission.historical_inference
     assert not permission.auto_report_analysis and not permission.unsolicited_group_reply
@@ -280,7 +280,7 @@ def test_natural_followup_receives_sent_bot_context_but_no_other_author_topic_or
         assert forbidden not in serialized
 
 
-@pytest.mark.parametrize('control', ['Напарник, пока не комментируй', 'Напарник, забудь мои сообщения'])
+@pytest.mark.parametrize('control', ['Арни, пока не комментируй', 'Арни, забудь мои сообщения'])
 def test_natural_optout_after_first_bundle_part_cancels_remaining_parts(natural_pilot, control):
     p = natural_pilot
     p.provider.texts = ['Первая часть.', 'Вторая часть.', 'Третья часть.']
@@ -313,9 +313,9 @@ def test_report_mentioning_stop_is_not_mistaken_for_a_personal_optout(natural_pi
 
 
 @pytest.mark.parametrize('control', [
-    'Напарник, не используй историю',
-    'Напарник, удали мой трек',
-    'Напарник, забудь мои сообщения',
+    'Арни, не используй историю',
+    'Арни, удали мой трек',
+    'Арни, забудь мои сообщения',
 ])
 def test_personal_memory_controls_scrub_stored_assistant_context(natural_pilot, control):
     p = natural_pilot
@@ -345,7 +345,7 @@ def test_editing_a_source_scrubs_its_prior_assistant_context(natural_pilot):
     assert p.conn.execute('SELECT text,source_proofs FROM coach_dialogue_turns').fetchall() == [(None, [])]
     p.provider.texts = ['Разберём актуальную версию.']
     before = len(p.provider.calls)
-    p.intake('Напарник, продолжим с исправленной версией')
+    p.intake('Арни, продолжим с исправленной версией')
     packets = p.provider.calls[before:]
     assert packets
     serialized = json.dumps(packets, ensure_ascii=False)
@@ -360,7 +360,7 @@ def test_stopping_automatic_comments_preserves_direct_dialogue_with_current_proo
     p.provider.texts = [marker]
     p.intake('Отчёт: OWN_SOURCE_KEEP_FOR_DIRECT')
     previous = p.repo.permissions(AUTHOR).version
-    p.intake('Напарник, пока не комментируй')
+    p.intake('Арни, пока не комментируй')
     current = p.repo.permissions(AUTHOR).version
     assert current > previous
     assert p.conn.execute('SELECT text,permission_version FROM coach_dialogue_turns').fetchall() == [(marker, previous)]
@@ -370,7 +370,7 @@ def test_stopping_automatic_comments_preserves_direct_dialogue_with_current_proo
     assert all(proof.access_version == current for turn in old_assistant for proof in turn['source_proofs'])
     p.provider.texts = ['Продолжим по твоему обращению.']
     before = len(p.provider.calls)
-    _, accepted = p.intake('Напарник, помоги продолжить выбранный вариант')
+    _, accepted = p.intake('Арни, помоги продолжить выбранный вариант')
     assert accepted.queued and replies(p)[-1].mode == 'direct'
     packets = p.provider.calls[before:]
     assert packets and all(packet['mode'] == 'direct' for packet in packets)

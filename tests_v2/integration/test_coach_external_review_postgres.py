@@ -161,7 +161,7 @@ def test_committed_track_deletion_fences_old_worker_derived_writes(reviewed_pilo
     worker = build_worker(pilot.conn, pilot.config, TOPIC, sender=sender, provider=provider)
     text = 'Отчёт: сделал собственный синтетический черновик.'
     if mode == 'direct':
-        text = 'Напарник, ' + text
+        text = 'Арни, ' + text
     original = pilot.update(text, update_id=11, message_id=101)
     accepted = ingest_coach_update(original, conn=pilot.conn, config=pilot.config)
     assert accepted.archived and accepted.queued
@@ -221,8 +221,8 @@ def test_edit_before_original_never_pays_or_sends_superseded_direct_text(reviewe
     pilot.grant('direct_only')
     provider, sender = SyntheticProvider(), RecordingSender()
     edited_at = pilot.at + timedelta(seconds=5)
-    original = pilot.update('Напарник, ORIGINAL_SYNTHETIC_TEXT', update_id=21, message_id=201)
-    edit = pilot.update('Напарник, CORRECTED_SYNTHETIC_TEXT', update_id=22, message_id=201,
+    original = pilot.update('Арни, ORIGINAL_SYNTHETIC_TEXT', update_id=21, message_id=201)
+    edit = pilot.update('Арни, CORRECTED_SYNTHETIC_TEXT', update_id=22, message_id=201,
                         edited_at=edited_at)
     pilot.clock.now = edited_at + timedelta(seconds=1)
     edited = ingest_coach_update(edit, conn=pilot.conn, config=pilot.config)

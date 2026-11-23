@@ -27,8 +27,8 @@ class CoachConfig:
     openai_api_key: str | None = field(default=None, repr=False)
     bot_user_id: int | None = None
     bot_username: str | None = None
-    display_name: str = "Напарник"
-    aliases: tuple[str, ...] = ("напарник",)
+    display_name: str = "Арни"
+    aliases: tuple[str, ...] = ("арни",)
     chat_id: int | None = None
     topic_ids: tuple[int, ...] = ()
     archive_policy: str | None = "until_author_deletes"
@@ -136,7 +136,7 @@ def load_coach_config(env: Mapping[str, str] | None = None) -> CoachConfig:
                 raise ValueError
         except ValueError as exc:
             raise CoachConfigurationError("COACH_TOPIC_IDS: positive forum IDs required") from None
-    display_name = get("COACH_DISPLAY_NAME") or "Напарник"
+    display_name = get("COACH_DISPLAY_NAME") or "Арни"
     aliases = tuple(dict.fromkeys(item.strip().casefold() for item in
                     (get("COACH_ALIASES") or display_name).split(",") if item.strip()))
     if len(display_name) > 64 or any(len(x) > 64 for x in aliases) or len(aliases) > 8:
