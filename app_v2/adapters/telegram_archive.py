@@ -1,7 +1,8 @@
 """Conservative Telegram -> source-archive projection, without model calls.
 
-Only explicitly identified forum-topic messages by a real individual are
-supported. Source fields: https://core.telegram.org/bots/api#message.
+The default Stage A policy supports explicitly identified forum topics only.
+The dedicated coach can opt into ordinary groups and forum General messages.
+Source fields: https://core.telegram.org/bots/api#message.
 Neither an embedded reply nor a forward's original author becomes an archived
 author. Manually typed quotations cannot be reliably detected by this adapter;
 Stage A provides no semantic attribution or analysis of them.
@@ -84,7 +85,58 @@ def _has_external_content(message: dict[str, Any]) -> bool:
     return False
 
 
-def archive_message_from_update(normalized: NormalizedTelegramUpdate) -> ArchiveMessage | None:
+def _group_thread(message: dict[str, Any], chat: dict[str, Any], *,
+                  allow_group_messages: bool) -> int | None:
+    """Keep the received topic, or use the documented General/root identity.
+
+    Telegram's General forum topic has ID 1; topic-less groups use the same
+    canonical root within their own chat. No raw Telegram fields are rewritten.
+    See https://core.telegram.org/api/forum#interacting-within-topics.
+    """
+    thread = message.get("message_thread_id")
+    if not allow_group_messages:
+        if (chat.get("type") != "supergroup" or chat.get("is_forum") is not True
+                or message.get("is_topic_message") is not True):
+            return None
+        return thread if _valid_id(thread) else None
+
+    if chat.get("type") not in {"group", "supergroup"}:
+        return None
+    if "is_forum" in chat and type(chat["is_forum"]) is not bool:
+        return None
+    if "is_topic_message" in message and type(message["is_topic_message"]) is not bool:
+        return None
+    forum = chat.get("is_forum") is True
+    if forum and chat["type"] != "supergroup":
+        return None
+    if "message_thread_id" in message and not _valid_id(thread):
+        return None
+    if message.get("is_topic_message") is True:
+        return thread if forum and _valid_id(thread) else None
+    # Ordinary reply threads can have a positive message_thread_id without being
+    # a forum topic. They belong to this chat's root, never to a topic inferred
+    # from a reply's message ID.
+    return 1
+
+
+def group_delivery_matches_thread(message: dict[str, Any], thread_id: int) -> bool:
+    """Verify a Telegram receipt against our root/forum destination identity."""
+    if not _valid_id(thread_id):
+        return False
+    received = message.get("message_thread_id")
+    if "message_thread_id" in message and not _valid_id(received):
+        return False
+    if "is_topic_message" in message and type(message["is_topic_message"]) is not bool:
+        return False
+    if thread_id == 1:
+        return message.get("is_topic_message") is not True or received == 1
+    # A coincidentally equal ordinary reply-thread ID is not evidence of delivery
+    # into the requested forum topic.
+    return received == thread_id and message.get("is_topic_message") is True
+
+
+def archive_message_from_update(normalized: NormalizedTelegramUpdate, *,
+                                allow_group_messages: bool = False) -> ArchiveMessage | None:
     """Project a supported received source, or fail closed on uncertain identity.
 
     This is *not* a consent check. The caller must atomically enforce the current
@@ -98,21 +150,23 @@ def archive_message_from_update(normalized: NormalizedTelegramUpdate) -> Archive
     author = message.get("from")
     if not isinstance(chat, dict) or not isinstance(author, dict):
         return None
-    if chat.get("type") != "supergroup" or chat.get("is_forum") is not True:
-        return None
-    if message.get("is_topic_message") is not True:
+    thread_id = _group_thread(message, chat, allow_group_messages=allow_group_messages)
+    if thread_id is None:
         return None
     # sender_chat's fake `from` never identifies the anonymous human author.
     if "sender_chat" in message or author.get("is_bot") is not False:
         return None
     # Ephemeral group messages have a limited audience, not ordinary group scope.
-    if any(key in message for key in ("ephemeral_message_id", "receiver_user", "sender_business_bot")):
+    if any(key in message for key in (
+        "ephemeral_message_id", "receiver_user", "sender_business_bot",
+        "guest_query_id", "business_connection_id",
+    )):
         return None
     chat_id, author_id = chat.get("id"), author.get("id")
     if type(chat_id) is not int or not -_MAX_ID <= chat_id < 0:
         return None
     if not all(_valid_id(item) for item in (
-        author_id, message.get("message_thread_id"), message.get("message_id"),
+        author_id, thread_id, message.get("message_id"),
     )) or not _valid_id(normalized.telegram_update_id, minimum=0):
         return None
     # Normalized routing fields must agree with the original source projection.
@@ -160,7 +214,7 @@ def archive_message_from_update(normalized: NormalizedTelegramUpdate) -> Archive
     try:
         return ArchiveMessage(
             chat_id=chat_id,
-            message_thread_id=message["message_thread_id"],
+            message_thread_id=thread_id,
             telegram_message_id=message["message_id"],
             telegram_update_id=normalized.telegram_update_id,
             author_user_id=author_id,

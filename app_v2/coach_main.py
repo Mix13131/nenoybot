@@ -15,7 +15,7 @@ from starlette.concurrency import run_in_threadpool
 
 from app_v2.adapters.postgres import connect
 from app_v2.coach_config import CoachConfig, load_coach_config
-from app_v2.repositories.coach_repo import CoachRepository
+from app_v2.repositories.coach_scope_repo import CoachScopeRepository
 from app_v2.services.coach_ingestor import ingest_coach_update
 
 
@@ -37,13 +37,12 @@ def create_app(config: CoachConfig | None = None, *, connection_factory: Callabl
 
     @application.get("/ready")
     def ready():
-        if not config.database_url or not config.bot_user_id or not config.topic_ids:
+        if not config.database_url or not config.bot_user_id or not config.scope_configured:
             raise HTTPException(503, "Coach is not configured")
         try:
             with factory() as conn:
-                repo = CoachRepository(conn, chat_id=config.chat_id, message_thread_id=config.topic_ids[0],
-                                       bot_user_id=config.bot_user_id, transient_ttl_seconds=config.transient_ttl_seconds)
-                repo.assert_identity()
+                CoachScopeRepository(conn, bot_user_id=config.bot_user_id).assert_identity()
+                conn.execute("SELECT 1 FROM coach_group_memberships LIMIT 0")
                 conn.execute("SELECT 1 FROM coach_jobs LIMIT 0")
                 conn.execute("SELECT 1 FROM source_archive_revisions LIMIT 0")
                 conn.execute("SELECT 1 FROM coach_dialogue_turns LIMIT 0")

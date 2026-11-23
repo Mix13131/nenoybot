@@ -29,6 +29,7 @@ class CoachConfig:
     bot_username: str | None = None
     display_name: str = "Арни"
     aliases: tuple[str, ...] = ("арни",)
+    group_mode: str = "configured"
     chat_id: int | None = None
     topic_ids: tuple[int, ...] = ()
     archive_policy: str | None = "until_author_deletes"
@@ -42,7 +43,18 @@ class CoachConfig:
     max_output_tokens: int | None = None
     ai_timeout_seconds: int = 40
 
+    @property
+    def scope_configured(self) -> bool:
+        return self.group_mode == "joined_groups" or (
+            self.group_mode == "configured" and self.chat_id is not None and bool(self.topic_ids)
+        )
+
     def permits_scope(self, chat_id: int, topic_id: int) -> bool:
+        if (type(chat_id) is not int or not -(2**63 - 1) <= chat_id < 0
+                or type(topic_id) is not int or not 0 < topic_id < 2**63):
+            return False
+        if self.group_mode == "joined_groups":
+            return True
         return chat_id == self.chat_id and topic_id in self.topic_ids
 
     def ai_config(self):
@@ -101,12 +113,15 @@ def load_coach_config(env: Mapping[str, str] | None = None) -> CoachConfig:
     environment = get("COACH_ENV") or "development"
     if environment not in {"development", "test", "production"}:
         raise CoachConfigurationError("COACH_ENV: unknown environment")
+    group_mode = get("COACH_GROUP_MODE") or "configured"
+    if group_mode not in {"configured", "joined_groups"}:
+        raise CoachConfigurationError("COACH_GROUP_MODE: expected configured or joined_groups")
     # A configured dedicated bot serves its purpose immediately. Empty/import
     # environments stay inactive, and explicit 0 remains the operator kill switch.
     core_configured = all(get(key) for key in (
         "COACH_DATABASE_URL", "COACH_TELEGRAM_BOT_TOKEN", "COACH_BOT_USERNAME",
-        "COACH_WEBHOOK_SECRET", "COACH_CHAT_ID", "COACH_TOPIC_IDS",
-    ))
+        "COACH_WEBHOOK_SECRET",
+    )) and (group_mode == "joined_groups" or all(get(key) for key in ("COACH_CHAT_ID", "COACH_TOPIC_IDS")))
     enabled = _bool(env, "COACH_ENABLED", default=core_configured)
     ai_enabled = _bool(env, "COACH_AI_ENABLED", default=enabled)
     token = get("COACH_TELEGRAM_BOT_TOKEN")
@@ -155,7 +170,7 @@ def load_coach_config(env: Mapping[str, str] | None = None) -> CoachConfig:
         database_url=get("COACH_DATABASE_URL"), telegram_bot_token=token,
         webhook_secret=secret, openai_api_key=get("COACH_OPENAI_API_KEY"),
         bot_user_id=bot_id, bot_username=username, display_name=display_name, aliases=aliases,
-        chat_id=chat_id, topic_ids=topic_ids, archive_policy=policy,
+        group_mode=group_mode, chat_id=chat_id, topic_ids=topic_ids, archive_policy=policy,
         transient_ttl_seconds=_integer(env, "COACH_TRANSIENT_TTL_SECONDS", minimum=60, maximum=86400, default=86400),
         public_base_url=base_url, ai_model=get("COACH_AI_MODEL"),
         daily_cap_microusd=_money(env, "COACH_AI_EMERGENCY_DAILY_USD"),
@@ -169,9 +184,10 @@ def load_coach_config(env: Mapping[str, str] | None = None) -> CoachConfig:
         required = {
             "COACH_DATABASE_URL": config.database_url,
             "COACH_TELEGRAM_BOT_TOKEN": token, "COACH_WEBHOOK_SECRET": secret,
-            "COACH_BOT_USERNAME": username, "COACH_CHAT_ID": chat_id,
-            "COACH_TOPIC_IDS": topic_ids, "COACH_ARCHIVE_POLICY": policy,
+            "COACH_BOT_USERNAME": username, "COACH_ARCHIVE_POLICY": policy,
         }
+        if group_mode == "configured":
+            required.update(COACH_CHAT_ID=chat_id, COACH_TOPIC_IDS=topic_ids)
         missing = [key for key, value in required.items() if not value]
         if missing:
             raise CoachConfigurationError("Missing " + ", ".join(missing))

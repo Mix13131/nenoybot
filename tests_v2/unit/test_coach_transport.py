@@ -32,7 +32,7 @@ def config(**changes):
 
 
 def result(**changes):
-    values = {'message_id': 901, 'chat': {'id': CHAT}, 'message_thread_id': TOPIC}
+    values = {'message_id': 901, 'chat': {'id': CHAT}, 'message_thread_id': TOPIC, 'is_topic_message': True}
     values.update(changes)
     return {'ok': True, 'result': values}
 
@@ -137,7 +137,91 @@ def test_webhook_registration_preserves_pending_updates_and_checks_url(already_c
     body = json.loads(calls[1].content)
     assert body['url'] == expected and body['secret_token'] == SECRET
     assert body['drop_pending_updates'] is False
-    assert body['allowed_updates'] == ['message', 'edited_message']
+    assert body['allowed_updates'] == ['message', 'edited_message', 'my_chat_member']
+
+
+@pytest.mark.parametrize('fields', [
+    {}, {'message_thread_id': 1}, {'message_thread_id': 1, 'is_topic_message': True},
+    {'message_thread_id': 23}, {'message_thread_id': 23, 'is_topic_message': False},
+])
+def test_general_and_ordinary_group_delivery_omit_topic_and_accept_root_receipts(fields):
+    calls = []
+    receipt = {'message_id': 901, 'chat': {'id': CHAT}, **fields}
+    def handle(request):
+        calls.append(request)
+        return httpx.Response(200, json={'ok': True, 'result': receipt})
+    with httpx.Client(transport=httpx.MockTransport(handle)) as http:
+        sent = CoachTelegramClient(TOKEN, client=http).send(output(message_thread_id=1))
+    assert sent == receipt
+    body = json.loads(calls[0].content)
+    assert 'message_thread_id' not in body
+    assert body['chat_id'] == CHAT and body['reply_parameters'] == {'message_id': 123}
+
+
+@pytest.mark.parametrize('fields', [
+    {'message_thread_id': 23, 'is_topic_message': True},
+    {'is_topic_message': True}, {'message_thread_id': None},
+    {'message_thread_id': True}, {'message_thread_id': 0},
+    {'message_thread_id': '1'}, {'is_topic_message': 'false'},
+    {'chat': {'id': CHAT - 1}},
+])
+def test_root_delivery_cannot_confirm_a_different_forum_topic_or_malformed_receipt(fields):
+    receipt = {'message_id': 901, 'chat': {'id': CHAT}, **fields}
+    with httpx.Client(transport=httpx.MockTransport(
+            lambda _: httpx.Response(200, json={'ok': True, 'result': receipt}))) as http:
+        with pytest.raises(CoachTelegramError, match='result_unknown'):
+            CoachTelegramClient(TOKEN, client=http).send(output(message_thread_id=1))
+
+
+@pytest.mark.parametrize('flag', [False, None])
+def test_real_topic_cannot_be_confirmed_by_an_ordinary_reply_thread_with_same_number(flag):
+    receipt = result(is_topic_message=flag)
+    if flag is None:
+        receipt['result'].pop('is_topic_message')
+    with httpx.Client(transport=httpx.MockTransport(
+            lambda _: httpx.Response(200, json=receipt))) as http:
+        with pytest.raises(CoachTelegramError, match='result_unknown'):
+            CoachTelegramClient(TOKEN, client=http).send(output())
+
+
+def test_group_reading_settings_change_only_required_flags_and_are_read_back():
+    calls = []
+    identity = {'id': BOT, 'is_bot': True, 'username': 'synthetic_bot',
+                'can_join_groups': True, 'can_read_all_group_messages': True}
+    def handle(request):
+        calls.append(request)
+        value = True if request.url.path.endswith('/setMySettings') else identity
+        return httpx.Response(200, json={'ok': True, 'result': value})
+    with httpx.Client(transport=httpx.MockTransport(handle)) as http:
+        actual = CoachTelegramClient(TOKEN, client=http).configure_group_reading()
+    assert actual == identity
+    assert [call.url.path.rsplit('/', 1)[-1] for call in calls] == ['setMySettings', 'getMe']
+    assert json.loads(calls[0].content) == {'can_join_groups': True, 'can_read_all_group_messages': True}
+
+
+@pytest.mark.parametrize('flags', [
+    {}, {'can_join_groups': True}, {'can_read_all_group_messages': True},
+    {'can_join_groups': True, 'can_read_all_group_messages': False},
+    {'can_join_groups': True, 'can_read_all_group_messages': 'true'},
+])
+def test_group_reading_is_not_claimed_enabled_without_verified_flags(flags):
+    def handle(request):
+        value = True if request.url.path.endswith('/setMySettings') else {'id': BOT, 'is_bot': True, **flags}
+        return httpx.Response(200, json={'ok': True, 'result': value})
+    with httpx.Client(transport=httpx.MockTransport(handle)) as http:
+        with pytest.raises(CoachTelegramError, match='settings_not_verified'):
+            CoachTelegramClient(TOKEN, client=http).configure_group_reading()
+
+
+def test_rejected_group_settings_stop_before_readback_without_retry():
+    calls = []
+    def handle(request):
+        calls.append(request)
+        return httpx.Response(200, json={'ok': True, 'result': False})
+    with httpx.Client(transport=httpx.MockTransport(handle)) as http:
+        with pytest.raises(CoachTelegramError, match='settings_rejected'):
+            CoachTelegramClient(TOKEN, client=http).configure_group_reading()
+    assert len(calls) == 1
 
 
 def test_wrong_webhook_url_is_not_reported_verified():
@@ -190,6 +274,24 @@ def test_group_privacy_mode_access_is_verified(status, can_read, accepted):
         else:
             with pytest.raises(CoachTelegramError):
                 client.check_group_access(chat_id=CHAT, bot_user_id=BOT, can_read_all_group_messages=can_read)
+
+
+@pytest.mark.parametrize('kind,is_forum,accepted', [
+    ('group', False, True), ('supergroup', False, True), ('supergroup', True, True),
+    ('private', False, False), ('channel', False, False),
+])
+def test_joined_group_access_checks_membership_without_requiring_a_forum(kind, is_forum, accepted):
+    def handle(request):
+        value = ({'id': CHAT, 'type': kind, 'is_forum': is_forum}
+                 if request.url.path.endswith('/getChat') else {'status': 'member'})
+        return httpx.Response(200, json={'ok': True, 'result': value})
+    with httpx.Client(transport=httpx.MockTransport(handle)) as http:
+        client = CoachTelegramClient(TOKEN, client=http)
+        if accepted:
+            client.check_group_access(chat_id=CHAT, bot_user_id=BOT, can_read_all_group_messages=True)
+        else:
+            with pytest.raises(CoachTelegramError, match='not_a_group'):
+                client.check_group_access(chat_id=CHAT, bot_user_id=BOT, can_read_all_group_messages=True)
 
 
 def never_connect():

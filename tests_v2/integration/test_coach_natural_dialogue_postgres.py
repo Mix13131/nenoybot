@@ -61,7 +61,7 @@ class NaturalSender:
             raise TimeoutError('synthetic ambiguous delivery')
         self.sent.append(output)
         return {'message_id': 5000 + len(self.attempts), 'chat': {'id': output.chat_id},
-                'message_thread_id': output.message_thread_id}
+                'message_thread_id': output.message_thread_id, 'is_topic_message': True}
 
 
 @pytest.fixture

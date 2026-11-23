@@ -10,6 +10,7 @@ from datetime import datetime, timezone
 import json
 import re
 
+from app_v2.adapters.telegram_archive import group_delivery_matches_thread
 from app_v2.domain.coach import SourceProof
 
 
@@ -78,7 +79,7 @@ class CoachDialogueRepository:
         telegram_id=result.get("message_id")
         if (type(telegram_id) is not int or telegram_id<=0 or
                 result.get("chat",{}).get("id")!=self.chat_id or
-                result.get("message_thread_id")!=self.message_thread_id):
+                not group_delivery_matches_thread(result,self.message_thread_id)):
             return False
         with self.conn.transaction():
             identity=self.conn.execute("SELECT bot_user_id FROM coach_runtime_identity WHERE singleton").fetchone()

@@ -70,7 +70,7 @@ class RecordingSender:
     def send(self, output):
         self.sent.append(output)
         return {'message_id': 9000 + len(self.sent), 'chat': {'id': output.chat_id},
-                'message_thread_id': output.message_thread_id}
+                'message_thread_id': output.message_thread_id, 'is_topic_message': True}
 
 
 @pytest.fixture

@@ -14,7 +14,7 @@ from app_v2.adapters.coach_telegram import CoachTelegramClient, CoachTelegramErr
 from app_v2.adapters.postgres import connect
 from app_v2.coach_config import CoachConfig, CoachConfigurationError, load_coach_config
 from app_v2.db.migrations import discover_migrations, run_migrations
-from app_v2.repositories.coach_repo import CoachRepository
+from app_v2.repositories.coach_scope_repo import CoachScopeRepository
 from app_v2.repositories.source_archive_repo import SourceArchiveRepository
 
 
@@ -23,7 +23,7 @@ class CoachPreparationError(RuntimeError):
 
 
 def _configured(config: CoachConfig):
-    if not all((config.database_url, config.bot_user_id, config.chat_id, config.topic_ids,
+    if not all((config.database_url, config.bot_user_id, config.scope_configured,
                 config.archive_policy == "until_author_deletes")):
         raise CoachPreparationError("coach_scope_and_retention_are_not_configured")
 
@@ -67,19 +67,19 @@ def prepare(config: CoachConfig) -> dict[str, Any]:
     with connect(config.database_url, autocommit=True, connect_timeout=5) as conn:
         with conn.transaction():
             assert_dedicated_database(conn, config.bot_user_id)
+            scopes = CoachScopeRepository(conn, bot_user_id=config.bot_user_id)
+            scopes.bind_identity()
             archive = SourceArchiveRepository(conn)
-            for topic in config.topic_ids:
-                repo = CoachRepository(conn, chat_id=config.chat_id, message_thread_id=topic,
-                                       bot_user_id=config.bot_user_id,
-                                       transient_ttl_seconds=config.transient_ttl_seconds)
-                repo.bind_identity()
+            topics = config.topic_ids if config.group_mode == "configured" else ()
+            for topic in topics:
                 # A repeated deploy must not advance an existing scope's cutoff.
                 row = conn.execute("SELECT enabled FROM source_archive_scopes WHERE chat_id=%s AND message_thread_id=%s",
                                    (config.chat_id, topic)).fetchone()
                 if row is None:
                     archive.configure_scope(config.chat_id, topic, enabled=True)
     return {"status": "prepared", "migrations_applied": applied,
-            "configured_topics": len(config.topic_ids), "participant_grants_created": 0}
+            "configured_topics": len(topics), "group_mode": config.group_mode,
+            "participant_grants_created": 0}
 
 
 def configure_telegram(config: CoachConfig, *, client=None) -> dict:
@@ -93,15 +93,27 @@ def configure_telegram(config: CoachConfig, *, client=None) -> dict:
         if identity["id"] != config.bot_user_id or str(identity.get("username", "")).casefold() != (config.bot_username or "").casefold():
             raise CoachPreparationError("telegram_identity_does_not_match_configuration")
         with connect(config.database_url, autocommit=True, connect_timeout=5) as conn:
-            repo = CoachRepository(conn, chat_id=config.chat_id, message_thread_id=config.topic_ids[0],
-                                   bot_user_id=config.bot_user_id)
-            repo.assert_identity()
-        client.check_group_access(chat_id=config.chat_id, bot_user_id=config.bot_user_id,
-                                  can_read_all_group_messages=identity.get("can_read_all_group_messages") is True)
+            CoachScopeRepository(conn, bot_user_id=config.bot_user_id).assert_identity()
+        if config.group_mode == "joined_groups":
+            identity = client.configure_group_reading()
+            if (not isinstance(identity, dict) or identity.get("id") != config.bot_user_id
+                    or str(identity.get("username", "")).casefold() != (config.bot_username or "").casefold()):
+                raise CoachPreparationError("telegram_identity_does_not_match_configuration")
+        can_read_all = identity.get("can_read_all_group_messages") is True
+        if config.group_mode == "joined_groups" and not can_read_all:
+            raise CoachPreparationError("telegram_group_reading_not_verified")
+        if config.chat_id is not None:
+            client.check_group_access(chat_id=config.chat_id, bot_user_id=config.bot_user_id,
+                                      can_read_all_group_messages=can_read_all)
+        elif not can_read_all:
+            raise CoachPreparationError("disable_group_privacy_or_configure_a_group_for_access_check")
         verified = client.configure_webhook(public_base_url=config.public_base_url, secret=config.webhook_secret)
         client.configure_commands()
         return {"status": "telegram_configured", **verified,
-                "ordinary_message_access_verified": True, "topic_ids_need_received_message_smoke": True}
+                "ordinary_message_access_verified": True, "group_mode": config.group_mode,
+                "group_privacy_disabled": can_read_all,
+                "all_joined_groups_need_received_message_smoke": config.group_mode == "joined_groups",
+                "topic_ids_need_received_message_smoke": config.group_mode == "configured"}
     finally:
         if owns:
             client.close()
@@ -110,14 +122,16 @@ def configure_telegram(config: CoachConfig, *, client=None) -> dict:
 def inspect_status(config: CoachConfig) -> dict:
     _configured(config)
     with connect(config.database_url, autocommit=True, connect_timeout=5) as conn:
-        repo = CoachRepository(conn, chat_id=config.chat_id, message_thread_id=config.topic_ids[0],
-                               bot_user_id=config.bot_user_id)
-        repo.assert_identity()
+        registry = CoachScopeRepository(conn, bot_user_id=config.bot_user_id)
+        registry.assert_identity()
+        scopes = [scope for scope in registry.list_scopes(include_disabled=True)
+                  if config.permits_scope(*scope)]
         jobs = conn.execute("SELECT mode,status,count(*) FROM coach_jobs GROUP BY mode,status ORDER BY mode,status").fetchall()
         outputs = conn.execute("SELECT status,count(*) FROM coaching_outputs GROUP BY status ORDER BY status").fetchall()
         source_count = conn.execute("SELECT count(*) FROM source_archive_revisions WHERE available_text IS NOT NULL").fetchone()[0]
     return {"status": "ready", "enabled": config.enabled, "ai_enabled": config.ai_enabled,
-            "topics": len(config.topic_ids), "archive_policy": config.archive_policy,
+            "topics": len(scopes), "groups": len({chat for chat, _ in scopes}),
+            "group_mode": config.group_mode, "archive_policy": config.archive_policy,
             "jobs": [{"mode": x[0], "status": x[1], "count": x[2]} for x in jobs],
             "outputs": [{"status": x[0], "count": x[1]} for x in outputs], "available_source_texts": source_count}
 

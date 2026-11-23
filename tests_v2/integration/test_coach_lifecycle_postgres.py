@@ -90,7 +90,7 @@ class RecordingSender:
         if self.fail:
             raise TimeoutError("synthetic ambiguous send")
         return {"message_id": 5000 + len(self.sent), "chat": {"id": output.chat_id},
-                "message_thread_id": output.message_thread_id}
+                "message_thread_id": output.message_thread_id, "is_topic_message": True}
 
 
 @pytest.fixture

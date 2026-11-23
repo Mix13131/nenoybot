@@ -17,16 +17,13 @@ from typing import Callable, Sequence
 from uuid import uuid4
 
 from app_v2.adapters.telegram_archive import archive_message_from_update
+from app_v2.repositories.coach_scope_repo import CoachConfigurationError, CoachScopeRepository, cancel_failed_bundle_tails
 from app_v2.domain.coach import CoachJob, CoachOutput, CoachPermissions, GRANT_FIELDS, SourceProof
 from app_v2.domain.source_archive import ArchiveMessage
 from app_v2.repositories.source_archive_repo import ArchivePermissionError, SourceArchiveRepository
 
 
 logger=logging.getLogger(__name__)
-
-
-class CoachConfigurationError(RuntimeError):
-    pass
 
 
 def _now(value=None):
@@ -42,7 +39,7 @@ def _proof_json(proofs):
 
 class CoachRepository:
     def __init__(self, conn, *, chat_id: int, message_thread_id: int, bot_user_id: int,
-                 transient_ttl_seconds: int = 86400):
+                 transient_ttl_seconds: int = 86400, allow_group_messages: bool = False):
         if type(chat_id) is not int or chat_id >= 0:
             raise ValueError("A negative Telegram group ID is required")
         if any(type(v) is not int or v <= 0 for v in (message_thread_id, bot_user_id)):
@@ -51,7 +48,8 @@ class CoachRepository:
             raise ValueError("Transient text lifetime must be between one minute and 24 hours")
         self.conn, self.chat_id, self.message_thread_id = conn, chat_id, message_thread_id
         self.bot_user_id, self.transient_ttl_seconds = bot_user_id, transient_ttl_seconds
-        self.archive = SourceArchiveRepository(conn)
+        self.allow_group_messages = allow_group_messages
+        self.archive = SourceArchiveRepository(conn, allow_group_messages=allow_group_messages)
 
     def _key(self, author):
         if type(author) is not int or author <= 0:
@@ -59,45 +57,41 @@ class CoachRepository:
         return self.chat_id, self.message_thread_id, author
 
     def bind_identity(self):
-        """Explicit setup only; refuse a populated legacy bot database."""
-        with self.conn.transaction():
-            self.conn.execute("SELECT pg_advisory_xact_lock(1313162111)")
-            existing = self.conn.execute("SELECT bot_user_id FROM coach_runtime_identity WHERE singleton").fetchone()
-            if existing:
-                if existing[0] != self.bot_user_id:
-                    raise CoachConfigurationError("This database belongs to another Telegram bot")
-                return
-            occupied = self.conn.execute(
-                "SELECT EXISTS(SELECT 1 FROM events) OR EXISTS(SELECT 1 FROM messages) "
-                "OR EXISTS(SELECT 1 FROM outbox) OR EXISTS(SELECT 1 FROM memory_cards) "
-                "OR EXISTS(SELECT 1 FROM chats) OR EXISTS(SELECT 1 FROM users)"
-            ).fetchone()[0]
-            if occupied:
-                raise CoachConfigurationError("An isolated empty legacy queue/database is required")
-            self.conn.execute("INSERT INTO coach_runtime_identity(singleton,bot_user_id) VALUES(TRUE,%s)",
-                              (self.bot_user_id,))
+        CoachScopeRepository(self.conn, bot_user_id=self.bot_user_id).bind_identity()
 
     def assert_identity(self):
-        row = self.conn.execute("SELECT bot_user_id FROM coach_runtime_identity WHERE singleton").fetchone()
-        if not row or row[0] != self.bot_user_id:
-            raise CoachConfigurationError("The explicitly bound bot identity does not match")
+        CoachScopeRepository(self.conn, bot_user_id=self.bot_user_id).assert_identity()
 
     def scope_enabled(self) -> bool:
-        row=self.conn.execute("SELECT enabled FROM source_archive_scopes WHERE chat_id=%s AND message_thread_id=%s",
+        row=self.conn.execute("SELECT s.enabled AND COALESCE(g.active,TRUE) FROM source_archive_scopes s "
+                              "LEFT JOIN coach_group_memberships g USING(chat_id) WHERE s.chat_id=%s AND s.message_thread_id=%s",
                               (self.chat_id,self.message_thread_id)).fetchone()
         return bool(row and row[0])
 
     def authenticated_message(self, normalized):
-        message = archive_message_from_update(normalized)
+        message = archive_message_from_update(normalized, allow_group_messages=self.allow_group_messages)
         if message is None or (message.chat_id, message.message_thread_id) != (self.chat_id, self.message_thread_id):
             return None
         return message
 
     @contextmanager
     def author_lock(self, author_user_id: int, *, require_enabled: bool = True):
-        """Same lock order as archive capture: scope then individual consent."""
+        """Group membership, then scope, then individual consent through send."""
         key = self._key(author_user_id)
         with self.conn.transaction():
+            # Old explicitly configured scopes may predate membership tracking.
+            # Insert-only compatibility registration gives removal the same lock
+            # boundary; an existing tombstone is never changed here.
+            self.conn.execute(
+                "INSERT INTO coach_group_memberships(chat_id,active,active_since,changed_at) "
+                "VALUES(%s,TRUE,'1970-01-01 UTC',CURRENT_TIMESTAMP) ON CONFLICT DO NOTHING",
+                (self.chat_id,),
+            )
+            membership = self.conn.execute(
+                "SELECT active FROM coach_group_memberships WHERE chat_id=%s FOR SHARE", (self.chat_id,),
+            ).fetchone()
+            if membership is not None and not membership[0]:
+                raise ArchivePermissionError("The bot is no longer in this group")
             scope = self.conn.execute(
                 "SELECT enabled FROM source_archive_scopes WHERE chat_id=%s AND message_thread_id=%s FOR SHARE",
                 key[:2],
@@ -450,8 +444,11 @@ class CoachRepository:
         return row is not None
 
     def job_is_current(self, job: CoachJob, *, now=None) -> bool:
-        with self.author_lock(job.author_user_id,require_enabled=False):
-            return self.scope_enabled() and self._job_current(job,now=now)
+        try:
+            with self.author_lock(job.author_user_id,require_enabled=False):
+                return self.scope_enabled() and self._job_current(job,now=now)
+        except ArchivePermissionError:
+            return False
 
     def complete_job(self, job: CoachJob):
         self.conn.execute(
@@ -542,12 +539,13 @@ class CoachRepository:
                 self.conn.execute(
                     """INSERT INTO coaching_outputs(id,dedupe_key,job_id,chat_id,message_thread_id,author_user_id,
                         request_message_id,request_checksum,source_id,consent_version,mode,kind,text,source_proofs,
-                        created_at,expires_at,experiment_id,bundle_id,part_index)
-                        VALUES(%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s::jsonb,%s,%s,%s,%s,%s)""",
+                        created_at,expires_at,experiment_id,bundle_id,part_index,origin_occurred_at,origin_update_id)
+                        VALUES(%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s::jsonb,%s,%s,%s,%s,%s,%s,%s)""",
                     (identifier,f"job:{job.id}:{index}",job.id,*self._key(job.author_user_id),job.telegram_message_id,
                      job.source_checksum,job.source_id,job.consent_version,job.mode,kind,text,_proof_json(source_proofs),
                      at,min(job_expiry,at+timedelta(seconds=self.transient_ttl_seconds)),
-                     part_experiments[0] if part_experiments else None,"job:"+job.id,index),
+                     part_experiments[0] if part_experiments else None,"job:"+job.id,index,
+                     job.occurred_at,job.telegram_update_id),
                 )
                 for experiment in part_experiments:
                     self.conn.execute("INSERT INTO coaching_output_experiments(output_id,experiment_id) VALUES(%s,%s)",
@@ -567,11 +565,12 @@ class CoachRepository:
             identifier=uuid4().hex
             row = self.conn.execute(
                 """INSERT INTO coaching_outputs(id,dedupe_key,chat_id,message_thread_id,author_user_id,
-                       request_message_id,mode,kind,text,disclosure,created_at,expires_at,bundle_id)
-                   VALUES(%s,%s,%s,%s,%s,%s,'control','control',%s,%s,%s,%s,%s)
+                       request_message_id,mode,kind,text,disclosure,created_at,expires_at,bundle_id,origin_occurred_at,origin_update_id)
+                   VALUES(%s,%s,%s,%s,%s,%s,'control','control',%s,%s,%s,%s,%s,%s,%s)
                    ON CONFLICT(dedupe_key) DO NOTHING RETURNING id""",
                 (identifier,f"control:{message.telegram_update_id}",*self._key(message.author_user_id),
-                 message.telegram_message_id,text,disclosure,at,at+timedelta(seconds=self.transient_ttl_seconds),identifier),
+                 message.telegram_message_id,text,disclosure,at,at+timedelta(seconds=self.transient_ttl_seconds),identifier,
+                 message.occurred_at,message.telegram_update_id),
             ).fetchone()
             return row[0] if row else None
 
@@ -698,18 +697,7 @@ class CoachRepository:
             self._cancel_failed_bundle_tails(bundle_id=row[0])
 
     def _cancel_failed_bundle_tails(self, *, bundle_id=None, scope=None):
-        restriction,params="",()
-        if bundle_id is not None:
-            restriction=" AND pending.bundle_id=%s";params=(bundle_id,)
-        elif scope is not None:
-            restriction=" AND pending.chat_id=%s AND pending.message_thread_id=%s";params=tuple(scope)
-        self.conn.execute(
-            """UPDATE coaching_outputs pending SET status='cancelled',text=NULL,source_proofs='[]'::jsonb,
-               request_checksum=NULL,source_id=NULL,lease_token=NULL,lease_until=NULL
-               WHERE pending.status IN ('pending','sending') AND EXISTS (
-                 SELECT 1 FROM coaching_outputs failed WHERE failed.bundle_id=pending.bundle_id
-                   AND failed.part_index<pending.part_index AND failed.status IN ('cancelled','uncertain','expired'))"""+restriction,params,
-        )
+        cancel_failed_bundle_tails(self.conn, bundle_id=bundle_id, scope=scope)
 
     def cancel_output(self, output: CoachOutput, reason: str = "feature_disabled") -> bool:
         if (output.chat_id,output.message_thread_id)!=(self.chat_id,self.message_thread_id):
@@ -916,25 +904,6 @@ class CoachRepository:
         Cleanup also covers topics removed from the runtime configuration; it
         neither retrieves their contents nor changes retained source history.
         """
-        at=_now(now)
-        with self.conn.transaction():
-            self.assert_identity()
-            jobs=self.conn.execute(
-                "UPDATE coach_jobs SET status='expired',current_text=NULL,source_checksum=NULL,source_id=NULL,lease_token=NULL,lease_until=NULL "
-                "WHERE expires_at<=%s AND status IN ('pending','processing')",(at,),
-            ).rowcount
-            outputs=self.conn.execute(
-                "UPDATE coaching_outputs SET status=CASE WHEN status='sending' THEN 'uncertain' ELSE 'expired' END,"
-                "text=NULL,source_proofs='[]'::jsonb,request_checksum=NULL,source_id=NULL,lease_token=NULL,lease_until=NULL "
-                "WHERE (expires_at<=%s AND status IN ('pending','sending')) "
-                "OR (status='sending' AND lease_until<%s)",(at,at),
-            ).rowcount
-            self._cancel_failed_bundle_tails()
-            self.conn.execute("UPDATE coach_message_versions SET checksum=NULL WHERE expires_at<=%s",(at,))
-            self.conn.execute("DELETE FROM coach_ingest_receipts WHERE received_at<%s",(at-timedelta(days=30),))
-            self.conn.execute(
-                "UPDATE coach_episodes SET summary=NULL,source_proofs='[]'::jsonb,is_active=FALSE "
-                "WHERE status='prepared' AND is_active AND created_at<%s",
-                (at-timedelta(seconds=self.transient_ttl_seconds),),
-            )
-            return {"expired_jobs":jobs,"expired_or_uncertain_outputs":outputs}
+        return CoachScopeRepository(self.conn, bot_user_id=self.bot_user_id).maintenance(
+            transient_ttl_seconds=self.transient_ttl_seconds, now=now,
+        )

@@ -87,3 +87,44 @@ def test_default_activation_still_requires_explicit_priced_ai_budget():
     values.pop("COACH_AI_ENABLED")
     with pytest.raises(CoachConfigurationError, match="COACH_AI_EMERGENCY_DAILY_USD"):
         load_coach_config(values)
+
+
+def test_joined_groups_does_not_require_a_fixed_chat_or_topic_list():
+    values = configured(COACH_GROUP_MODE="joined_groups", COACH_ENV="production")
+    values.pop("COACH_CHAT_ID")
+    values.pop("COACH_TOPIC_IDS")
+    values.pop("COACH_ENABLED")
+    config = load_coach_config(values)
+    assert config.enabled and config.scope_configured
+    assert config.chat_id is None and config.topic_ids == ()
+    assert config.permits_scope(-9000001, 1)
+    assert config.permits_scope(-9000002, 912345)
+
+
+def test_joined_groups_optional_setup_chat_does_not_restrict_runtime():
+    config = load_coach_config(configured(COACH_GROUP_MODE="joined_groups"))
+    assert config.permits_scope(-9000002, 1)
+    assert config.permits_scope(-9000002, 912345)
+    assert config.permits_scope(-9000001, 99)
+
+
+@pytest.mark.parametrize("chat,topic", [(1, 1), (True, 1), (-1, True), (-1, 0),
+                                       (-1, -1), (-1, 2**63), (-(2**63), 1)])
+def test_joined_groups_still_rejects_private_or_invalid_scopes(chat, topic):
+    config = load_coach_config(configured(COACH_GROUP_MODE="joined_groups"))
+    assert not config.permits_scope(chat, topic)
+
+
+def test_unknown_group_mode_fails_closed_and_empty_joined_config_stays_inactive():
+    with pytest.raises(CoachConfigurationError, match="COACH_GROUP_MODE"):
+        load_coach_config(configured(COACH_GROUP_MODE="everywhere"))
+    config = load_coach_config({"COACH_GROUP_MODE": "joined_groups"})
+    assert not config.enabled and not config.ai_enabled
+
+
+def test_joined_groups_default_ai_activation_still_requires_financial_policy():
+    values = configured(COACH_GROUP_MODE="joined_groups")
+    for key in ("COACH_ENABLED", "COACH_AI_ENABLED", "COACH_CHAT_ID", "COACH_TOPIC_IDS"):
+        values.pop(key)
+    with pytest.raises(CoachConfigurationError, match="COACH_AI_EMERGENCY_DAILY_USD"):
+        load_coach_config(values)

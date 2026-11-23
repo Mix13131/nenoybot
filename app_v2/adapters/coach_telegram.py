@@ -6,6 +6,8 @@ from typing import Any
 
 import httpx
 
+from app_v2.adapters.telegram_archive import group_delivery_matches_thread
+
 
 class CoachTelegramError(RuntimeError):
     """No token-bearing URL, provider response or participant text in the error."""
@@ -49,9 +51,13 @@ class CoachTelegramClient:
         if type(output.message_thread_id) is not int or output.message_thread_id <= 0:
             raise CoachTelegramError("invalid_output_topic")
         body = {
-            "chat_id": output.chat_id, "message_thread_id": output.message_thread_id,
+            "chat_id": output.chat_id,
             "text": text, "link_preview_options": {"is_disabled": True},
         }
+        # Canonical root 1 is General in a forum and the ordinary group itself.
+        # Telegram expects no explicit topic argument for that destination.
+        if output.message_thread_id != 1:
+            body["message_thread_id"] = output.message_thread_id
         if output.request_message_id is not None:
             if type(output.request_message_id) is not int or output.request_message_id <= 0:
                 raise CoachTelegramError("invalid_reply_message")
@@ -59,7 +65,8 @@ class CoachTelegramClient:
         result = self._call("sendMessage", body)
         if not isinstance(result, dict) or type(result.get("message_id")) is not int or result["message_id"] <= 0:
             raise CoachTelegramError("telegram_result_unknown")
-        if not isinstance(result.get("chat"), dict) or result["chat"].get("id") != output.chat_id or result.get("message_thread_id") != output.message_thread_id:
+        if (not isinstance(result.get("chat"), dict) or result["chat"].get("id") != output.chat_id
+                or not group_delivery_matches_thread(result, output.message_thread_id)):
             raise CoachTelegramError("telegram_result_unknown")
         return result
 
@@ -69,10 +76,27 @@ class CoachTelegramClient:
             raise CoachTelegramError("telegram_identity_unknown")
         return result
 
+    def configure_group_reading(self) -> dict[str, Any]:
+        """Enable joined-group access, leaving every unrelated bot setting alone.
+
+        Bot API 10.5 supports these settings directly. This method is called only
+        by the explicit installation flow, after identity and DB checks.
+        """
+        result = self._call("setMySettings", {
+            "can_join_groups": True, "can_read_all_group_messages": True,
+        })
+        if result is not True:
+            raise CoachTelegramError("telegram_group_reading_settings_rejected")
+        identity = self.get_me()
+        if (identity.get("can_join_groups") is not True
+                or identity.get("can_read_all_group_messages") is not True):
+            raise CoachTelegramError("telegram_group_reading_settings_not_verified")
+        return identity
+
     def check_group_access(self, *, chat_id: int, bot_user_id: int, can_read_all_group_messages: bool):
         chat = self._call("getChat", {"chat_id": chat_id})
-        if not isinstance(chat, dict) or chat.get("id") != chat_id or chat.get("type") != "supergroup" or chat.get("is_forum") is not True:
-            raise CoachTelegramError("configured_group_is_not_a_forum")
+        if not isinstance(chat, dict) or chat.get("id") != chat_id or chat.get("type") not in {"group", "supergroup"}:
+            raise CoachTelegramError("configured_chat_is_not_a_group")
         member = self._call("getChatMember", {"chat_id": chat_id, "user_id": bot_user_id})
         if not isinstance(member, dict) or member.get("status") not in {"member", "administrator", "creator"}:
             raise CoachTelegramError("bot_not_in_configured_group")
@@ -88,7 +112,7 @@ class CoachTelegramClient:
             raise CoachTelegramError("telegram_webhook_belongs_to_another_deployment")
         result = self._call("setWebhook", {
             "url": expected, "secret_token": secret,
-            "allowed_updates": ["message", "edited_message"], "drop_pending_updates": False,
+            "allowed_updates": ["message", "edited_message", "my_chat_member"], "drop_pending_updates": False,
         })
         if result is not True:
             raise CoachTelegramError("telegram_webhook_rejected")

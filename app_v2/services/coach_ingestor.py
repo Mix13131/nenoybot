@@ -1,7 +1,8 @@
 """Dedicated coach intake: archive and durable work, no LLM in the webhook.
 
-This path deliberately does not call the general Group/Personal ingestor. Only
-the explicitly configured forum topics are accepted; third-party nested reply
+This path deliberately does not call the general Group/Personal ingestor.
+Joined-groups mode discovers ordinary groups and all forum topics from signed
+updates; configured mode keeps its explicit allowlist. Third-party nested reply
 objects never become a coach job. All accepted work commits before Telegram ACK.
 """
 from __future__ import annotations
@@ -14,6 +15,7 @@ from app_v2.adapters.telegram_archive import archive_message_from_update
 from app_v2.adapters.telegram_webhook import normalize_update
 from app_v2.coach_config import CoachConfig
 from app_v2.repositories.coach_repo import CoachRepository
+from app_v2.repositories.coach_scope_repo import CoachScopeRepository, membership_from_update
 from app_v2.repositories.source_archive_repo import SourceArchiveRepository
 from app_v2.services.coach_controls import CoachControls
 
@@ -43,19 +45,39 @@ def is_coach_addressed(normalized, config: CoachConfig) -> bool:
 def ingest_coach_update(update: dict[str, Any], *, conn, config: CoachConfig) -> CoachIngestResult:
     if not isinstance(update, dict):
         return CoachIngestResult("ignored")
+    joined_groups = config.group_mode == "joined_groups"
+    if "my_chat_member" in update:
+        membership = membership_from_update(update, bot_user_id=config.bot_user_id)
+        if membership is None or (not joined_groups and membership.chat_id != config.chat_id):
+            return CoachIngestResult("ignored")
+        registry = CoachScopeRepository(conn, bot_user_id=config.bot_user_id)
+        applied = registry.apply_membership(membership)
+        return CoachIngestResult("membership_updated" if applied else "duplicate")
     try:
         normalized = normalize_update(update, bot_username=config.bot_username,
                                       bot_user_id=str(config.bot_user_id) if config.bot_user_id else None)
-        message = archive_message_from_update(normalized) if normalized is not None else None
+        message = archive_message_from_update(normalized, allow_group_messages=joined_groups) if normalized is not None else None
     except (KeyError, TypeError, ValueError, OverflowError):
         return CoachIngestResult("ignored")
     if message is None or not config.permits_scope(message.chat_id, message.message_thread_id):
         return CoachIngestResult("ignored")
     repo = CoachRepository(conn, chat_id=message.chat_id, message_thread_id=message.message_thread_id,
-                           bot_user_id=config.bot_user_id, transient_ttl_seconds=config.transient_ttl_seconds)
-    archive = SourceArchiveRepository(conn)
+                           bot_user_id=config.bot_user_id, transient_ttl_seconds=config.transient_ttl_seconds,
+                           allow_group_messages=joined_groups)
+    archive = SourceArchiveRepository(conn, allow_group_messages=joined_groups)
+    registry = CoachScopeRepository(conn, bot_user_id=config.bot_user_id)
     with conn.transaction():
         repo.assert_identity()
+        if joined_groups and config.enabled:
+            if not registry.ensure_scope(message):
+                return CoachIngestResult("inactive_group")
+        elif not registry.permits_received_message(message):
+            return CoachIngestResult("inactive_group")
+        if joined_groups and not config.enabled and not conn.execute(
+            "SELECT 1 FROM source_archive_scopes WHERE chat_id=%s AND message_thread_id=%s",
+            (message.chat_id, message.message_thread_id),
+        ).fetchone():
+            return CoachIngestResult("disabled")
         if not repo.claim_ingest(message.telegram_update_id):
             return CoachIngestResult("duplicate")
         scope_enabled = repo.scope_enabled()

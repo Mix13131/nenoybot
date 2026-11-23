@@ -105,8 +105,11 @@ class SourceArchiveRepository:
     Telegram/operator boundary; this internal API is not a public endpoint.
     """
 
-    def __init__(self, conn) -> None:
+    def __init__(self, conn, *, allow_group_messages: bool = False) -> None:
+        if type(allow_group_messages) is not bool:
+            raise ValueError('The group projection policy must be explicit')
         self.conn = conn
+        self.allow_group_messages = allow_group_messages
 
     def configure_scope(
         self, chat_id: int, message_thread_id: int, *, enabled: bool,
@@ -207,7 +210,7 @@ class SourceArchiveRepository:
         first restrict the update to its explicitly configured group/topic.
         Existing personal state, including any opt-out, is left untouched.
         """
-        message=archive_message_from_update(normalized)
+        message=archive_message_from_update(normalized, allow_group_messages=self.allow_group_messages)
         if message is None:
             return False
         key=(message.chat_id,message.message_thread_id,message.author_user_id)
@@ -239,7 +242,7 @@ class SourceArchiveRepository:
             return True
 
     def capture(self, normalized: NormalizedTelegramUpdate) -> ArchiveCapture:
-        message = archive_message_from_update(normalized)
+        message = archive_message_from_update(normalized, allow_group_messages=self.allow_group_messages)
         if message is None:
             return ArchiveCapture('ignored')
         key = (message.chat_id, message.message_thread_id, message.author_user_id)
