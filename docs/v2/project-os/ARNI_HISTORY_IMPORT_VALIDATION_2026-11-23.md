@@ -74,15 +74,53 @@ preview rollback → импорт до известной даты вступл�
 Для ограниченного `getChatMember` добавлен read-only резервный поиск точного
 автора в списке администраторов, только при HTTP 400/403. Неизвестная личность
 по-прежнему блокирует импорт. Официальное основание: Telegram Bot API,
-`getChatMember` и `getChatAdministrators`.
+[getChatMember](https://core.telegram.org/bots/api#getchatmember) и
+[getChatAdministrators](https://core.telegram.org/bots/api#getchatadministrators).
 
 ```bash
 /workspace/scratch/3d2f1bc5ec88/.venv/bin/python -m pytest tests_v2/unit/test_coach_history_import_service.py tests_v2/unit/test_coach_history_endpoint.py tests_v2/unit/test_coach_transport.py -q
 ```
 
 168 passed. Проверены exact match, бот/человек, отсутствующий автор, некорректный
-ответ, caching и отсутствие fallback для timeout/429/5xx. Результаты реального
-повторного preview/apply и закрытия endpoint фиксируются отдельно в PR.
+ответ, caching и отсутствие fallback для timeout/429/5xx.
+
+Полный GitHub CI исправленного commit
+`3e6571d477ff6dc23677ff40941fa700ba52d4c1` завершился **success**:
+[run 45206787673](https://github.com/Mix13131/nenoybot/actions/runs/45206787673),
+job `137804558399`, **1602 passed in 61.88s**. Это проверка точного исходного
+кода исправления; успешный рабочий импорт из неё не следует.
+
+### Повторный рабочий preview
+
+23 ноября 2026, **18:39:20 МСК (15:39:20 UTC)**, повторный preview на этом commit
+завершился **HTTP 503**. После развёртывания подтверждены **SUCCESS** у обоих
+сервисов: `arni-web` и `arni-worker`. Worker завершил развёртывание в
+18:39:23 МСК (15:39:23 UTC), на три секунды позже preview.
+
+Подтверждённая безопасная диагностика:
+
+```text
+phase=author_identity
+verified_authors=1
+total_authors=2
+reason=history_author_not_in_verified_administrators
+method=getChatAdministrators
+```
+
+Личность одного из двух авторов подтверждена. Для второго автора резервный
+поиск в списке администраторов не дал точного подтверждения личности. Импорт
+остановлен до обращения к базе данных; **apply не вызывался, история не импортирована**.
+
+Официальная документация Telegram гарантирует работу `getChatMember` для
+других пользователей только боту, являющемуся администратором чата. Это общее
+ограничение API: фактический текущий статус бота из полученной диагностики
+не установлен, поэтому отсутствие у него прав администратора не заявляется.
+
+Четыре временные настройки доступа к импорту очищены оператором. Развёртывание
+web с отключённым доступом завершилось **SUCCESS**. Итоговая проверка:
+`GET /ready` → **HTTP 200**, `POST /admin/history-import` с прежним секретом →
+**HTTP 404**. Проверочный скрипт завершился с кодом **0**: временный endpoint
+закрыт, готовность основного приложения сохранена.
 
 Успешный импорт доказывает доступность истории в архиве и поиске. Качество
 наставнических ответов и фактическую доставку новых сообщений подтверждает
