@@ -117,5 +117,67 @@ send и сохранность исходного ledger. Отрицательн
 
 Независимый review engine, prompts, worker/repo, migration, recovery, CLI и
 readiness: **PASS, открытых P1/P2 нет**. Reviewer отдельно проверил 54 worker
-и 14 целевых engine tests. CI и фактическое восстановление фиксируются по
-завершении; успешная рабочая доставка пока не заявляется.
+и 14 целевых engine tests.
+
+## CI и развёрнутая версия
+
+Исполняемый commit `7b20d3f588301f3b75305f3640f2bb85b239b101`, дерево
+`453c9e14f93a40759a5f61e7973ed679f062cb98`; дерево совпало с локальным
+commit `8d954ba3821e58396a0440478ae31249f682d928` до обновления этого отчёта.
+
+[GitHub Actions, run 524](https://github.com/Mix13131/nenoybot/actions/runs/45218350644):
+**SUCCESS, 1720 passed in 63.21s**. Развёртывание началось после завершения CI.
+
+Railway web и worker закреплены на этом точном commit. Последующее изменение
+только этого отчёта не меняет работающий код.
+
+## Фактическое восстановление
+
+Все времена в таблице — 23 ноября 2026, МСК. Рабочие ID участников, группы,
+исходные сообщения и ответы модели не публикуются.
+
+| Время | Проверка | Результат |
+| --- | --- | --- |
+| 19:38:32 | Web prepare и read-only preview | Миграция 0018; candidates 1, eligible 1, rearmed 0, blocked 0 |
+| 19:39:22 | Новый worker | Telegram verified, ready, 77 источников; старый worker затем REMOVED |
+| 19:40:20 | Redeploy существующего build | Повторил старый preview из snapshot; записи и AI-вызова не было |
+| 19:41:05 | Новый deploy с актуальным pre-deploy command | status rearmed, dry_run false, rearmed 1; один исходный запрос возвращён в pending |
+| 19:42:03 | Решение нового worker | direct, RESPOND, source_backed_decision |
+| 19:42:45 | Read-only CLI stats | Одна completed direct-задача; **4 исходящих сообщения sent**, очереди pending/uncertain отсутствуют |
+| 19:43 | Проверка конечной конфигурации | Временные recovery/stats команды убраны; pre-deploy снова только prepare |
+
+Telegram принял четыре части ответа на исходный запрос; повторять сообщение
+пользователю не потребовалось. Это проверка обработки и доставки, а не оценка
+качества наставнического текста.
+
+Операторская команда сама не делает AI-вызовов или отправок: её рабочая квитанция
+содержала ai_calls_made 0 и telegram_messages_sent 0. Последующую обработку
+выполнил новый worker. Статистика подтверждает один дополнительный assessment
+и один generation, оба settled/valid_json; reserved и uncertain operations — 0.
+Всего за день: два assessment, один generation и прежний operator_smoke.
+Расчётный ledger расход — 129 997 microUSD, из них восстановление добавило
+99 296 microUSD. Это расчёт по настроенным токеновым тарифам до cache-скидок,
+без Railway, а не счёт провайдера. Observe и отсутствие cap сохранены.
+
+Архив по итогам: **77 доступных исходных текстов** — прежние 76 импортированных
+и новое обращение. Повторного импорта не было.
+
+### Конечные deployments
+
+- Arni web: `87d857df-2266-4a17-a289-62285aea67d9`, SUCCESS,
+  `/ready` — HTTP 200. Recovery apply выполнен предшествующим
+  `90f77121-7eb2-4a1d-8031-ceabbad6d62b`; в конечном deployment его команды нет.
+- Arni worker: `e38395f8-0c5d-4cb8-bf5f-e01deb19f5a6`, SUCCESS.
+- Прежний worker `6e081700-5730-46a4-baf1-b6526111bd53` был REMOVED до apply.
+- NeNoi web `ef3b1e63-acad-4a71-9ced-ccf74653543b`, NeNoi worker
+  `88b3a70c-2526-4a6e-a934-672b85c5206f` и Postgres
+  `c0613672-9d3d-4b3b-a969-09130a5ec874` сохранили прежние deployments.
+
+Railway принимает одну строку pre-deploy command; зависимые команды объединены
+через `&&`. Redeploy с deployment ID повторил настройки snapshot, поэтому
+актуальная команда apply применена через connect-service-source с тем же точным
+проверенным commit. Повторный preview ничего не изменил. Финальный stats запуск
+был read-only, его временная настройка также удалена без дополнительного рестарта.
+
+PR остаётся Draft и не слит. Разбор всех участников одной командой остаётся
+отложенным по решению владельца; в это исправление он не входит.
