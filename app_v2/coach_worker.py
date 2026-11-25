@@ -44,7 +44,7 @@ _VALIDATION_NOTICE_REASONS = frozenset({
     "invalid_experiment", "unbounded_experiment", "experiment_message_required",
     "experiment_must_be_in_the_linked_message", "known_experiment_must_not_be_reoffered",
     "unsafe_or_unsupported_output", "unsafe_experiment",
-    "model_flagged_sensitive_content", "invalid_web_response",
+    "invalid_web_response",
 })
 
 
