@@ -219,3 +219,37 @@ def test_crash_after_reservation_does_not_refund_or_replay_on_restart(budget):
     with pytest.raises(CoachOperationAlreadyAttempted):
         restarted.request_json(operation_id=operation, purpose='assessment', messages=[{'role': 'user', 'content': 'Synthetic request'}])
     assert provider.calls == 1 and budget.snapshot()['reserved_microusd'] == cfg.max_cost_microusd
+
+
+def test_web_tool_fee_is_reserved_before_call_and_recorded_as_a_separate_metric(budget):
+    reservation = reserve(budget, 'web-fee', cap=120_000,
+                          max_tool_cost_microusd=40_000)
+    held = budget.snapshot(now=AT)
+    assert held['reserved_microusd'] == 40_060
+    cost = budget.reconcile(reservation.operation_id, input_tokens=10, output_tokens=5,
+                            outcome='valid_json', tool_calls=2, tool_cost_microusd=20_000)
+    assert cost == 20_020
+    snapshot = budget.snapshot(now=AT)
+    assert snapshot['reserved_microusd'] == 0
+    assert snapshot['spent_microusd'] == 20_020
+    assert not snapshot['blocked']
+    stats = budget.usage_stats()
+    assert stats['web_search_calls'] == 2
+    assert stats['web_search_cost_microusd'] == 20_000
+    assert stats['settled_cost_microusd'] == 20_020
+    # Reconciliation must not quietly revise already paid web-tool usage.
+    with pytest.raises(CoachBudgetConfigurationError):
+        budget.reconcile(reservation.operation_id, input_tokens=10, output_tokens=5,
+                         outcome='valid_json', tool_calls=3, tool_cost_microusd=30_000)
+
+
+def test_unexpected_web_tool_overrun_is_charged_and_blocks_future_calls(budget):
+    reservation = reserve(budget, 'web-overrun', cap=120_000,
+                          max_tool_cost_microusd=40_000)
+    spent = budget.reconcile(reservation.operation_id, input_tokens=10, output_tokens=5,
+                             outcome='valid_json', tool_calls=5, tool_cost_microusd=50_000)
+    assert spent == 50_020
+    assert budget.snapshot(now=AT)['blocked'] is True
+    assert budget.operation(reservation.operation_id)['outcome'] == 'usage_overrun'
+    with pytest.raises(CoachBudgetExceeded):
+        reserve(budget, 'blocked-after-tool-overrun', cap=120_000)
