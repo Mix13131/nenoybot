@@ -292,7 +292,7 @@ class CoachEngine:
             if not answer or _UNSAFE_OUTPUT.search(answer):
                 verified = False
         if not verified:
-            answer = ('Не удалось подготовить достоверный ответ по найденным '
+            answer = ('Не удалось достоверно проверить данные по найденным '
                       'источникам. Попробуй уточнить название, тему или ссылку.')
         else:
             answer += '\n\nИсточники:\n' + '\n'.join(
@@ -711,7 +711,7 @@ class CoachEngine:
                         raise
                     if request.mode == 'direct' and self._check(request, permissions.version, evidence):
                         text = ('Проверку веб-источников выполнил, но подготовить '
-                                'надёжный ответ не получилось. Не буду придумывать факты.')
+                                'надёжный ответ не получилось, поэтому не буду придумывать факты.')
                         return CoachDecision('RESPOND', text, self._dependencies(evidence),
                             request.source_checksum, permissions.version,
                             'web_search_response_invalid', messages=(text,))
