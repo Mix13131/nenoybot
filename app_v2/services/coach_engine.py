@@ -278,23 +278,35 @@ class CoachEngine:
                 or not isinstance(parsed['answer'], str)):
             raise _Rejected('invalid_web_response')
         answer = parsed['answer'].strip()
-        if (len(answer) > 3500 or not answer
-                or _WEB_URL.search(answer) or _UNSAFE_OUTPUT.search(answer)):
-            raise _Rejected('invalid_web_response')
         verified_sources = tuple(url for url in getattr(result, 'web_sources', ()) if
                                  isinstance(url, str) and url.startswith('https://'))
-        if not parsed['verified'] or not verified_sources:
-            answer = ('Не удалось достоверно проверить содержание ссылки или найти '
-                      'подтверждённые сведения. Если назовёшь точный предмет, '
-                      'поищу его по официальным источникам.')
+        verified = parsed['verified'] and bool(verified_sources)
+        # Providers occasionally include their own citations despite the schema
+        # instruction. Strip those URLs and append only verified tool citations.
+        # A long public research answer must not silently kill a direct reply.
+        if verified:
+            answer = _WEB_URL.sub('', answer)
+            answer = re.sub(r'(?:t\.me/\S+|@\w+)', '', answer).strip()
+            if len(answer) > 3200:
+                answer = answer[:3170].rsplit(' ', 1)[0].strip() + '…'
+            if not answer or _UNSAFE_OUTPUT.search(answer):
+                verified = False
+        if not verified:
+            answer = ('Не удалось подготовить достоверный ответ по найденным '
+                      'источникам. Попробуй уточнить название, тему или ссылку.')
         else:
             answer += '\n\nИсточники:\n' + '\n'.join(
                 f'{i}. {url}' for i, url in enumerate(verified_sources[:3], 1))
         parts = tuple(self._telegram_parts(answer))
         if sum(len(part.encode('utf-8')) for part in parts) > self.max_response_bytes:
-            raise _Rejected('response_byte_budget_exceeded')
+            if verified:
+                # Extremely long provider citation URLs are not published.
+                answer = answer[:2700].rsplit(' ', 1)[0].strip() + '…'
+                parts = tuple(self._telegram_parts(answer))
+            else:
+                raise _Rejected('response_byte_budget_exceeded')
         return CoachDecision('RESPOND', answer, self._dependencies(evidence_for_reply),
-            request.source_checksum, version, 'verified_public_web_research' if verified_sources else 'web_search_unverified',
+            request.source_checksum, version, 'verified_public_web_research' if verified else 'web_search_unverified',
             {'web_search_calls': getattr(result, 'web_search_calls', 0), 'verified_source_count': len(verified_sources)},
             messages=parts)
 
@@ -694,6 +706,16 @@ class CoachEngine:
                             request.source_checksum, permissions.version,
                             'web_search_temporarily_unavailable', messages=(text,))
                     return silence('web_search_temporarily_unavailable', version=permissions.version)
+                except _Rejected as exc:
+                    if str(exc) not in {'invalid_web_response', 'response_byte_budget_exceeded'}:
+                        raise
+                    if request.mode == 'direct' and self._check(request, permissions.version, evidence):
+                        text = ('Проверку веб-источников выполнил, но подготовить '
+                                'надёжный ответ не получилось. Не буду придумывать факты.')
+                        return CoachDecision('RESPOND', text, self._dependencies(evidence),
+                            request.source_checksum, permissions.version,
+                            'web_search_response_invalid', messages=(text,))
+                    return silence('web_search_response_invalid', version=permissions.version)
             if request.mode not in {'track', 'weekly_review'}:
                 if not evidence:
                     return silence('no_current_text', version=permissions.version)

@@ -934,3 +934,37 @@ def test_personal_pin_code_question_never_reaches_public_search():
                                  ai=ai,mode='direct')
     engine.process(request)
     assert not any(call.get('web_search') for call in ai.calls)
+
+
+def test_web_answer_with_unverified_inline_url_is_cleaned_not_silenced():
+    ai=PublicWebAI(answer='Устройство представлено официально. https://example.org/fake-price',
+                   sources=('https://alice.yandex.ru/wearables/pin',))
+    engine,request,_,_,_,_=setup([source(1,'Яндекс пин, найди всю инфу')],
+                                 ai=ai,mode='direct')
+    decision=engine.process(request)
+    assert decision.action=='RESPOND'
+    assert decision.reason=='verified_public_web_research'
+    assert 'fake-price' not in decision.text
+    assert 'https://alice.yandex.ru/wearables/pin' in decision.text
+
+
+def test_web_answer_over_3500_characters_no_longer_silences_direct_request():
+    ai=PublicWebAI(answer='Найдено на официальном сайте. ' * 200)
+    engine,request,_,_,_,_=setup([source(1,'Яндекс пин, найди всю инфу')],
+                                 ai=ai,mode='direct')
+    decision=engine.process(request)
+    assert decision.action=='RESPOND'
+    assert len(decision.text) < 4500
+    assert 'https://alice.yandex.ru/wearables/pin' in decision.text
+
+
+def test_malformed_public_web_result_returns_neutral_direct_notice():
+    class InvalidWebAI:
+        def request_json(self, **kwargs):
+            return SimpleNamespace(parsed={'wrong':'data'},web_sources=(),web_search_calls=1)
+    engine,request,_,_,_,_=setup([source(1,'Яндекс пин, найди всю инфу')],
+                                 ai=InvalidWebAI(),mode='direct')
+    decision=engine.process(request)
+    assert decision.action=='RESPOND'
+    assert decision.reason=='web_search_response_invalid'
+    assert 'не буду придумывать' in decision.text

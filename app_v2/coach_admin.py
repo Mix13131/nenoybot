@@ -195,6 +195,38 @@ def smoke_ai(config: CoachConfig, *, provider=None) -> dict:
             "cost_microusd": result.cost_microusd, "telegram_messages_sent": 0}
 
 
+def smoke_web(config: CoachConfig, *, provider=None) -> dict:
+    """Operator-only public search smoke; no participant data or Telegram delivery."""
+    _configured(config)
+    if not config.ai_enabled:
+        raise CoachPreparationError('ai_is_not_enabled')
+    with connect(config.database_url, autocommit=True, connect_timeout=5) as conn:
+        CoachScopeRepository(conn, bot_user_id=config.bot_user_id).assert_identity()
+    ai = CoachAI(CoachBudgetRepository(config.database_url),
+                 provider or OpenAIResponsesProvider(config.openai_api_key), config.ai_config())
+    result = ai.request_json(
+        operation_id='operator-web-smoke:' + str(uuid4()), purpose='operator_web_smoke',
+        messages=[
+            {'role': 'system', 'content': (
+                'Use web_search to find the official current information about '
+                'the public Yandex Pin wearable AI device announced in November 2026. '
+                'Return JSON answer (plain Russian text without links) and verified boolean. '
+                'Only set verified=true when current public sources confirm the facts.')},
+            {'role': 'user', 'content': 'Яндекс Пин носимый ИИ-помощник, официальный сайт'}],
+        schema={'type': 'object', 'properties': {'answer': {'type': 'string'},
+                                                  'verified': {'type': 'boolean'}},
+                'required': ['answer', 'verified'], 'additionalProperties': False},
+        web_search=True,
+    )
+    if (set(result.parsed) != {'answer', 'verified'} or result.parsed['verified'] is not True
+            or result.web_search_calls < 1 or not result.web_sources):
+        raise CoachPreparationError('public_web_lookup_unverified')
+    return {'status': 'web_verified', 'web_search_calls': result.web_search_calls,
+            'sources_verified': len(result.web_sources), 'input_tokens': result.input_tokens,
+            'output_tokens': result.output_tokens, 'cost_microusd': result.cost_microusd,
+            'telegram_messages_sent': 0}
+
+
 def _timestamp(value: str) -> datetime:
     try:
         parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
@@ -207,7 +239,7 @@ def _timestamp(value: str) -> datetime:
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Prepare only the separately configured coach")
-    parser.add_argument("command", choices=("bootstrap-database", "prepare", "smoke-ai", "setup-telegram", "status", "stats", "import-history", "recover-direct"))
+    parser.add_argument("command", choices=("bootstrap-database", "prepare", "smoke-ai", "smoke-web", "setup-telegram", "status", "stats", "import-history", "recover-direct"))
     parser.add_argument("--since", type=_timestamp, help="Inclusive interval start (stats or recover-direct)")
     parser.add_argument("--until", type=_timestamp, help="Exclusive interval end (stats or recover-direct)")
     parser.add_argument("--file", help="Private Telegram Desktop JSON path (import-history only)")
@@ -237,7 +269,7 @@ def main(argv: list[str] | None = None) -> int:
             result = inspect_statistics(config, since=args.since, until=args.until)
         else:
             action = {"bootstrap-database": bootstrap_database, "prepare": prepare,
-                      "smoke-ai": smoke_ai, "setup-telegram": configure_telegram,
+                      "smoke-ai": smoke_ai, "smoke-web": smoke_web, "setup-telegram": configure_telegram,
                       "status": inspect_status}[args.command]
             result = action(config)
         print(json.dumps(result, ensure_ascii=False, default=str))

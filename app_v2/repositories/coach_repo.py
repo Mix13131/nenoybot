@@ -45,6 +45,9 @@ _DECISION_REASONS = frozenset({
     "experiment_must_be_in_the_linked_message", "known_experiment_must_not_be_reoffered",
     "CoachAIError", "CoachAIConfigurationError", "CoachBudgetConfigurationError",
     "CoachBudgetExceeded", "CoachOperationAlreadyAttempted",
+    "verified_public_web_research", "web_search_unverified",
+    "web_search_temporarily_unavailable", "web_search_response_invalid",
+    "invalid_web_response",
 })
 
 
