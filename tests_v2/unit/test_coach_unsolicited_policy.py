@@ -84,3 +84,14 @@ def test_reply_to_bot_is_direct_even_without_name():
     user = update("Сделаю завтра", replied_to={
         "message_id": 199, "from": {"id": BOT, "is_bot": True}})
     assert is_coach_addressed(user, CONFIG)
+
+
+def test_forum_root_from_human_is_still_a_topic_root_not_an_active_reply():
+    message = SimpleNamespace(message={
+        "text": "Отчёт: закончил рабочий день.",
+        "is_topic_message": True, "message_thread_id": 3,
+        "reply_to_message": {"message_id": 3,
+                             "from": {"id": 88881111, "is_bot": False},
+                             "forum_topic_created": {"name": "Отчёты за день"}},
+    })
+    assert unsolicited_coaching_candidate(message, CONFIG)

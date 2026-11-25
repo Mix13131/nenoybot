@@ -64,6 +64,12 @@ def _reply_to_another_person(normalized, config: CoachConfig) -> bool:
     reply = normalized.message.get("reply_to_message")
     if not isinstance(reply, dict):
         return False
+    # Telegram forum topics may implicitly link every top-level report to the
+    # topic's service-root message, even when a human created that topic.
+    # That is not a reply in the participants' conversation.
+    if (normalized.message.get("is_topic_message") is True
+            and reply.get("message_id") == normalized.message.get("message_thread_id")):
+        return False
     author = reply.get("from")
     if not isinstance(author, dict):
         return False  # Service topic root is not a human reply.
