@@ -88,7 +88,7 @@ class CoachBudgetRepository:
     def reserve(self, *, operation_id: str, purpose: str, model: str, request_hash: str,
                 daily_cap_microusd: int | None, max_input_tokens: int, max_output_tokens: int,
                 input_price_microusd_per_million: int, output_price_microusd_per_million: int,
-                budget_mode: str = 'capped',
+                budget_mode: str = 'capped', max_tool_cost_microusd: int = 0,
                 now: datetime | None = None) -> BudgetReservation:
         for value, name, limit in ((operation_id, 'operation_id', 200), (purpose, 'purpose', 80), (model, 'model', 160)):
             if not isinstance(value, str) or not value.strip() or len(value) > limit:
@@ -103,8 +103,13 @@ class CoachBudgetRepository:
         for value in (max_input_tokens, max_output_tokens):
             if not 0 < _positive(value, 'token bound') <= (1 << 31) - 1:
                 raise CoachBudgetConfigurationError('Token bounds exceed the ledger range')
+        if type(max_tool_cost_microusd) is not int or not 0 <= max_tool_cost_microusd <= 1_000_000:
+            raise CoachBudgetConfigurationError('Bounded nonnegative tool reservation required')
         reserved = token_cost_microusd(max_input_tokens, max_output_tokens,
                                       input_price_microusd_per_million, output_price_microusd_per_million)
+        if reserved + max_tool_cost_microusd > _MAX_BIGINT:
+            raise CoachBudgetConfigurationError('Tool reservation exceeds supported range')
+        reserved += max_tool_cost_microusd
         with self._connect() as conn:
             with conn.transaction():
                 # Global operation identity includes attempts from prior days.
@@ -137,12 +142,12 @@ class CoachBudgetRepository:
                     '''INSERT INTO coach_ai_operations(
                            operation_id,budget_key,budget_day,purpose,model,request_hash,
                            max_input_tokens,max_output_tokens,input_price_microusd_per_million,
-                           output_price_microusd_per_million,reserved_microusd,status)
-                       VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,'reserved')
+                           output_price_microusd_per_million,reserved_microusd,max_tool_cost_microusd,status)
+                       VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,'reserved')
                        ON CONFLICT (operation_id) DO NOTHING RETURNING operation_id''',
                     (operation_id, self.budget_key, day, purpose, model, request_hash,
                      max_input_tokens, max_output_tokens, input_price_microusd_per_million,
-                     output_price_microusd_per_million, reserved),
+                     output_price_microusd_per_million, reserved, max_tool_cost_microusd),
                 ).fetchone()
                 if inserted is None:
                     raise CoachOperationAlreadyAttempted('This operation was already reserved; it must not call AI again')
@@ -154,28 +159,34 @@ class CoachBudgetRepository:
         return BudgetReservation(operation_id, self.budget_key, day, reserved)
 
     def reconcile(self, operation_id: str, *, input_tokens: int, output_tokens: int,
-                  outcome: str, latency_ms: int = 0) -> int:
+                  outcome: str, latency_ms: int = 0,
+                  tool_calls: int = 0, tool_cost_microusd: int = 0) -> int:
         if outcome not in _OUTCOMES:
             raise CoachBudgetConfigurationError('Unknown accounting outcome')
         if type(latency_ms) is not int or not 0 <= latency_ms <= (1 << 31) - 1:
             raise CoachBudgetConfigurationError('Latency must be a bounded nonnegative integer')
+        if (type(tool_calls) is not int or not 0 <= tool_calls <= 100
+                or type(tool_cost_microusd) is not int or not 0 <= tool_cost_microusd <= 1_000_000):
+            raise CoachBudgetConfigurationError('Invalid bounded web-tool usage')
         with self._connect() as conn:
             with conn.transaction():
                 row = conn.execute(
                     '''SELECT budget_day,reserved_microusd,input_price_microusd_per_million,
                               output_price_microusd_per_million,status,charged_microusd,input_tokens,
-                              output_tokens,max_input_tokens,max_output_tokens
+                              output_tokens,max_input_tokens,max_output_tokens,max_tool_cost_microusd,
+                              tool_calls,tool_cost_microusd
                        FROM coach_ai_operations WHERE operation_id=%s AND budget_key=%s FOR UPDATE''',
                     (operation_id, self.budget_key),
                 ).fetchone()
                 if row is None:
                     raise CoachBudgetConfigurationError('Cannot reconcile an unreserved operation')
-                cost = token_cost_microusd(input_tokens, output_tokens, row[2], row[3])
+                cost = token_cost_microusd(input_tokens, output_tokens, row[2], row[3]) + tool_cost_microusd
                 if row[4] == 'settled':
-                    if (row[5], row[6], row[7]) != (cost, input_tokens, output_tokens):
+                    if (row[5], row[6], row[7], row[11], row[12]) != (cost, input_tokens, output_tokens, tool_calls, tool_cost_microusd):
                         raise CoachBudgetConfigurationError('A settled operation has conflicting usage')
                     return cost
-                overrun = input_tokens > row[8] or output_tokens > row[9] or cost > row[1]
+                overrun = (input_tokens > row[8] or output_tokens > row[9]
+                           or tool_cost_microusd > row[10] or cost > row[1])
                 day = conn.execute(
                     '''SELECT reserved_microusd,spent_microusd FROM coach_budget_days
                        WHERE budget_key=%s AND budget_day=%s FOR UPDATE''', (self.budget_key, row[0]),
@@ -192,9 +203,11 @@ class CoachBudgetRepository:
                 )
                 conn.execute(
                     '''UPDATE coach_ai_operations SET status='settled',charged_microusd=%s,
-                           input_tokens=%s,output_tokens=%s,outcome=%s,latency_ms=%s,reconciled_at=CURRENT_TIMESTAMP
+                           input_tokens=%s,output_tokens=%s,tool_calls=%s,tool_cost_microusd=%s,
+                           outcome=%s,latency_ms=%s,reconciled_at=CURRENT_TIMESTAMP
                        WHERE operation_id=%s''',
-                    (cost, input_tokens, output_tokens, 'usage_overrun' if overrun else outcome, latency_ms, operation_id),
+                    (cost, input_tokens, output_tokens, tool_calls, tool_cost_microusd,
+                     'usage_overrun' if overrun else outcome, latency_ms, operation_id),
                 )
         return cost
 
@@ -263,7 +276,8 @@ class CoachBudgetRepository:
                           COALESCE(sum(o.input_tokens),0),COALESCE(sum(o.output_tokens),0),
                           COALESCE(sum(o.charged_microusd),0),
                           COALESCE(sum(o.reserved_microusd) FILTER (WHERE o.status<>'settled'),0),
-                          count(o.latency_ms),COALESCE(sum(o.latency_ms),0),max(o.latency_ms)
+                          count(o.latency_ms),COALESCE(sum(o.latency_ms),0),max(o.latency_ms),
+                          COALESCE(sum(o.tool_calls),0),COALESCE(sum(o.tool_cost_microusd),0)
                    FROM coach_ai_operations o JOIN coach_budget_days d
                      ON d.budget_key=o.budget_key AND d.budget_day=o.budget_day
                    WHERE ''' + ' AND '.join(conditions) +
@@ -274,15 +288,18 @@ class CoachBudgetRepository:
                         'unsettled_reserved_microusd', 'latency_samples', 'total_latency_ms')
         totals = dict.fromkeys(metric_names, 0)
         totals.update(settled_operations=0, reserved_operations=0, uncertain_operations=0,
-                      maximum_latency_ms=None)
+                      maximum_latency_ms=None, web_search_calls=0, web_search_cost_microusd=0)
         breakdown = []
         for row in rows:
             entry = dict(zip(('budget_mode', 'purpose', 'model', 'status', 'outcome'), row[:5]))
             metrics = dict(zip(metric_names, (int(value) for value in row[5:12])))
-            entry.update(metrics, maximum_latency_ms=row[12])
+            entry.update(metrics, maximum_latency_ms=row[12],
+                         web_search_calls=int(row[13]), web_search_cost_microusd=int(row[14]))
             breakdown.append(entry)
             for name, value in metrics.items():
                 totals[name] += value
+            totals['web_search_calls'] += entry['web_search_calls']
+            totals['web_search_cost_microusd'] += entry['web_search_cost_microusd']
             totals[row[3] + '_operations'] += metrics['operations']
             if row[12] is not None:
                 totals['maximum_latency_ms'] = max(totals['maximum_latency_ms'] or 0, row[12])
@@ -290,7 +307,7 @@ class CoachBudgetRepository:
                    if totals['latency_samples'] else None)
         return dict(budget_key=self.budget_key, since=since.isoformat() if since else None,
                     until=until.isoformat() if until else None,
-                    cost_basis='configured_token_tariffs', average_latency_ms=average,
+                    cost_basis='configured_token_tariffs_and_web_tool_calls', average_latency_ms=average,
                     **totals, breakdown=breakdown)
 
     def operation(self, operation_id: str) -> dict | None:

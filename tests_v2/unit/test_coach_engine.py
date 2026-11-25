@@ -875,3 +875,62 @@ def test_engine_real_postgres_experiment_is_offered_only_after_confirmed_send(de
             assert conn.execute('SELECT status FROM coach_episodes WHERE id=%s',(identifier,)).fetchone()!=('offered',)
             assert repo.list_experiments(author_user_id=author)==[]
         conn.rollback()
+
+
+class PublicWebAI:
+    def __init__(self, *, answer='Проверенная информация о публичном устройстве.',
+                 verified=True, sources=('https://alice.yandex.ru/wearables/pin',)):
+        self.calls=[]
+        self.answer, self.verified, self.sources = answer, verified, sources
+
+    def request_json(self, **kwargs):
+        self.calls.append(kwargs)
+        return SimpleNamespace(parsed={'answer':self.answer, 'verified':self.verified},
+                               web_sources=self.sources, web_search_calls=1)
+
+
+def test_yandex_pin_direct_uses_web_without_sensitive_psychological_classification():
+    ai=PublicWebAI()
+    engine,request,state,_,_,_=setup([source(1,'Арни, Яндекс пин, найди всю инфу')],
+                                     ai=ai, mode='direct')
+    result=engine.process(request)
+    assert result.action=='RESPOND' and result.reason=='verified_public_web_research'
+    assert len(ai.calls)==1 and ai.calls[0]['web_search'] is True
+    assert ai.calls[0]['purpose']=='web_research'
+    assert 'https://alice.yandex.ru/wearables/pin' in result.text
+    assert state.saved == []  # Public webpage is never a personal episode.
+
+
+def test_web_followup_uses_only_recent_authorized_link_same_topic():
+    prior=source(2,'https://www.instagram.com/reel/fake_public_video/',
+        occurred_at=NOW-timedelta(minutes=2), revision_at=NOW-timedelta(minutes=2))
+    own=source(1,'Арни, Яндекс пин, найди всю инфу')
+    state=State()
+    state.conversation=[{'role':'user','text':prior.available_text,
+        'source_proofs':[SourceProof(prior.source_id, prior.checksum, prior.access_version)],
+        'telegram_message_id':prior.telegram_message_id,
+        'occurred_at':prior.occurred_at}]
+    ai=PublicWebAI()
+    engine,request,_,_,_,_=setup([own,prior], state=state, ai=ai, mode='direct')
+    answer=engine.process(request)
+    assert answer.action=='RESPOND'
+    assert 'https://www.instagram.com/reel/' in ai.calls[0]['messages'][-1]['content']
+    assert {x.source_id for x in answer.dependencies}=={own.source_id,prior.source_id}
+
+
+def test_public_web_unverified_sources_do_not_turn_into_asserted_facts():
+    ai=PublicWebAI(answer='Купите секретное устройство за 1 рубль', sources=())
+    engine,request,_,_,_,_=setup([source(1,'Арни, Яндекс пин, найди всю инфу')],
+                                 ai=ai,mode='direct')
+    result=engine.process(request)
+    assert result.action=='RESPOND'
+    assert '1 рубль' not in result.text
+    assert 'Не удалось достоверно' in result.text
+
+
+def test_personal_pin_code_question_never_reaches_public_search():
+    ai=AI()
+    engine,request,_,_,_,_=setup([source(1,'Арни, найди информацию о моём пин-коде карты')],
+                                 ai=ai,mode='direct')
+    engine.process(request)
+    assert not any(call.get('web_search') for call in ai.calls)

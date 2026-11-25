@@ -10,11 +10,13 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 import hashlib
+import ipaddress
 import json
 import math
 import os
 import time
 from typing import Any, Mapping, Protocol, Sequence
+from urllib.parse import urlsplit
 
 from app_v2.repositories.coach_budget_repo import (
     CoachBudgetConfigurationError,
@@ -117,6 +119,8 @@ class ProviderResponse:
     output_tokens: int | None
     model: str
     status: str = 'completed'
+    web_search_calls: int = 0
+    web_sources: tuple[str, ...] = ()
 
 
 class JsonProvider(Protocol):
@@ -126,12 +130,14 @@ class JsonProvider(Protocol):
 
 @dataclass(frozen=True)
 class CoachAIResult:
-    """Known token usage cost at the explicit tariff, without guessed cache discounts."""
+    """Billed tokens and web-tool usage at explicit tariff, before discounts."""
     parsed: dict[str, Any]
     raw_text: str
     input_tokens: int
     output_tokens: int
     cost_microusd: int
+    web_search_calls: int = 0
+    web_sources: tuple[str, ...] = ()
 
 
 def _json_object(text: str) -> dict:
@@ -199,18 +205,21 @@ class CoachAI:
             pass
 
     def request_json(self, *, operation_id: str, purpose: str, messages: Sequence[dict[str, str]],
-                     schema: dict | None = None) -> CoachAIResult:
+                     schema: dict | None = None, web_search: bool = False) -> CoachAIResult:
+        if type(web_search) is not bool:
+            raise CoachAIConfigurationError('web_search must be explicitly enabled or disabled')
         prepared, prepared_schema, canonical, _ = self._prepare(messages, schema)
         cfg = self.config
         request_hash = hashlib.sha256(json.dumps({
             'payload': canonical, 'purpose': purpose, 'model': cfg.model,
-            'max_output_tokens': cfg.max_output_tokens,
+            'max_output_tokens': cfg.max_output_tokens, 'web_search': web_search,
         }, sort_keys=True, ensure_ascii=False).encode('utf-8')).hexdigest()
         try:
             self.budget.reserve(
                 operation_id=operation_id, purpose=purpose, model=cfg.model, request_hash=request_hash,
                 daily_cap_microusd=cfg.daily_cap_microusd, max_input_tokens=cfg.max_input_tokens,
                 budget_mode=cfg.budget_mode,
+                max_tool_cost_microusd=40_000 if web_search else 0,
                 max_output_tokens=cfg.max_output_tokens,
                 input_price_microusd_per_million=cfg.input_price_microusd_per_million,
                 output_price_microusd_per_million=cfg.output_price_microusd_per_million,
@@ -221,10 +230,11 @@ class CoachAI:
             raise CoachAIError('Budget persistence unavailable; AI was not called') from None
         started = time.monotonic()
         try:
-            response = self.provider.complete_json(
-                model=cfg.model, messages=prepared, schema=prepared_schema,
-                max_output_tokens=cfg.max_output_tokens, timeout_seconds=cfg.timeout_seconds,
-            )
+            kwargs = dict(model=cfg.model, messages=prepared, schema=prepared_schema,
+                          max_output_tokens=cfg.max_output_tokens, timeout_seconds=cfg.timeout_seconds)
+            if web_search:
+                kwargs['web_search'] = True
+            response = self.provider.complete_json(**kwargs)
         except Exception:
             latency = min((1 << 31) - 1, max(0, int((time.monotonic() - started) * 1000)))
             self._uncertain(operation_id, outcome='provider_error', latency_ms=latency)
@@ -237,7 +247,17 @@ class CoachAI:
             self._uncertain(operation_id, outcome='usage_missing', latency_ms=latency,
                             block_day=cfg.budget_mode == 'observe')
             raise CoachAIError('Provider usage is unknown; the monetary reservation remains held')
-        overrun = response.input_tokens > cfg.max_input_tokens or response.output_tokens > cfg.max_output_tokens
+        if (type(response.web_search_calls) is not int or response.web_search_calls < 0
+                or type(response.web_sources) is not tuple
+                or any(type(url) is not str for url in response.web_sources)):
+            self._uncertain(operation_id, outcome='usage_missing', latency_ms=latency,
+                            block_day=web_search)
+            raise CoachAIError('Web-search usage is unknown; reservation remains held')
+        web_tool_overrun = response.web_search_calls > (4 if web_search else 0)
+        # The published tool tariff: $10 per 1000 web_search calls = $0.01 per call.
+        web_cost = response.web_search_calls * 10_000
+        overrun = (response.input_tokens > cfg.max_input_tokens
+                   or response.output_tokens > cfg.max_output_tokens or web_tool_overrun)
         parsed = None
         try:
             parsed = _json_object(response.text)
@@ -248,14 +268,19 @@ class CoachAI:
             outcome = 'incomplete'
         try:
             cost = self.budget.reconcile(operation_id, input_tokens=response.input_tokens,
-                                         output_tokens=response.output_tokens, outcome=outcome, latency_ms=latency)
+                                         output_tokens=response.output_tokens, outcome=outcome, latency_ms=latency,
+                                         tool_calls=response.web_search_calls,
+                                         tool_cost_microusd=web_cost)
         except Exception:
             raise CoachAIError('Usage reconciliation unavailable; the existing reservation must be investigated') from None
         if overrun:
             raise CoachAIError('Provider usage exceeded its configured bound; the monetary breaker is blocked')
         if parsed is None or response.status != 'completed':
             raise CoachAIError('Provider returned no completed valid JSON object; usage was recorded')
-        return CoachAIResult(parsed, response.text, response.input_tokens, response.output_tokens, cost)
+        if web_search and response.web_search_calls == 0:
+            raise CoachAIError('The required web search did not execute; usage was recorded')
+        return CoachAIResult(parsed, response.text, response.input_tokens, response.output_tokens, cost,
+                             response.web_search_calls, response.web_sources)
 
 
 class OpenAIResponsesProvider:
@@ -272,12 +297,17 @@ class OpenAIResponsesProvider:
         self._transport = transport
 
     def complete_json(self, *, model: str, messages: list[dict[str, str]], schema: dict | None,
-                      max_output_tokens: int, timeout_seconds: float) -> ProviderResponse:
+                      max_output_tokens: int, timeout_seconds: float,
+                      web_search: bool = False) -> ProviderResponse:
         import httpx
 
         payload = dict(model=model, input=messages, instructions=_JSON_INSTRUCTIONS,
                        max_output_tokens=max_output_tokens, store=False, truncation='disabled',
-                       tools=[], background=False, stream=False)
+                       tools=[{'type': 'web_search', 'search_context_size': 'low'}] if web_search else [],
+                       background=False, stream=False)
+        if web_search:
+            payload['tool_choice'] = 'required'
+            payload['include'] = ['web_search_call.action.sources']
         payload['text'] = {'format': {'type': 'json_object'} if schema is None else {
             'type': 'json_schema', 'name': 'coach_response', 'schema': schema, 'strict': True,
         }}
@@ -288,7 +318,48 @@ class OpenAIResponsesProvider:
             response.raise_for_status()
             body = response.json()
         usage = body.get('usage') if isinstance(body.get('usage'), dict) else {}
-        texts = [part['text'] for item in body.get('output', []) if isinstance(item, dict) and item.get('type') == 'message'
+        output = body.get('output') if isinstance(body.get('output'), list) else []
+        texts = [part['text'] for item in output if isinstance(item, dict) and item.get('type') == 'message'
                  for part in item.get('content', []) if isinstance(part, dict) and part.get('type') == 'output_text' and isinstance(part.get('text'), str)]
+        # These are provider-reported citations, not URLs generated by the model.
+        urls = []
+        calls = 0
+        if web_search:
+            for item in output:
+                if not isinstance(item, dict):
+                    continue
+                if item.get('type') == 'web_search_call':
+                    calls += 1
+                    action = item.get('action') if isinstance(item.get('action'), dict) else {}
+                    for source in action.get('sources', []) if isinstance(action.get('sources'), list) else []:
+                        if isinstance(source, dict):
+                            urls.append(source.get('url'))
+                if item.get('type') == 'message':
+                    for part in item.get('content', []) if isinstance(item.get('content'), list) else []:
+                        if not isinstance(part, dict):
+                            continue
+                        for annotation in part.get('annotations', []) if isinstance(part.get('annotations'), list) else []:
+                            if isinstance(annotation, dict) and annotation.get('type') == 'url_citation':
+                                urls.append(annotation.get('url'))
+        clean = []
+        for url in urls:
+            if not isinstance(url, str) or len(url) > 1800:
+                continue
+            parsed = urlsplit(url)
+            host = parsed.hostname or ''
+            if (parsed.scheme != 'https' or not host or '.' not in host
+                    or parsed.username or parsed.password
+                    or host in {'localhost', 'localhost.localdomain'}
+                    or host.endswith(('.local', '.internal', '.localhost'))):
+                continue
+            try:
+                address = ipaddress.ip_address(host)
+            except ValueError:
+                pass
+            else:
+                if not address.is_global:
+                    continue
+            if url not in clean:
+                clean.append(url)
         return ProviderResponse(''.join(texts), usage.get('input_tokens'), usage.get('output_tokens'),
-                                body.get('model', ''), body.get('status', 'unknown'))
+                                body.get('model', ''), body.get('status', 'unknown'), calls, tuple(clean[:12]))

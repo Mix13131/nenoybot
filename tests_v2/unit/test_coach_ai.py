@@ -279,3 +279,54 @@ def test_responses_transport_does_not_retry_http_or_timeout_errors():
         provider.complete_json(model='synthetic-model', messages=MESSAGES, schema=None,
                                max_output_tokens=256, timeout_seconds=10)
     assert len(seen) == 1
+
+
+def test_public_web_research_reserves_external_tool_cost_and_reconciles_usage():
+    response = ProviderResponse('{"answer":"Verified public item","verified":true}', 100, 20,
+        'synthetic-model', web_search_calls=2, web_sources=('https://example.com/item',))
+    ai, budget, provider = gateway(response)
+    result = ai.request_json(operation_id='web-research-1', purpose='web_research',
+        messages=MESSAGES, schema={'type':'object'}, web_search=True)
+    assert result.web_search_calls == 2
+    assert result.web_sources == ('https://example.com/item',)
+    assert budget.reserved['max_tool_cost_microusd'] == 40_000
+    assert provider.calls[0]['web_search'] is True
+    assert budget.events[-1][2]['tool_calls'] == 2
+    assert budget.events[-1][2]['tool_cost_microusd'] == 20_000
+
+
+def test_web_research_cannot_claim_success_when_provider_did_not_search():
+    response = ProviderResponse('{"answer":"I think so","verified":true}', 100, 20, 'synthetic-model')
+    ai, budget, provider = gateway(response)
+    with pytest.raises(CoachAIError, match='required web search did not execute'):
+        ai.request_json(operation_id='web-no-tool', purpose='web_research', messages=MESSAGES,
+                        schema={'type':'object'}, web_search=True)
+    assert len(provider.calls) == 1
+    assert budget.events[-1][0] == 'reconcile'
+
+
+def test_web_responses_tool_search_and_provider_verified_urls():
+    seen = []
+    def handler(request):
+        seen.append(json.loads(request.content))
+        return httpx.Response(200, json={'model': 'synthetic-model', 'status': 'completed',
+            'usage': {'input_tokens': 200, 'output_tokens': 60}, 'output': [
+                {'type': 'web_search_call', 'status': 'completed',
+                 'action': {'type': 'search', 'sources': [
+                    {'url':'https://example.com/public','title':'Public official'},
+                    {'url':'http://127.0.0.1/private','title':'Unsafe'},
+                    {'url':'https://example.com/public','title':'Duplicate'}]}},
+                {'type':'message','content':[{'type':'output_text',
+                    'text':'{"answer":"Public source confirmed","verified":true}',
+                    'annotations':[{'type':'url_citation','url':'https://example.org/news'}]}]},
+            ]})
+    provider = OpenAIResponsesProvider('synthetic-key', transport=httpx.MockTransport(handler))
+    result = provider.complete_json(model='synthetic-model', messages=MESSAGES,
+        schema={'type':'object'}, max_output_tokens=256, timeout_seconds=10, web_search=True)
+    assert len(seen) == 1
+    assert seen[0]['tools'] == [{'type':'web_search','search_context_size':'low'}]
+    assert seen[0]['tool_choice'] == 'required'
+    assert 'web_search_call.action.sources' in seen[0]['include']
+    assert seen[0]['store'] is False
+    assert result.web_search_calls == 1
+    assert result.web_sources == ('https://example.com/public','https://example.org/news')
