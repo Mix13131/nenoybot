@@ -191,13 +191,36 @@ def test_long_response_is_split_only_by_transport_size_without_losing_text(natur
     assert all(len(item.text.encode('utf-16-le')) // 2 <= 4096 for item in delivered)
 
 
-def test_ordinary_chatter_can_be_silent_while_default_archive_is_kept(natural_pilot):
+def test_ordinary_chatter_is_archived_without_paid_ai_or_unsolicited_reply(natural_pilot):
     p = natural_pilot
-    p.provider.silent = True
     _, accepted = p.intake('Всем доброе утро!')
-    assert accepted.archived and accepted.queued
-    assert p.provider.calls and p.sender.sent == []
+    assert accepted.archived and not accepted.queued
+    assert p.provider.calls == [] and p.sender.sent == []
     assert p.conn.execute('SELECT available_text FROM source_archive_revisions').fetchone() == ('Всем доброе утро!',)
+
+
+def test_human_to_human_replies_are_never_interrupted_even_when_reports(natural_pilot):
+    p = natural_pilot
+    human = {'message_id': 901, 'from': {'id': AUTHOR + 1, 'is_bot': False},
+             'text': 'Ссылку на ролик увидел.'}
+    for text in (
+        'Да, слышал про такое',
+        'Отчёт: ' + 'Я осознал новый подход к работе и хочу поделиться. ' * 8,
+    ):
+        _, result = p.intake(text, reply_to_message=human)
+        assert result.archived and not result.queued
+    assert p.provider.calls == [] and replies(p) == []
+
+
+def test_direct_request_in_reply_to_another_human_still_works(natural_pilot):
+    p = natural_pilot
+    human = {'message_id': 901, 'from': {'id': AUTHOR + 1, 'is_bot': False},
+             'text': 'Интересная мысль'}
+    _, result = p.intake('Арни, помоги разобраться с моей задачей',
+                         reply_to_message=human)
+    assert result.archived and result.queued
+    assert replies(p) and replies(p)[-1].mode == 'direct'
+
 
 
 def test_natural_stop_persists_but_does_not_disable_direct_requests_or_other_authors(natural_pilot):

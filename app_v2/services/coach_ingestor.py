@@ -42,6 +42,57 @@ def is_coach_addressed(normalized, config: CoachConfig) -> bool:
     return False
 
 
+
+_REPORT_HEADING = re.compile(
+    r"(?im)(?:^|\n)\s*(?:[^\w\n]{0,6}\s*)?"
+    r"(?:отч[её]т\b|вечерний\s+разбор\b|"
+    r"(?:\d+\s*[.)]\s*)?что\s+(?:сделал|сделала|буду|получилось|мог|могла)\b|"
+    r"(?:\d+\s*[.)]\s*)?(?:план\s+на\s+завтра|итоги\s+дня|инсайт(?:ы|\s+дня)?))"
+)
+_REFLECTION = re.compile(
+    r"\b(?:я\s+(?:сегодня\s+)?(?:понял(?:а)?|заметил(?:а)?|осознал(?:а)?|"
+    r"решил(?:а)?|попробовал(?:а)?|добился|сделал(?:а)?|почувствовал(?:а)?)|"
+    r"мне\s+удалось|"
+    r"сегодня\s+(?:удалось|получилось)|"
+    r"для\s+меня\s+(?:важно|оказалось))\b", re.I
+)
+_URL = re.compile(r"https?://\S+", re.I)
+
+
+def _reply_to_another_person(normalized, config: CoachConfig) -> bool:
+    """Do not insert an unsolicited assistant turn into a human-to-human reply."""
+    reply = normalized.message.get("reply_to_message")
+    if not isinstance(reply, dict):
+        return False
+    author = reply.get("from")
+    if not isinstance(author, dict):
+        return False  # Service topic root is not a human reply.
+    identity = author.get("id")
+    return (type(identity) is int and identity > 0
+            and identity != config.bot_user_id and author.get("is_bot") is not True)
+
+
+def unsolicited_coaching_candidate(normalized, config: CoachConfig) -> bool:
+    """Only sufficiently relevant first-person reports qualify for a voluntary turn.
+
+    This is an admission gate, not a count quota, schedule, or a substitute for
+    the later model judgement to be silent. All other permitted messages are
+    still archived for later author-controlled retrieval.
+    """
+    text = normalized.message.get("text") or normalized.message.get("caption") or ""
+    if not isinstance(text, str) or not text.strip():
+        return False
+    if _reply_to_another_person(normalized, config):
+        return False
+    if _REPORT_HEADING.search(text):
+        return True
+    # Casual remarks, shares, reactions and conversations belong to humans.
+    # A long standalone personal reflection may still invite initiative.
+    if len(text.strip()) < 240 or _URL.search(text):
+        return False
+    return _REFLECTION.search(text) is not None
+
+
 def ingest_coach_update(update: dict[str, Any], *, conn, config: CoachConfig) -> CoachIngestResult:
     if not isinstance(update, dict):
         return CoachIngestResult("ignored")
@@ -119,10 +170,12 @@ def ingest_coach_update(update: dict[str, Any], *, conn, config: CoachConfig) ->
         if is_coach_addressed(normalized, config):
             if permissions.direct_request_group_reply:
                 mode = "direct"
-        elif permissions.auto_report_analysis and permissions.unsolicited_group_reply:
-            mode = "auto_report"
-        elif permissions.retain_source and permissions.historical_inference and permissions.track_status == "active":
-            mode = "index"
+        elif unsolicited_coaching_candidate(normalized, config):
+            if permissions.auto_report_analysis and permissions.unsolicited_group_reply:
+                mode = "auto_report"
+            elif (permissions.retain_source and permissions.historical_inference
+                  and permissions.track_status == "active"):
+                mode = "index"
         # Disabled AI must never prevent capture. Work remains in a short-lived
         # durable queue; the worker explains unavailability for direct requests.
         queued = mode is not None and repo.enqueue_job(normalized, mode=mode, source_id=captured.source_id) is not None

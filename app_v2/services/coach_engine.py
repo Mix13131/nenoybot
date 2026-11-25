@@ -691,9 +691,7 @@ class CoachEngine:
                 conversation = self._conversation_context(request, evidence)
             # Public link/product searches must not be misclassified as a
             # personal psychological assessment. Handle before assessment.
-            if ((request.mode == 'direct' or (request.mode == 'auto_report'
-                    and _WEB_URL.search(request.current_text) and len(request.current_text) <= 500))
-                    and _WEB_SIGNAL.search(request.current_text)
+            if (request.mode == 'direct' and _WEB_SIGNAL.search(request.current_text)
                     and not _WEB_PRIVATE.search(request.current_text)):
                 try:
                     return self._web_research(request, permissions.version, evidence, conversation)
