@@ -95,3 +95,33 @@ def test_forum_root_from_human_is_still_a_topic_root_not_an_active_reply():
                              "forum_topic_created": {"name": "Отчёты за день"}},
     })
     assert unsolicited_coaching_candidate(message, CONFIG)
+
+@pytest.mark.parametrize("text", [
+    "Сегодня я понял, что план на день не сработал, потому что отвлекался на сообщения.",
+    "Я попробовал сначала закрывать сложную задачу, теперь успеваю больше.",
+    "У меня не получается довести важный проект до конца, всё время переношу.",
+    "Сегодня нам сложно договориться о сроках, и это тормозит общий результат.",
+    "Как нам лучше распределить работу, если сроки постоянно срываются?",
+    "Почему я постоянно откладываю важные задачи, хотя они уже срочные?",
+    "У меня проблема с планированием поставок: сроки начали сдвигаться.",
+])
+def test_meaningful_short_questions_obstacles_and_progress_admit_autonomous_coach(text):
+    assert len(text) < 240
+    assert unsolicited_coaching_candidate(update(text), CONFIG)
+
+
+@pytest.mark.parametrize("text", [
+    "Ага, понял.",
+    "Как дела?",
+    "Да, слышал про такое",
+    "Да, согласен, давай позже обсудим",
+    "Окей, держи ссылку https://example.com/reel/123",
+    "Я сегодня просто зашёл в магазин",
+])
+def test_casual_or_social_messages_still_do_not_invite_unsolicited_coaching(text):
+    assert not unsolicited_coaching_candidate(update(text), CONFIG)
+
+
+def test_meaningful_question_in_human_reply_does_not_interrupt_people():
+    text="Как нам лучше распределить задачи, если сроки всё время срываются?"
+    assert not unsolicited_coaching_candidate(update(text, replied_to=human_reply()), CONFIG)

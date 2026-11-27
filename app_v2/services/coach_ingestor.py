@@ -25,6 +25,7 @@ class CoachIngestResult:
     status: str
     archived: bool = False
     queued: bool = False
+    route: str = "none"
 
 
 def is_coach_addressed(normalized, config: CoachConfig) -> bool:
@@ -57,6 +58,24 @@ _REFLECTION = re.compile(
     r"для\s+меня\s+(?:важно|оказалось))\b", re.I
 )
 _URL = re.compile(r"https?://\S+", re.I)
+_OPEN_QUESTION = re.compile(
+    r"\b(?:как|почему|зачем|что делать|как быть|что посоветуете|"
+    r"подскажите|есть идеи|кто знает|в ч[её]м|каким образом)\b", re.I
+)
+_PERSONAL_PROBLEM = re.compile(
+    r"\b(?:не получается|не могу|не успеваю|не вышло|"
+    r"застрял(?:а|и)?|затрудняюсь|трудно|сложно|проблема|ошибка|"
+    r"откладываю|переношу|снова перен[её]с|"
+    r"сорвал(?:а|и)? срок|нужен совет)\b", re.I
+)
+_SELF_CONTEXT = re.compile(
+    r"\b(?:я|мы|мне|нам|у меня|у нас|сегодня|вчера)\b", re.I
+)
+_CASUAL_ACK = re.compile(
+    r"(?:да|нет|ага|угу|ок(?:ей)?|понятно|спасибо|согласен(?:а)?|"
+    r"круто|класс|хорошо|договорились|слышал(?:а)?|видел(?:а)?)"
+    r"[!?.\s🙂👍❤️]*", re.I
+)
 
 
 def _reply_to_another_person(normalized, config: CoachConfig) -> bool:
@@ -79,24 +98,36 @@ def _reply_to_another_person(normalized, config: CoachConfig) -> bool:
 
 
 def unsolicited_coaching_candidate(normalized, config: CoachConfig) -> bool:
-    """Only sufficiently relevant first-person reports qualify for a voluntary turn.
+    """Admit substantial signals, not merely long, formally titled reports.
 
-    This is an admission gate, not a count quota, schedule, or a substitute for
-    the later model judgement to be silent. All other permitted messages are
-    still archived for later author-controlled retrieval.
+    This is a cheap admission gate, not a message quota or compulsory reply.
+    The AI still decides whether its participation adds value. All other
+    permitted messages are archived regardless of this decision.
     """
     text = normalized.message.get("text") or normalized.message.get("caption") or ""
     if not isinstance(text, str) or not text.strip():
         return False
     if _reply_to_another_person(normalized, config):
         return False
+    text = text.strip()
+    if _CASUAL_ACK.fullmatch(text):
+        return False
     if _REPORT_HEADING.search(text):
         return True
-    # Casual remarks, shares, reactions and conversations belong to humans.
-    # A long standalone personal reflection may still invite initiative.
-    if len(text.strip()) < 240 or _URL.search(text):
+    # An URL share does not invite the coach to interrupt someone else's
+    # conversation. Direct calls still get public web research.
+    if _URL.search(text):
         return False
-    return _REFLECTION.search(text) is not None
+    # Substantive open questions are invitations to contribute, even if the
+    # group did not mention the bot by name.
+    if len(text) >= 45 and "?" in text and _OPEN_QUESTION.search(text):
+        return True
+    # A genuine personal observation, progress update or obstacle does not
+    # require 240+ characters or an explicit heading.
+    if len(text) >= 48 and _SELF_CONTEXT.search(text):
+        if _REFLECTION.search(text) or _PERSONAL_PROBLEM.search(text):
+            return True
+    return False
 
 
 def ingest_coach_update(update: dict[str, Any], *, conn, config: CoachConfig) -> CoachIngestResult:
@@ -166,7 +197,8 @@ def ingest_coach_update(update: dict[str, Any], *, conn, config: CoachConfig) ->
                         window_days=getattr(control, "window_days", 7),
                         public_confirmed=getattr(control, "public_confirmed", False),
                     ) is not None
-                return CoachIngestResult("accepted", archived=archived, queued=queued)
+                return CoachIngestResult("accepted", archived=archived, queued=queued,
+                                         route=control.job_mode or "control")
         if not config.enabled or not scope_enabled:
             return CoachIngestResult("disabled")
         if message.is_edited or message.contains_external_content or not message.available_text:
@@ -185,4 +217,5 @@ def ingest_coach_update(update: dict[str, Any], *, conn, config: CoachConfig) ->
         # Disabled AI must never prevent capture. Work remains in a short-lived
         # durable queue; the worker explains unavailability for direct requests.
         queued = mode is not None and repo.enqueue_job(normalized, mode=mode, source_id=captured.source_id) is not None
-        return CoachIngestResult("accepted", archived=archived, queued=queued)
+        return CoachIngestResult("accepted", archived=archived, queued=queued,
+                                 route=mode or "passive")

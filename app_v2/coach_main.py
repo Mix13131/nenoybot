@@ -89,6 +89,18 @@ def create_app(config: CoachConfig | None = None, *, connection_factory: Callabl
             # exception traceback is logged; DB errors can include private rows.
             logger.error("Coach ingest failed: %s", type(exc).__name__)
             raise HTTPException(503, "Update not committed; retry required") from None
+        # Low-cardinality intake telemetry, without message bodies, IDs or source links.
+        # The response and commit behaviour are unchanged.
+        route = getattr(result, "route", "none")
+        if route not in {"direct", "auto_report", "index", "passive", "control",
+                         "track", "weekly_review", "none"}:
+            route = "none"
+        print(json.dumps({"event": "coach_intake", "status": result.status
+                          if result.status in {"accepted", "duplicate", "disabled",
+                                               "inactive_group", "membership_updated",
+                                               "ignored"} else "other",
+                          "route": route, "archived": bool(result.archived),
+                          "queued": bool(result.queued)}, ensure_ascii=False), flush=True)
         return {"status": result.status}
 
     register_history_import(application, config, factory)

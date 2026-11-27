@@ -212,6 +212,27 @@ def test_human_to_human_replies_are_never_interrupted_even_when_reports(natural_
     assert p.provider.calls == [] and replies(p) == []
 
 
+
+@pytest.mark.parametrize("text", [
+    "Сегодня я понял, что важную задачу постоянно сдвигаю из-за срочных мелочей.",
+    "У меня не получается довести важный проект до конца, снова переношу сроки.",
+    "Как нам лучше планировать задачи, если сроки постоянно срываются?",
+])
+def test_short_meaningful_message_is_archived_and_reaches_proactive_ai(natural_pilot, text):
+    p = natural_pilot
+    _, received = p.intake(text)
+    assert received.archived and received.queued and received.route == "auto_report"
+    assert p.provider.calls and replies(p), "Substantive message should not be blocked by intake"
+    assert replies(p)[-1].mode == "auto_report"
+
+
+def test_casual_acknowledgement_remains_archived_without_ai(natural_pilot):
+    p = natural_pilot
+    _, received = p.intake("Да, слышал про такое")
+    assert received.archived and not received.queued and received.route == "passive"
+    assert not p.provider.calls and not replies(p)
+
+
 def test_direct_request_in_reply_to_another_human_still_works(natural_pilot):
     p = natural_pilot
     human = {'message_id': 901, 'from': {'id': AUTHOR + 1, 'is_bot': False},
