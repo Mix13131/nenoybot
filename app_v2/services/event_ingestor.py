@@ -2,11 +2,13 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 import logging
+import os
 from typing import Any
 
 from app_v2.adapters.postgres import connect
 from app_v2.adapters.telegram_webhook import normalize_update
 from app_v2.repositories.ingest_repo import TelegramIngestRepository
+from app_v2.repositories.source_archive_repo import SourceArchiveRepository
 
 
 logger = logging.getLogger(__name__)
@@ -27,7 +29,10 @@ def ingest_telegram_update(
     *,
     bot_username: str | None = None,
     bot_user_id: str | None = None,
+    archive_enabled: bool | None = None,
 ) -> IngestResult:
+    if archive_enabled is not None and type(archive_enabled) is not bool:
+        raise ValueError("archive_enabled must be a boolean")
     normalized = normalize_update(
         update,
         bot_username=bot_username,
@@ -50,6 +55,16 @@ def ingest_telegram_update(
         with conn.transaction():
             if repo.event_exists(normalized.telegram_update_id):
                 return IngestResult(status="duplicate", event_id=normalized.envelope.event_id)
+
+            # Disabled by default. Source capture and the durable event share
+            # one transaction before ACK; neither classification nor AI is used.
+            # Failure must roll back acceptance so Telegram can retry safely.
+            capture_enabled = (
+                os.getenv("NENOY_V2_SOURCE_ARCHIVE_ENABLED") == "1"
+                if archive_enabled is None else archive_enabled
+            )
+            if capture_enabled:
+                SourceArchiveRepository(conn).capture(normalized)
 
             user_id = repo.upsert_user(
                 normalized.telegram_user,

@@ -1,0 +1,236 @@
+"""Explicit configuration for the separately deployed, single-bot coach.
+
+No legacy environment fallback: accidentally pointing the coach at NeNoi's
+credentials must not turn an unrelated deployment into the pilot.
+"""
+from __future__ import annotations
+
+from dataclasses import dataclass, field
+from decimal import Decimal, InvalidOperation
+import os
+import re
+from typing import Mapping
+
+
+class CoachConfigurationError(ValueError):
+    """Configuration key/reason only, never a supplied credential."""
+
+
+@dataclass(frozen=True)
+class CoachConfig:
+    environment: str = "development"
+    enabled: bool = False
+    ai_enabled: bool = False
+    database_url: str | None = field(default=None, repr=False)
+    telegram_bot_token: str | None = field(default=None, repr=False)
+    webhook_secret: str | None = field(default=None, repr=False)
+    openai_api_key: str | None = field(default=None, repr=False)
+    bot_user_id: int | None = None
+    bot_username: str | None = None
+    display_name: str = "Арни"
+    aliases: tuple[str, ...] = ("арни",)
+    group_mode: str = "configured"
+    chat_id: int | None = None
+    topic_ids: tuple[int, ...] = ()
+    archive_policy: str | None = "until_author_deletes"
+    transient_ttl_seconds: int = 86400
+    public_base_url: str | None = None
+    ai_model: str | None = None
+    ai_budget_mode: str = "capped"
+    daily_cap_microusd: int | None = None
+    input_price_microusd_per_million: int | None = None
+    output_price_microusd_per_million: int | None = None
+    max_input_tokens: int | None = None
+    max_output_tokens: int | None = None
+    ai_timeout_seconds: int = 40
+
+    @property
+    def scope_configured(self) -> bool:
+        return self.group_mode == "joined_groups" or (
+            self.group_mode == "configured" and self.chat_id is not None and bool(self.topic_ids)
+        )
+
+    def permits_scope(self, chat_id: int, topic_id: int) -> bool:
+        if (type(chat_id) is not int or not -(2**63 - 1) <= chat_id < 0
+                or type(topic_id) is not int or not 0 < topic_id < 2**63):
+            return False
+        if self.group_mode == "joined_groups":
+            return True
+        return chat_id == self.chat_id and topic_id in self.topic_ids
+
+    def ai_config(self):
+        from app_v2.services.coach_ai import CoachAIConfig
+        if not self.ai_enabled:
+            raise CoachConfigurationError("COACH_AI_ENABLED is off")
+        return CoachAIConfig(
+            model=self.ai_model,
+            daily_cap_microusd=self.daily_cap_microusd,
+            max_input_tokens=self.max_input_tokens,
+            max_output_tokens=self.max_output_tokens,
+            input_price_microusd_per_million=self.input_price_microusd_per_million,
+            output_price_microusd_per_million=self.output_price_microusd_per_million,
+            timeout_seconds=self.ai_timeout_seconds,
+            budget_mode=self.ai_budget_mode,
+        )
+
+
+def _bool(env: Mapping[str, str], key: str, *, default: bool = False) -> bool:
+    value = env.get(key, "1" if default else "0").strip().lower()
+    if value not in {"0", "1", "false", "true"}:
+        raise CoachConfigurationError(f"{key}: expected 0 or 1")
+    return value in {"1", "true"}
+
+
+def _integer(env: Mapping[str, str], key: str, *, minimum=1, maximum=2**63 - 1,
+             default: int | None = None) -> int | None:
+    value = env.get(key, "").strip()
+    if not value:
+        return default
+    try:
+        result = int(value)
+    except ValueError as exc:
+        raise CoachConfigurationError(f"{key}: expected integer") from None
+    if not minimum <= result <= maximum:
+        raise CoachConfigurationError(f"{key}: outside allowed range")
+    return result
+
+
+def _money(env: Mapping[str, str], key: str) -> int | None:
+    value = env.get(key, "").strip()
+    if not value:
+        return None
+    try:
+        number = Decimal(value)
+        micro = number * 1_000_000
+        if not number.is_finite() or micro != micro.to_integral_value() or not 0 < micro <= 10**15:
+            raise ValueError
+        return int(micro)
+    except (InvalidOperation, ValueError, OverflowError) as exc:
+        raise CoachConfigurationError(f"{key}: positive USD amount with at most 6 decimals required") from None
+
+
+def _database_url(env: Mapping[str, str]) -> str | None:
+    """Resolve an explicit database override without reconstructing a credential URI."""
+    get = lambda key: (env.get(key) or "").strip() or None
+    direct = get("COACH_DATABASE_URL")
+    base, name = get("COACH_DATABASE_BASE_URL"), get("COACH_DATABASE_NAME")
+    if direct and (base is not None or name is not None):
+        raise CoachConfigurationError("COACH_DATABASE_URL cannot be combined with COACH_DATABASE_BASE_URL/COACH_DATABASE_NAME")
+    if base is None and name is None:
+        return direct
+    if base is None or name is None:
+        raise CoachConfigurationError("COACH_DATABASE_BASE_URL and COACH_DATABASE_NAME must be provided together")
+    if len(name) > 63 or re.fullmatch(r"coach_[a-z0-9_]+", name) is None:
+        raise CoachConfigurationError("COACH_DATABASE_NAME: expected coach_[a-z0-9_]+ with at most 63 ASCII characters")
+    try:
+        from psycopg.conninfo import make_conninfo
+        return make_conninfo(base, dbname=name)
+    except Exception:
+        # libpq parsing errors may contain the credential-bearing input.
+        raise CoachConfigurationError("COACH_DATABASE_BASE_URL: invalid PostgreSQL connection information") from None
+
+
+def load_coach_config(env: Mapping[str, str] | None = None) -> CoachConfig:
+    env = os.environ if env is None else env
+    get = lambda key: (env.get(key) or "").strip() or None
+    environment = get("COACH_ENV") or "development"
+    if environment not in {"development", "test", "production"}:
+        raise CoachConfigurationError("COACH_ENV: unknown environment")
+    group_mode = get("COACH_GROUP_MODE") or "configured"
+    if group_mode not in {"configured", "joined_groups"}:
+        raise CoachConfigurationError("COACH_GROUP_MODE: expected configured or joined_groups")
+    budget_mode = get("COACH_AI_BUDGET_MODE") or "capped"
+    if budget_mode not in {"capped", "observe"}:
+        raise CoachConfigurationError("COACH_AI_BUDGET_MODE: expected capped or observe")
+    if budget_mode == "observe" and get("COACH_AI_EMERGENCY_DAILY_USD") is not None:
+        raise CoachConfigurationError("COACH_AI_EMERGENCY_DAILY_USD must be unset in observe mode")
+    database_url = _database_url(env)
+    # A configured dedicated bot serves its purpose immediately. Empty/import
+    # environments stay inactive, and explicit 0 remains the operator kill switch.
+    core_configured = bool(database_url) and all(get(key) for key in (
+        "COACH_TELEGRAM_BOT_TOKEN", "COACH_BOT_USERNAME",
+        "COACH_WEBHOOK_SECRET",
+    )) and (group_mode == "joined_groups" or all(get(key) for key in ("COACH_CHAT_ID", "COACH_TOPIC_IDS")))
+    enabled = _bool(env, "COACH_ENABLED", default=core_configured)
+    ai_enabled = _bool(env, "COACH_AI_ENABLED", default=enabled)
+    token = get("COACH_TELEGRAM_BOT_TOKEN")
+    bot_id = _integer(env, "COACH_BOT_USER_ID")
+    if token:
+        token_match = re.fullmatch(r"([1-9][0-9]{0,18}):[A-Za-z0-9_-]{20,}", token)
+        if token_match is None:
+            raise CoachConfigurationError("COACH_TELEGRAM_BOT_TOKEN: invalid format")
+        token_id = int(token_match.group(1))
+        if token_id >= 2**63:
+            raise CoachConfigurationError("COACH_TELEGRAM_BOT_TOKEN: invalid identity")
+        if bot_id is not None and bot_id != token_id:
+            raise CoachConfigurationError("COACH_BOT_USER_ID: token identity mismatch")
+        bot_id = token_id
+    username = (get("COACH_BOT_USERNAME") or "").lstrip("@") or None
+    if username and not re.fullmatch(r"[A-Za-z0-9_]{5,32}", username):
+        raise CoachConfigurationError("COACH_BOT_USERNAME: invalid username")
+    chat_id = _integer(env, "COACH_CHAT_ID", minimum=-(2**63 - 1), maximum=-1)
+    topic_ids: tuple[int, ...] = ()
+    if get("COACH_TOPIC_IDS"):
+        tokens = env["COACH_TOPIC_IDS"].split(",")
+        if len(tokens) > 20:
+            raise CoachConfigurationError("COACH_TOPIC_IDS: at most 20 explicit scopes")
+        try:
+            topic_ids = tuple(sorted({int(item.strip()) for item in tokens}))
+            if any(item <= 0 or item >= 2**63 for item in topic_ids):
+                raise ValueError
+        except ValueError as exc:
+            raise CoachConfigurationError("COACH_TOPIC_IDS: positive forum IDs required") from None
+    display_name = get("COACH_DISPLAY_NAME") or "Арни"
+    aliases = tuple(dict.fromkeys(item.strip().casefold() for item in
+                    (get("COACH_ALIASES") or display_name).split(",") if item.strip()))
+    if len(display_name) > 64 or any(len(x) > 64 for x in aliases) or len(aliases) > 8:
+        raise CoachConfigurationError("COACH_DISPLAY_NAME/COACH_ALIASES: too long")
+    policy = get("COACH_ARCHIVE_POLICY") or "until_author_deletes"
+    if policy != "until_author_deletes":
+        raise CoachConfigurationError("COACH_ARCHIVE_POLICY: unsupported explicit policy")
+    secret = get("COACH_WEBHOOK_SECRET")
+    if secret and not re.fullmatch(r"[A-Za-z0-9_-]{32,256}", secret):
+        raise CoachConfigurationError("COACH_WEBHOOK_SECRET: 32–256 safe characters required")
+    base_url = get("COACH_PUBLIC_BASE_URL")
+    if base_url and (not base_url.startswith("https://") or any(x in base_url for x in ("?", "#", "@"))):
+        raise CoachConfigurationError("COACH_PUBLIC_BASE_URL: public HTTPS origin required")
+    config = CoachConfig(
+        environment=environment, enabled=enabled, ai_enabled=ai_enabled,
+        database_url=database_url, telegram_bot_token=token,
+        webhook_secret=secret, openai_api_key=get("COACH_OPENAI_API_KEY"),
+        bot_user_id=bot_id, bot_username=username, display_name=display_name, aliases=aliases,
+        group_mode=group_mode, chat_id=chat_id, topic_ids=topic_ids, archive_policy=policy,
+        transient_ttl_seconds=_integer(env, "COACH_TRANSIENT_TTL_SECONDS", minimum=60, maximum=86400, default=86400),
+        public_base_url=base_url, ai_model=get("COACH_AI_MODEL"), ai_budget_mode=budget_mode,
+        daily_cap_microusd=_money(env, "COACH_AI_EMERGENCY_DAILY_USD"),
+        input_price_microusd_per_million=_money(env, "COACH_AI_INPUT_USD_PER_MILLION"),
+        output_price_microusd_per_million=_money(env, "COACH_AI_OUTPUT_USD_PER_MILLION"),
+        max_input_tokens=_integer(env, "COACH_AI_MAX_INPUT_TOKENS", maximum=500_000),
+        max_output_tokens=_integer(env, "COACH_AI_MAX_OUTPUT_TOKENS", maximum=32_000),
+        ai_timeout_seconds=_integer(env, "COACH_AI_TIMEOUT_SECONDS", maximum=60, default=40),
+    )
+    if environment == "production" or enabled:
+        required = {
+            "COACH_DATABASE_URL": config.database_url,
+            "COACH_TELEGRAM_BOT_TOKEN": token, "COACH_WEBHOOK_SECRET": secret,
+            "COACH_BOT_USERNAME": username, "COACH_ARCHIVE_POLICY": policy,
+        }
+        if group_mode == "configured":
+            required.update(COACH_CHAT_ID=chat_id, COACH_TOPIC_IDS=topic_ids)
+        missing = [key for key, value in required.items() if not value]
+        if missing:
+            raise CoachConfigurationError("Missing " + ", ".join(missing))
+    if ai_enabled:
+        required = {
+            "COACH_OPENAI_API_KEY": config.openai_api_key, "COACH_AI_MODEL": config.ai_model,
+            "COACH_AI_INPUT_USD_PER_MILLION": config.input_price_microusd_per_million,
+            "COACH_AI_OUTPUT_USD_PER_MILLION": config.output_price_microusd_per_million,
+            "COACH_AI_MAX_INPUT_TOKENS": config.max_input_tokens,
+            "COACH_AI_MAX_OUTPUT_TOKENS": config.max_output_tokens,
+        }
+        if budget_mode == "capped":
+            required["COACH_AI_EMERGENCY_DAILY_USD"] = config.daily_cap_microusd
+        missing = [key for key, value in required.items() if not value]
+        if missing:
+            raise CoachConfigurationError("Missing " + ", ".join(missing))
+    return config
